@@ -1,0 +1,643 @@
+/* The panel. Sizes are in panel pixels: --px is one of 720 across the screen. */
+
+.device {
+  --d-ground: #0b0c0e; --d-s1: #16181b; --d-s2: #1f2226; --d-s3: #2a2e33; --d-track: #1f2226; --d-meter: #24272c;
+  --d-ink: #eef0f2; --d-dim: #9aa1a8; --d-faint: #5d646b;
+  --d-signal: #ff5b1f; --d-on-signal: #1a0a02; --d-ice: #cfe0ee; --d-on-ice: #0e2233; --d-amber: #f4c542; --d-on-amber: #2a2000; --d-amber-container: #3b3218; --d-amber-ink: #f4c542; --d-leaf: #9fd68b; --d-leaf-container: #22361d;
+  --case-a: #ff7a2a; --case-b: #e9570d;
+  container-type: inline-size;
+  width: min(100%, 580px);
+}
+/* Light is its own design, not an inversion: near-white tiles on a cool grey ground, a white case. */
+.device[data-tone="light"] {
+  --d-ground: #e8eaed; --d-s1: #fbfbfc; --d-s2: #eef0f3; --d-s3: #e1e4e8; --d-track: #fbfbfc; --d-meter: #e4e7eb;
+  --d-ink: #15181b; --d-dim: #5b636c; --d-faint: #a3aab2;
+  --d-signal: #ea5a1a; --d-on-signal: #ffffff; --d-ice: #cde1f3; --d-on-ice: #0c2436; --d-amber: #ffd24a; --d-on-amber: #2b2100; --d-amber-container: #f6e3a4; --d-amber-ink: #8a5f00; --d-leaf: #2f6b27; --d-leaf-container: #d3ebc6;
+  --case-a: #f8f8f5; --case-b: #dcdcd7;
+}
+
+/* Concentric: each radius is the one outside it minus the padding between them. */
+.device-case {
+  padding: 4.6cqw; border-radius: 6.5cqw;
+  background: linear-gradient(145deg, var(--case-a), var(--case-b));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), inset 0 -2px 6px rgb(0 0 0 / 0.16), 0 30px 60px -30px rgb(0 0 0 / 0.5);
+}
+.screen-holder { container-type: inline-size; padding: 1.6cqw; border-radius: 1.9cqw; background: #050506; }
+.screen {
+  --px: calc(100cqw / 720);
+  position: relative; aspect-ratio: 1; overflow: hidden; border-radius: 0.35cqw;
+  background: var(--d-ground); color: var(--d-ink); font-family: var(--sans);
+  touch-action: none; user-select: none; -webkit-user-select: none;
+}
+.screen-canvas { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.screens { position: absolute; inset: 0; will-change: transform; }
+.scr { position: absolute; top: 0; width: 100%; height: 100%; }
+.scr[data-slot="0"] { left: 0; }
+.scr[data-slot="1"] { left: 100%; }
+.scr[data-slot="2"] { left: 200%; }
+.scr[data-slot="3"] { left: 300%; }
+.scr[data-slot="4"] { left: 400%; }
+.scr[data-slot="5"] { left: 500%; }
+.scr[data-slot="6"] { left: 600%; }
+
+/* With WebGL, everything under the glass is drawn by the renderer so the glass can bend it.
+   The DOM keeps layout, hit areas and focus; only its ink is hidden. */
+.surface { --fill: var(--d-s1); background: var(--fill); }
+.gl .surface, .gl [data-raster] { background: transparent !important; }
+.gl .scr, .gl .app-layer { -webkit-text-fill-color: transparent; }
+/* glass draws its own labels, and live elements (launcher icons, setting options) are drawn by the DOM */
+.gl [data-glass], .gl [data-glass] *, .gl [data-live], .gl [data-live] * { -webkit-text-fill-color: currentColor; }
+
+.icon {
+  font-family: "Material Symbols Rounded"; font-weight: 400; font-style: normal; line-height: 1;
+  font-variation-settings: "FILL" 0, "wght" 400, "GRAD" 0, "opsz" 40; letter-spacing: normal; text-transform: none;
+  display: inline-block; white-space: nowrap; direction: ltr; font-feature-settings: "liga";
+}
+.mono { font-family: var(--code); font-weight: 400; }
+.num { font-variant-numeric: tabular-nums; }
+[data-go] { cursor: pointer; }
+
+/* ---------- pages ---------- */
+/* Fixed pages end above where the pager and dock rest, even while those are away, so nothing jumps or hides. */
+.page-view { position: absolute; inset: 0; padding: calc(30 * var(--px)) calc(30 * var(--px)) calc(168 * var(--px)); display: flex; flex-direction: column; }
+.page-head { display: flex; justify-content: space-between; align-items: flex-start; gap: calc(16 * var(--px)); min-height: calc(74 * var(--px)); }
+.page-title { font: 600 calc(36 * var(--px))/1.05 var(--sans); letter-spacing: -0.01em; font-variation-settings: "wdth" 104; }
+.page-sub { font-size: calc(16 * var(--px)); color: var(--d-dim); margin-top: calc(6 * var(--px)); }
+.page-meta { display: flex; align-items: center; gap: calc(8 * var(--px)); font-size: calc(15 * var(--px)); color: var(--d-dim); padding-top: calc(8 * var(--px)); }
+.page-meta .icon { font-size: calc(22 * var(--px)); }
+.tonal { border: 0; cursor: pointer; font: inherit; height: calc(56 * var(--px)); padding-inline: calc(20 * var(--px)); border-radius: calc(28 * var(--px)); display: flex; align-items: center; gap: calc(8 * var(--px)); color: var(--d-ink); font-size: calc(15 * var(--px)); --fill: var(--d-s2); }
+.tonal .icon { font-size: calc(24 * var(--px)); }
+.page-head .tonal { width: calc(150 * var(--px)); justify-content: center; }
+.tonal:disabled { color: var(--d-faint); cursor: default; }
+
+/* ---------- overview ---------- */
+.home-view { position: absolute; inset: 0; overflow: hidden; }
+.home-col { position: absolute; top: calc(30 * var(--px)); left: calc(30 * var(--px)); right: calc(30 * var(--px)); padding-bottom: calc(170 * var(--px)); will-change: transform; }
+.status { display: flex; justify-content: space-between; align-items: baseline; height: calc(34 * var(--px)); font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.chips { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: calc(14 * var(--px)); margin-top: calc(12 * var(--px)); }
+.chip {
+  height: calc(122 * var(--px)); border: 0; border-radius: calc(30 * var(--px)); cursor: pointer; font: inherit;
+  display: grid; place-content: center; justify-items: center; gap: calc(12 * var(--px)); color: var(--d-ink);
+}
+.chip .icon { font-size: calc(42 * var(--px)); }
+.chip .mono { font-size: calc(15.5 * var(--px)); color: var(--d-dim); }
+.chip.is-on { --fill: var(--d-ice); color: var(--d-on-ice); }
+.chip.is-on .mono { color: var(--d-on-ice); }
+
+/* The light slider: an active and a rest segment around a bar handle, both clipped to the track so their
+   outer corners are always the track's own; the inner corners stay small. */
+.level { position: relative; height: calc(128 * var(--px)); margin-top: calc(16 * var(--px)); border-radius: calc(32 * var(--px)); overflow: hidden; cursor: grab; }
+.level-seg { position: absolute; top: 0; height: 100%; border-radius: calc(8 * var(--px)); }
+.level-on { --fill: var(--d-ice); }
+.level-off { --fill: var(--d-track); }
+.level-handle { position: absolute; --fill: var(--d-ink); border-radius: calc(4 * var(--px)); }
+.level-stop { position: absolute; right: calc(22 * var(--px)); top: calc(60 * var(--px)); width: calc(8 * var(--px)); height: calc(8 * var(--px)); border-radius: 50%; --raster-fill: var(--d-dim); background: var(--raster-fill); }
+.level-stop.is-hidden { visibility: hidden; }
+.level-label { position: absolute; left: calc(30 * var(--px)); top: 0; bottom: 0; display: flex; align-items: center; gap: calc(12 * var(--px)); font-size: calc(20 * var(--px)); color: var(--d-ink); pointer-events: none; }
+.level-label .icon { font-size: calc(34 * var(--px)); }
+.level-value { position: absolute; right: calc(46 * var(--px)); top: 0; bottom: 0; display: flex; align-items: center; font-size: calc(20 * var(--px)); color: var(--d-dim); pointer-events: none; }
+
+.tiles { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: calc(14 * var(--px)); margin-top: calc(16 * var(--px)); }
+.tile { border-radius: calc(32 * var(--px)); padding: calc(24 * var(--px)); min-height: calc(214 * var(--px)); display: flex; flex-direction: column; gap: calc(6 * var(--px)); }
+.tile-label { font-size: calc(15.5 * var(--px)); color: var(--d-dim); display: flex; align-items: center; gap: calc(8 * var(--px)); }
+.tile-label .icon { font-size: calc(22 * var(--px)); }
+.big { font: 300 calc(76 * var(--px))/0.95 var(--sans); letter-spacing: -0.03em; font-variation-settings: "wdth" 112, "ROND" 40; }
+.stepper { margin-top: auto; display: flex; align-items: center; justify-content: space-between; }
+.step, .fab {
+  border: 0; cursor: pointer; font: inherit; display: grid; place-items: center; color: var(--d-ink);
+  width: calc(66 * var(--px)); height: calc(66 * var(--px)); border-radius: calc(33 * var(--px));
+}
+.step { --fill: var(--d-s3); }
+.fab { --fill: var(--d-signal); color: var(--d-on-signal); }
+.step .icon, .fab .icon { font-size: calc(34 * var(--px)); }
+.media { display: grid; grid-template-columns: calc(92 * var(--px)) minmax(0, 1fr); gap: calc(16 * var(--px)); align-items: center; }
+/* concentric: the tile's 32 minus its 24 of padding */
+.media-art { width: calc(92 * var(--px)); aspect-ratio: 1; border-radius: calc(8 * var(--px)); background: var(--d-s3) center / cover; }
+.media-text { min-width: 0; }
+.media-title { font: 600 calc(24 * var(--px))/1.15 var(--sans); white-space: nowrap; }
+.media-by { font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.more { margin-top: calc(14 * var(--px)); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(14 * var(--px)); }
+.more .tile { min-height: calc(168 * var(--px)); }
+.more .big { font-size: calc(46 * var(--px)); }
+.meter { position: relative; height: calc(34 * var(--px)); margin-top: auto; border-radius: calc(17 * var(--px)); --fill: var(--d-meter); overflow: hidden; }
+.meter-fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: calc(6 * var(--px)); --fill: var(--d-amber); }
+.meter-fill.is-ice { --fill: var(--d-ice); }
+
+/* ---------- rooms: a tile fills with light from the bottom, like a dimmer ---------- */
+.rooms { flex: 1; min-height: 0; margin-top: calc(14 * var(--px)); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: calc(14 * var(--px)); }
+.room { position: relative; overflow: hidden; border: 0; cursor: pointer; font: inherit; text-align: left; min-height: 0; border-radius: calc(32 * var(--px)); padding: calc(22 * var(--px)); display: flex; flex-direction: column; color: var(--d-ink); touch-action: none; }
+.room-fill { position: absolute; left: 0; right: 0; bottom: 0; height: 0; --fill: var(--d-amber-container); border-radius: 0; pointer-events: none; }
+/* A dimmer fills with a quiet tonal container, as Android device controls do, so its words never split; a lit room's icon turns amber. */
+.room[aria-pressed="true"] .room-top .icon { color: var(--d-amber-ink); }
+.room-top { position: relative; display: flex; justify-content: space-between; align-items: center; }
+.room-top .icon { font-size: calc(34 * var(--px)); }
+.room-state { font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.room-name { position: relative; margin-top: auto; font: 600 calc(22 * var(--px))/1.15 var(--sans); }
+.room-detail { position: relative; font-size: calc(14 * var(--px)); color: var(--d-dim); margin-top: calc(4 * var(--px)); }
+
+/* ---------- climate ---------- */
+.dial { position: absolute; left: calc(110 * var(--px)); top: calc(80 * var(--px)); width: calc(500 * var(--px)); height: calc(500 * var(--px)); border-radius: 50%; display: grid; place-content: center; justify-items: center; gap: calc(4 * var(--px)); cursor: grab; touch-action: none; }
+.dial-caption { font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.dial-value { font: 250 calc(104 * var(--px))/0.95 var(--sans); letter-spacing: -0.04em; font-variation-settings: "wdth" 116, "ROND" 30; }
+.dial-now { font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.dial.is-off .dial-value { color: var(--d-faint); }
+/* the modes sit in the ring's open bottom, clear of the pager and dock when they come back */
+.modes { position: absolute; left: calc(30 * var(--px)); right: calc(30 * var(--px)); top: calc(498 * var(--px)); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: calc(8 * var(--px)); }
+.mode { border: 0; cursor: pointer; font: inherit; height: calc(56 * var(--px)); border-radius: calc(14 * var(--px)); display: flex; align-items: center; justify-content: center; gap: calc(8 * var(--px)); font-size: calc(15 * var(--px)); color: var(--d-ink); --fill: var(--d-s2); }
+.mode .icon { font-size: calc(24 * var(--px)); }
+.mode.is-on { --fill: var(--d-ice); color: var(--d-on-ice); border-radius: calc(32 * var(--px)); }
+.mode.is-on[data-mode="heat"] { --fill: var(--d-signal); color: var(--d-on-signal); }
+.knob { position: absolute; left: 0; top: 0; width: calc(68 * var(--px)); height: calc(68 * var(--px)); border-radius: 50%; pointer-events: none; }
+
+/* ---------- today ---------- */
+.today { flex: 1; min-height: 0; margin-top: calc(14 * var(--px)); display: grid; grid-template-columns: 1.1fr 1fr; grid-template-rows: auto minmax(0, 1fr); gap: calc(14 * var(--px)); }
+.today .tile { min-height: 0; }
+.hours { margin-top: auto; height: calc(150 * var(--px)); display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: calc(6 * var(--px)); }
+.hour { height: 100%; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; justify-items: center; gap: calc(6 * var(--px)); font-size: calc(13 * var(--px)); color: var(--d-dim); }
+.hour-bar { display: block; align-self: end; width: calc(16 * var(--px)); border-radius: calc(8 * var(--px)); --raster-fill: var(--d-ice); background: var(--raster-fill); }
+.hour-bar.is-now { --raster-fill: var(--d-signal); }
+.agenda { margin-top: calc(12 * var(--px)); display: grid; gap: calc(14 * var(--px)); }
+.agenda-row { display: grid; grid-template-columns: calc(62 * var(--px)) minmax(0, 1fr); gap: calc(10 * var(--px)); align-items: baseline; font-size: calc(19 * var(--px)); }
+.agenda-row .mono { font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.transit-row { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; gap: calc(10 * var(--px)); align-items: center; margin-top: calc(14 * var(--px)); font-size: calc(18 * var(--px)); }
+.transit-row b { font: 600 calc(24 * var(--px))/1 var(--sans); }
+.transit-row .mono { font-size: calc(14 * var(--px)); color: var(--d-dim); }
+.transit-row .badge { margin-right: 0; }
+.reminder-tile { border: 0; font: inherit; color: var(--d-ink); text-align: left; cursor: pointer; }
+.reminder-tile .tile-label:last-child { margin-top: auto; }
+.reminder { margin-top: calc(8 * var(--px)); font: 600 calc(30 * var(--px))/1.1 var(--sans); }
+.reminder-tile.is-done { --fill: var(--d-ice); color: var(--d-on-ice); }
+.reminder-tile.is-done .tile-label { color: var(--d-on-ice); }
+
+/* ---------- now playing ---------- */
+.play-view { position: absolute; inset: 0; padding: calc(30 * var(--px)); }
+.np-head { display: flex; justify-content: space-between; align-items: start; }
+.np-title { font: 600 calc(36 * var(--px))/1.05 var(--sans); letter-spacing: -0.01em; font-variation-settings: "wdth" 104; }
+.np-by { font-size: calc(16 * var(--px)); color: var(--d-dim); margin-top: calc(6 * var(--px)); }
+.np-ring { position: absolute; left: calc(360 * var(--px)); top: calc(282 * var(--px)); width: 0; height: 0; }
+.np-time { position: absolute; left: calc(30 * var(--px)); right: calc(30 * var(--px)); top: calc(466 * var(--px)); display: flex; justify-content: space-between; font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.no-gl .play-view::before { content: ""; position: absolute; left: calc(192 * var(--px)); top: calc(114 * var(--px)); width: calc(336 * var(--px)); aspect-ratio: 1; border-radius: 50%; background: var(--cover) center / cover; }
+.transport { position: absolute; left: 50%; top: calc(494 * var(--px)); width: calc(372 * var(--px)); height: calc(88 * var(--px)); transform: translateX(-50%); border-radius: calc(44 * var(--px)); display: grid; grid-template-columns: 1fr 1.2fr 1fr; align-items: center; }
+.transport button { position: relative; border: 0; background: transparent; color: var(--d-ink); cursor: pointer; height: 100%; display: grid; place-items: center; font: inherit; }
+.transport .icon { font-size: calc(40 * var(--px)); }
+.transport .play .icon { font-size: calc(54 * var(--px)); font-variation-settings: "FILL" 1, "wght" 500, "GRAD" 0, "opsz" 48; }
+
+/* ---------- standby: four scapes stacked vertically ---------- */
+.scapes { position: absolute; inset: 0; will-change: transform; }
+.scape { position: absolute; left: 0; width: 100%; height: 100%; padding: calc(30 * var(--px)); }
+.scape[data-scape="orbit"] { top: 0; }
+.scape[data-scape="dots"] { top: 100%; }
+.scape[data-scape="dial"] { top: 200%; }
+.scape[data-scape="horizon"] { top: 300%; }
+.scape[data-scape="words"] { top: 400%; }
+.scape[data-scape="world"] { top: 500%; }
+.scape[data-scape="moon"] { top: 600%; }
+.scape[data-scape="tree"] { top: 700%; }
+.amb-clock { font: 250 calc(118 * var(--px))/0.9 var(--sans); letter-spacing: -0.04em; font-variation-settings: "wdth" 118, "ROND" 20; }
+.amb-date { font-size: calc(16 * var(--px)); color: var(--d-dim); margin-top: calc(10 * var(--px)); }
+.amb-weather { position: absolute; right: calc(30 * var(--px)); top: calc(34 * var(--px)); text-align: right; }
+.amb-weather .big { font-size: calc(58 * var(--px)); }
+.amb-weather .tile-label { justify-content: flex-end; }
+.transit { position: absolute; left: calc(30 * var(--px)); right: calc(30 * var(--px)); top: calc(548 * var(--px)); display: flex; justify-content: center; gap: calc(30 * var(--px)); font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.transit b { font: 600 calc(20 * var(--px))/1 var(--sans); color: var(--d-ink); }
+.badge { display: inline-grid; place-items: center; width: calc(30 * var(--px)); height: calc(24 * var(--px)); border-radius: calc(6 * var(--px)); font: 600 calc(12 * var(--px))/1 var(--code); font-style: normal; color: #141414; margin-right: calc(8 * var(--px)); vertical-align: calc(2 * var(--px)); }
+.badge-s1 { --raster-fill: #f2b53c; background: var(--raster-fill); }
+.badge-s2 { --raster-fill: #4bb36b; background: var(--raster-fill); }
+.dots-caption { position: absolute; left: 0; right: 0; top: calc(318 * var(--px)); display: flex; justify-content: center; gap: calc(22 * var(--px)); font-size: calc(17 * var(--px)); color: var(--d-dim); }
+.dial-top { position: absolute; left: calc(30 * var(--px)); right: calc(30 * var(--px)); top: calc(30 * var(--px)); display: flex; justify-content: space-between; font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.sun-times { position: absolute; right: calc(30 * var(--px)); top: calc(40 * var(--px)); display: grid; gap: calc(10 * var(--px)); text-align: right; font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.sun-times b { font: 500 calc(20 * var(--px))/1 var(--sans); color: var(--d-ink); }
+.scape-index { position: absolute; right: calc(14 * var(--px)); top: 50%; transform: translateY(-50%); display: grid; gap: calc(8 * var(--px)); justify-items: center; pointer-events: none; }
+.scape-index i { display: block; width: calc(6 * var(--px)); height: calc(6 * var(--px)); border-radius: calc(3 * var(--px)); background: var(--d-faint); transition: height var(--dur-release, 450ms) var(--ease-release, ease-out), background-color 160ms; }
+.scape-index i.is-on { height: calc(20 * var(--px)); background: var(--d-ink); }
+.amb-actions { position: absolute; left: 50%; top: calc(452 * var(--px)); transform: translateX(-50%); display: flex; gap: calc(14 * var(--px)); }
+.pill { position: relative; border: 0; background: transparent; color: var(--d-ink); cursor: pointer; height: calc(68 * var(--px)); padding-inline: calc(26 * var(--px)); border-radius: calc(34 * var(--px)); display: flex; align-items: center; gap: calc(10 * var(--px)); font: inherit; font-size: calc(16 * var(--px)); white-space: nowrap; }
+.pill .icon { font-size: calc(30 * var(--px)); }
+
+/* ---------- chrome: pager, island and dock ---------- */
+.pager { position: absolute; left: 50%; bottom: calc(132 * var(--px)); transform: translateX(-50%); display: flex; align-items: center; gap: calc(8 * var(--px)); padding: calc(8 * var(--px)) calc(12 * var(--px)); border-radius: calc(12 * var(--px)); pointer-events: none; }
+.pager i { display: block; width: calc(7 * var(--px)); height: calc(7 * var(--px)); border-radius: calc(4 * var(--px)); background: var(--d-faint); transition: width var(--dur-release, 450ms) var(--ease-release, ease-out), background-color 160ms; }
+.pager i.is-on { width: calc(22 * var(--px)); background: var(--d-ink); }
+.island { position: absolute; left: 50%; top: calc(18 * var(--px)); height: calc(60 * var(--px)); padding-inline: calc(24 * var(--px)); border-radius: calc(30 * var(--px)); display: flex; align-items: center; gap: calc(10 * var(--px)); font-size: calc(16 * var(--px)); color: var(--d-ink); white-space: nowrap; transform: translateX(-50%); pointer-events: none; opacity: 0; }
+.island .icon { font-size: calc(24 * var(--px)); }
+.dock { position: absolute; left: 50%; bottom: calc(30 * var(--px)); transform: translateX(-50%); display: flex; padding: calc(8 * var(--px)); gap: calc(4 * var(--px)); border-radius: calc(46 * var(--px)); }
+.dock-item { position: relative; border: 0; background: transparent; cursor: pointer; font: inherit; width: calc(104 * var(--px)); height: calc(76 * var(--px)); border-radius: calc(38 * var(--px)); display: grid; place-content: center; justify-items: center; gap: calc(4 * var(--px)); color: var(--d-dim); }
+.dock-item .icon { font-size: calc(32 * var(--px)); }
+.dock-item .mono { font-size: calc(13 * var(--px)); }
+.dock-item.is-on { color: var(--d-ink); }
+.dock-item.is-on .icon { font-variation-settings: "FILL" 1, "wght" 500, "GRAD" 0, "opsz" 40; }
+/* state layers on glass controls, concentric with the capsule they sit in */
+.transport button::after, .pill::after, .dock-item::after { content: ""; position: absolute; pointer-events: none; background: currentColor; opacity: var(--layer, 0); }
+.transport button::after { inset: calc(8 * var(--px)); border-radius: calc(36 * var(--px)); }
+.pill::after { inset: calc(6 * var(--px)); border-radius: calc(28 * var(--px)); }
+.dock-item::after { inset: 0; border-radius: inherit; }
+
+/* ---------- without WebGL, or the calm version ---------- */
+.no-gl [data-glass] {
+  background: color-mix(in srgb, var(--d-s2) 62%, transparent);
+  -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18), 0 10px 30px -12px rgb(0 0 0 / 0.4);
+}
+.no-gl.calm [data-glass] { background: var(--d-s2); -webkit-backdrop-filter: none; backdrop-filter: none; box-shadow: inset 0 0 0 1px var(--d-s3); }
+.screen button:focus-visible, .level:focus-visible, .dial:focus-visible { outline: calc(3 * var(--px)) solid var(--d-signal); outline-offset: calc(3 * var(--px)); }
+
+/* ---------- apps: the launcher. Icons are live DOM so each can cascade on its own spring. ---------- */
+.launcher { flex: 1; min-height: 0; margin-top: calc(18 * var(--px)); display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); grid-template-rows: repeat(3, minmax(0, 1fr)); gap: calc(10 * var(--px)); align-items: center; }
+.app-icon { border: 0; background: transparent; cursor: pointer; font: inherit; color: var(--d-ink); display: grid; justify-items: center; gap: calc(10 * var(--px)); padding: 0; opacity: 0; will-change: transform, opacity; }
+.app-tile { display: grid; place-items: center; width: calc(104 * var(--px)); height: calc(104 * var(--px)); border-radius: calc(32 * var(--px)); background: var(--tile); color: var(--glyph); }
+.app-tile .icon { font-size: calc(48 * var(--px)); font-variation-settings: "FILL" 1, "wght" 500, "GRAD" 0, "opsz" 48; }
+.app-name { font: 400 calc(15 * var(--px))/1 var(--code); color: var(--d-dim); }
+
+/* ---------- apps: the window, laid out full-screen and drawn scaled while it grows ---------- */
+.app-layer { position: absolute; inset: 0; transform-origin: 0 0; }
+.app { position: absolute; inset: 0; padding: calc(30 * var(--px)) calc(30 * var(--px)) calc(36 * var(--px)); display: flex; flex-direction: column; }
+.app-head { display: flex; align-items: center; gap: calc(18 * var(--px)); min-height: calc(74 * var(--px)); }
+.app-back { border: 0; cursor: pointer; flex: none; width: calc(56 * var(--px)); height: calc(56 * var(--px)); border-radius: calc(28 * var(--px)); display: grid; place-items: center; color: var(--d-ink); --fill: var(--d-s2); }
+.app-back .icon { font-size: calc(28 * var(--px)); }
+
+/* music */
+.coverflow { position: relative; flex: 1; min-height: 0; touch-action: none; cursor: grab; }
+.album-meta { text-align: center; margin-top: calc(6 * var(--px)); }
+.album-title { font: 600 calc(28 * var(--px))/1.1 var(--sans); }
+.album-by { font-size: calc(15 * var(--px)); color: var(--d-dim); margin-top: calc(4 * var(--px)); }
+.album-actions { display: flex; justify-content: center; margin-top: calc(14 * var(--px)); }
+.album-actions .tonal { width: calc(200 * var(--px)); justify-content: center; --fill: var(--d-signal); color: var(--d-on-signal); }
+
+/* energy */
+.app[data-app="energy"] { display: grid; grid-template-columns: 1.05fr 1fr; grid-template-rows: auto minmax(0, 1fr); column-gap: calc(20 * var(--px)); }
+.app[data-app="energy"] .app-head { grid-column: 1 / -1; }
+.tree-stage { min-height: 0; touch-action: none; cursor: grab; }
+.energy-side { display: flex; flex-direction: column; gap: calc(6 * var(--px)); padding-top: calc(8 * var(--px)); min-height: 0; }
+.energy-side .big { font-size: calc(64 * var(--px)); }
+.energy-rows { margin-top: calc(12 * var(--px)); display: grid; gap: calc(8 * var(--px)); }
+.energy-row { display: flex; justify-content: space-between; align-items: baseline; font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.energy-row b { font: 600 calc(20 * var(--px))/1 var(--sans); color: var(--d-ink); }
+.energy-week { margin-top: auto; height: calc(104 * var(--px)); display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: calc(6 * var(--px)); }
+.day { height: 100%; display: grid; grid-template-rows: minmax(0, 1fr) auto; justify-items: center; gap: calc(6 * var(--px)); font-size: calc(13 * var(--px)); color: var(--d-dim); }
+.day-bar { display: block; align-self: end; width: calc(18 * var(--px)); border-radius: calc(9 * var(--px)); --raster-fill: var(--d-leaf); background: var(--raster-fill); }
+.day-bar.is-miss { --raster-fill: var(--d-faint); }
+.day-bar.is-today { --raster-fill: var(--d-signal); }
+
+/* timers */
+.timer-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: calc(10 * var(--px)); margin-top: calc(10 * var(--px)); }
+.timer-presets .tonal { justify-content: center; }
+.timer-list { display: grid; gap: calc(12 * var(--px)); margin-top: calc(18 * var(--px)); }
+.timer-row { position: relative; overflow: hidden; height: calc(104 * var(--px)); border-radius: calc(28 * var(--px)); padding-inline: calc(26 * var(--px)) calc(18 * var(--px)); display: grid; grid-template-columns: minmax(0, 1fr) auto auto; grid-template-rows: 1fr 1fr; column-gap: calc(12 * var(--px)); align-items: center; }
+.timer-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; --fill: var(--d-s3); pointer-events: none; }
+.timer-name { position: relative; grid-column: 1; grid-row: 1; align-self: end; font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.timer-left { position: relative; grid-column: 1; grid-row: 2; align-self: start; font: 300 calc(44 * var(--px))/1 var(--sans); letter-spacing: -0.02em; }
+.timer-row .step { position: relative; grid-row: 1 / 3; }
+.timer-row.is-done .timer-left { color: var(--d-signal); }
+.timer-empty { margin-top: calc(18 * var(--px)); font-size: calc(15 * var(--px)); color: var(--d-dim); }
+
+/* security */
+.lock-card { margin-top: calc(10 * var(--px)); border-radius: calc(32 * var(--px)); padding: calc(24 * var(--px)); display: grid; gap: calc(18 * var(--px)); }
+.lock-head { display: flex; align-items: center; gap: calc(16 * var(--px)); }
+.lock-head .icon { font-size: calc(40 * var(--px)); color: var(--d-signal); }
+.lock-name { font: 600 calc(24 * var(--px))/1.1 var(--sans); }
+.lock-state { font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.lock-track { position: relative; height: calc(84 * var(--px)); border-radius: calc(42 * var(--px)); --fill: var(--d-s3); display: grid; place-items: center; touch-action: none; }
+.lock-hint { font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.lock-knob { position: absolute; left: calc(8 * var(--px)); top: calc(8 * var(--px)); width: calc(112 * var(--px)); height: calc(68 * var(--px)); border-radius: calc(34 * var(--px)); pointer-events: none; }
+.alarm.modes { position: static; margin-top: calc(18 * var(--px)); grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.events { margin-top: calc(18 * var(--px)); display: grid; gap: calc(10 * var(--px)); }
+.event-row { display: grid; grid-template-columns: calc(64 * var(--px)) minmax(0, 1fr); gap: calc(10 * var(--px)); font-size: calc(17 * var(--px)); }
+.event-row .mono { font-size: calc(14 * var(--px)); color: var(--d-dim); }
+
+/* shopping */
+.notes-list { margin-top: calc(10 * var(--px)); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: calc(10 * var(--px)); }
+.note-item { border: 0; cursor: pointer; font: inherit; color: var(--d-ink); height: calc(76 * var(--px)); border-radius: calc(24 * var(--px)); padding-inline: calc(20 * var(--px)); display: flex; align-items: center; gap: calc(14 * var(--px)); text-align: left; }
+.note-item .icon { font-size: calc(26 * var(--px)); color: var(--d-faint); }
+.note-text { font-size: calc(19 * var(--px)); }
+.note-item.is-done { --fill: var(--d-s2); }
+.note-item.is-done .icon { color: var(--d-leaf); }
+.note-item.is-done .note-text { color: var(--d-faint); }
+.quick-add { margin-top: auto; display: flex; flex-wrap: wrap; gap: calc(10 * var(--px)); }
+
+/* settings */
+.settings-list { margin-top: calc(10 * var(--px)); display: grid; gap: calc(10 * var(--px)); }
+.setting { border-radius: calc(24 * var(--px)); min-height: calc(84 * var(--px)); padding-inline: calc(24 * var(--px)) calc(12 * var(--px)); display: flex; align-items: center; justify-content: space-between; gap: calc(12 * var(--px)); }
+.setting-name { font: 500 calc(19 * var(--px))/1 var(--sans); }
+.setting-options { display: flex; gap: calc(6 * var(--px)); }
+.opt { border: 0; cursor: pointer; font: 400 calc(15 * var(--px))/1 var(--code); color: var(--d-dim); background: transparent; height: calc(56 * var(--px)); padding-inline: calc(18 * var(--px)); border-radius: calc(28 * var(--px)); transition: background-color 160ms, color 160ms; }
+.opt[aria-pressed="true"] { background: var(--d-ice); color: var(--d-on-ice); }
+
+/* ---------- standby: four more faces ---------- */
+.words { position: absolute; left: 50%; top: calc(60 * var(--px)); transform: translateX(-50%); display: grid; gap: calc(6 * var(--px)); font: 500 calc(34 * var(--px))/1 var(--code); letter-spacing: 0.42em; color: var(--d-faint); }
+.words i { font-style: normal; }
+.words i.is-lit { color: var(--d-ink); }
+.world-top { position: absolute; left: calc(30 * var(--px)); right: calc(30 * var(--px)); top: calc(30 * var(--px)); display: flex; justify-content: space-between; font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.cities { position: absolute; left: calc(60 * var(--px)); right: calc(60 * var(--px)); top: calc(330 * var(--px)); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); text-align: center; }
+.city-name { font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.city-time { font: 300 calc(40 * var(--px))/1.1 var(--sans); margin-top: calc(6 * var(--px)); }
+.city-diff { font-size: calc(13 * var(--px)); color: var(--d-faint); margin-top: calc(2 * var(--px)); }
+.moon-text { position: absolute; left: 0; right: 0; top: calc(396 * var(--px)); text-align: center; }
+.moon-phase { font: 300 calc(44 * var(--px))/1.1 var(--sans); }
+.moon-lit { font-size: calc(16 * var(--px)); color: var(--d-dim); margin-top: calc(8 * var(--px)); }
+.tree-top { position: absolute; left: calc(30 * var(--px)); top: calc(30 * var(--px)); }
+.tree-day { font: 300 calc(40 * var(--px))/1.1 var(--sans); margin-top: calc(8 * var(--px)); }
+.tree-note { position: absolute; right: calc(30 * var(--px)); top: calc(40 * var(--px)); font-size: calc(16 * var(--px)); color: var(--d-dim); }
+
+/* ---------- control center: glass modules over the page, which dims and steps back ---------- */
+.cc-edge { position: absolute; left: 0; right: 0; top: 0; height: calc(30 * var(--px)); touch-action: none; }
+.cc { position: absolute; inset: 0; touch-action: none; }
+.no-gl .cc { background: rgb(0 0 0 / 0.45); }
+.cc-module, .cc-slider, .cc-toggle { position: absolute; color: var(--d-ink); }
+.cc-scenes { left: calc(40 * var(--px)); top: calc(62 * var(--px)); width: calc(310 * var(--px)); height: calc(170 * var(--px)); border-radius: calc(44 * var(--px)); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); place-items: center; }
+.cc-scene { position: relative; border: 0; background: transparent; color: var(--d-ink); width: calc(64 * var(--px)); height: calc(64 * var(--px)); border-radius: 50%; cursor: pointer; display: grid; place-items: center; }
+.cc-scene .icon { font-size: calc(30 * var(--px)); }
+.cc-scene.is-on { color: var(--d-on-signal); }
+.cc-pick { position: absolute; left: 0; top: 0; width: calc(64 * var(--px)); height: calc(64 * var(--px)); border-radius: 50%; --fill: var(--d-signal); pointer-events: none; }
+.cc-media { left: calc(376 * var(--px)); top: calc(62 * var(--px)); width: calc(304 * var(--px)); height: calc(170 * var(--px)); border-radius: calc(44 * var(--px)); padding: calc(22 * var(--px)) calc(22 * var(--px)) calc(10 * var(--px)); display: grid; grid-template-columns: calc(64 * var(--px)) minmax(0, 1fr); grid-template-rows: auto 1fr; column-gap: calc(14 * var(--px)); }
+.cc-art { width: calc(64 * var(--px)); height: calc(64 * var(--px)); border-radius: calc(16 * var(--px)); background: var(--cover) center / cover; }
+.cc-track { min-width: 0; align-self: center; }
+.cc-title { font: 600 calc(19 * var(--px))/1.15 var(--sans); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cc-by { font-size: calc(13 * var(--px)); color: var(--d-dim); margin-top: calc(2 * var(--px)); }
+.cc-transport { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); align-items: center; }
+.cc-transport button { border: 0; background: transparent; color: var(--d-ink); cursor: pointer; height: calc(56 * var(--px)); display: grid; place-items: center; }
+.cc-transport .icon { font-size: calc(34 * var(--px)); }
+.cc-slider { top: calc(262 * var(--px)); width: calc(88 * var(--px)); height: calc(280 * var(--px)); border-radius: calc(44 * var(--px)); display: grid; align-content: end; justify-items: center; padding-bottom: calc(22 * var(--px)); touch-action: none; cursor: grab; }
+#cc-bright { left: calc(40 * var(--px)); }
+#cc-volume { left: calc(155 * var(--px)); }
+#cc-heat { left: calc(270 * var(--px)); }
+.cc-slider .icon { position: relative; font-size: calc(30 * var(--px)); }
+.cc-fill { position: absolute; left: 0; right: 0; bottom: 0; height: 50%; --fill: var(--d-ice); pointer-events: none; }
+#cc-heat .cc-fill { --fill: var(--d-signal); }
+/* a slider's fill never drops below a circle, so its icon always sits on the fill and takes the fill's ink */
+.cc-slider .icon { color: var(--d-on-ice); }
+#cc-heat .icon { color: var(--d-on-signal); }
+.cc-value { position: absolute; top: calc(18 * var(--px)); left: 0; right: 0; text-align: center; font-size: calc(14 * var(--px)); color: var(--d-dim); }
+.cc-toggle { width: calc(120 * var(--px)); height: calc(120 * var(--px)); border-radius: 50%; border: 0; background: transparent; cursor: pointer; display: grid; place-content: center; justify-items: center; gap: calc(6 * var(--px)); font: inherit; }
+.cc-toggle .icon { font-size: calc(34 * var(--px)); }
+.cc-toggle .mono { font-size: calc(13 * var(--px)); color: var(--d-dim); }
+.cc-toggle[aria-pressed="true"] .mono { color: var(--d-ink); }
+#cc-quiet { left: calc(412 * var(--px)); top: calc(262 * var(--px)); }
+#cc-lock { left: calc(560 * var(--px)); top: calc(262 * var(--px)); }
+#cc-lights { left: calc(412 * var(--px)); top: calc(422 * var(--px)); }
+#cc-timer { left: calc(560 * var(--px)); top: calc(422 * var(--px)); }
+.cc-grabber { position: absolute; left: 50%; top: calc(596 * var(--px)); width: calc(64 * var(--px)); height: calc(6 * var(--px)); border-radius: calc(3 * var(--px)); background: var(--d-faint); transform: translateX(-50%); }
+
+/* ---------- live activities: a floating stack of glass cards, thrown to a corner like picture in picture ---------- */
+.activities { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
+.activity { position: absolute; left: 0; top: 0; width: calc(224 * var(--px)); height: calc(64 * var(--px)); border-radius: calc(32 * var(--px)); border: 0; background: transparent; color: var(--d-ink); display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: calc(12 * var(--px)); padding-inline: calc(20 * var(--px)); font: inherit; text-align: left; opacity: 0; pointer-events: none; touch-action: none; cursor: grab; }
+.activity.is-live { pointer-events: auto; }
+.activity .icon { font-size: calc(26 * var(--px)); }
+.activity.is-urgent .icon { color: var(--d-signal); }
+.activity-text { display: flex; align-items: baseline; justify-content: space-between; gap: calc(10 * var(--px)); min-width: 0; }
+.activity-label { font: 400 calc(14 * var(--px))/1.1 var(--code); color: var(--d-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.activity-value { font: 500 calc(20 * var(--px))/1 var(--sans); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.activity-bar { position: absolute; left: calc(58 * var(--px)); right: calc(22 * var(--px)); bottom: calc(10 * var(--px)); height: calc(3 * var(--px)); border-radius: calc(2 * var(--px)); background: color-mix(in srgb, var(--d-ink) 14%, transparent); overflow: hidden; }
+.activity-bar i { display: block; width: 0; height: 100%; background: var(--d-signal); }
+
+/* ---------- the orb: the live activities folded into one glass bead at a side ---------- */
+.activity-orb { position: absolute; left: 0; top: 0; width: calc(64 * var(--px)); height: calc(64 * var(--px)); border-radius: 50%; border: 0; padding: 0; background: transparent; color: var(--d-ink); display: grid; place-items: center; opacity: 0; pointer-events: none; touch-action: none; cursor: grab; }
+.activity-orb.is-live { pointer-events: auto; }
+.activity-orb > * { grid-area: 1 / 1; }
+.activity-orb .icon { font-size: calc(24 * var(--px)); }
+.orb-ring { width: 100%; height: 100%; transform: rotate(-90deg); }
+.orb-ring circle { fill: none; stroke-width: 2.5; }
+.orb-track { stroke: color-mix(in srgb, currentColor 16%, transparent); }
+.orb-fill { stroke: currentColor; stroke-dasharray: 100; stroke-dashoffset: 100; stroke-linecap: round; }
+.orb-pips { align-self: end; margin-bottom: calc(10 * var(--px)); display: flex; gap: calc(3 * var(--px)); }
+.orb-pips i { width: calc(4 * var(--px)); height: calc(4 * var(--px)); border-radius: 50%; background: currentColor; opacity: 0.7; }
+.activity-orb.is-soon .orb-fill { stroke: var(--d-amber-ink); }
+.activity-orb.is-alert { color: var(--d-on-signal); }
+.no-gl .activity-orb { background: color-mix(in srgb, var(--d-s2) 72%, transparent); backdrop-filter: blur(calc(16 * var(--px))); }
+.no-gl .cc:not([hidden]) { backdrop-filter: blur(calc(26 * var(--px))) saturate(0.7); }
+
+/* ---------- v7 apps: weather, calendar, appliances, plants ---------- */
+/* ---------- v7 apps: weather, calendar, appliances, plants ---------- */
+
+/* weather: now, seven days on one range, and the chosen day's hours. Bars are raster shapes on faint tracks. */
+.app[data-app="weather"] .wx-sun { margin-left: auto; padding-top: 0; }
+.app[data-app="weather"] .wx-grid { flex: 1; min-height: 0; margin-top: calc(14 * var(--px)); display: grid; grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr); grid-template-rows: minmax(0, 1fr) auto; gap: calc(14 * var(--px)); }
+.app[data-app="weather"] .tile { min-height: 0; }
+.app[data-app="weather"] .wx-hero { gap: 0; }
+.app[data-app="weather"] .wx-now { display: flex; align-items: center; justify-content: space-between; gap: calc(10 * var(--px)); margin-top: calc(10 * var(--px)); }
+.app[data-app="weather"] .wx-temp { font-size: calc(92 * var(--px)); }
+.app[data-app="weather"] .wx-now-icon { font-size: calc(64 * var(--px)); color: var(--d-dim); font-variation-settings: "FILL" 1, "wght" 400, "GRAD" 0, "opsz" 48; }
+.app[data-app="weather"] .wx-now-icon.is-sun { color: var(--d-amber-ink); }
+.app[data-app="weather"] .wx-cond { margin-top: calc(8 * var(--px)); font: 500 calc(22 * var(--px))/1.2 var(--sans); }
+.app[data-app="weather"] .wx-hero > .tile-label.num { margin-top: calc(4 * var(--px)); }
+.app[data-app="weather"] .wx-advice { margin-top: auto; display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: calc(10 * var(--px)); align-items: start; font-size: calc(15 * var(--px)); line-height: 1.4; }
+.app[data-app="weather"] .wx-advice .icon { font-size: calc(24 * var(--px)); }
+
+/* concentric: the week tile's 32 minus its 8 of padding */
+.app[data-app="weather"] .wx-week { padding: calc(8 * var(--px)); display: grid; grid-template-rows: repeat(7, minmax(0, 1fr)); gap: 0; }
+.app[data-app="weather"] .wx-day { border: 0; cursor: pointer; font: inherit; color: var(--d-ink); min-height: 0; border-radius: calc(24 * var(--px)); padding-inline: calc(14 * var(--px)); display: grid; grid-template-columns: calc(48 * var(--px)) calc(26 * var(--px)) calc(38 * var(--px)) calc(30 * var(--px)) minmax(0, 1fr) calc(30 * var(--px)); column-gap: calc(7 * var(--px)); align-items: center; text-align: left; font-size: calc(15 * var(--px)); }
+.app[data-app="weather"] .wx-day.is-on { --fill: var(--d-s2); }
+.app[data-app="weather"] .wx-day-icon { font-size: calc(24 * var(--px)); color: var(--d-dim); }
+.app[data-app="weather"] .wx-day-rain { font-size: calc(13 * var(--px)); color: var(--d-dim); }
+.app[data-app="weather"] .wx-day-lo { color: var(--d-dim); text-align: right; }
+.app[data-app="weather"] .wx-day-hi { text-align: right; }
+.app[data-app="weather"] .wx-range { position: relative; height: calc(8 * var(--px)); }
+.app[data-app="weather"] .wx-range-track { position: absolute; inset: 0; border-radius: calc(4 * var(--px)); --raster-fill: var(--d-s3); background: var(--raster-fill); }
+.app[data-app="weather"] .wx-range-bar { position: absolute; top: 0; bottom: 0; left: 0; width: 0; border-radius: calc(4 * var(--px)); --raster-fill: var(--d-ice); background: var(--raster-fill); }
+.app[data-app="weather"] .wx-range-now { position: absolute; top: calc(-3 * var(--px)); left: 0; width: calc(14 * var(--px)); height: calc(14 * var(--px)); margin-left: calc(-7 * var(--px)); border-radius: 50%; --raster-fill: var(--d-signal); background: var(--raster-fill); visibility: hidden; }
+.app[data-app="weather"] .wx-day.has-now .wx-range-now { visibility: visible; }
+
+.app[data-app="weather"] .wx-strip { grid-column: 1 / -1; padding: calc(18 * var(--px)) calc(22 * var(--px)); gap: 0; }
+.app[data-app="weather"] .wx-strip-head { display: flex; justify-content: space-between; align-items: center; }
+.app[data-app="weather"] .wx-key { display: inline-block; width: calc(10 * var(--px)); height: calc(10 * var(--px)); border-radius: calc(3 * var(--px)); --raster-fill: var(--d-ice); background: var(--raster-fill); }
+.app[data-app="weather"] .wx-hours { margin-top: calc(12 * var(--px)); display: grid; grid-template-columns: repeat(12, minmax(0, 1fr)); }
+.app[data-app="weather"] .wx-hour { display: grid; grid-template-rows: calc(20 * var(--px)) calc(72 * var(--px)) calc(18 * var(--px)) calc(26 * var(--px)); row-gap: calc(7 * var(--px)); justify-items: center; align-items: center; font-size: calc(13 * var(--px)); color: var(--d-dim); }
+.app[data-app="weather"] .wx-hour-temp { font-size: calc(15 * var(--px)); color: var(--d-ink); }
+.app[data-app="weather"] .wx-hour-bar { position: relative; width: calc(14 * var(--px)); height: 100%; }
+.app[data-app="weather"] .wx-bar-track { position: absolute; inset: 0; border-radius: calc(7 * var(--px)); --raster-fill: var(--d-s2); background: var(--raster-fill); }
+.app[data-app="weather"] .wx-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 0; border-radius: calc(7 * var(--px)); --raster-fill: var(--d-ice); background: var(--raster-fill); }
+/* now is a signal badge under its hour; the other hour labels keep a transparent shape */
+.app[data-app="weather"] .wx-hour-time { display: grid; place-items: center; min-width: calc(44 * var(--px)); height: calc(26 * var(--px)); padding-inline: calc(8 * var(--px)); border-radius: calc(13 * var(--px)); --raster-fill: transparent; background: var(--raster-fill); }
+.app[data-app="weather"] .wx-hour.is-now .wx-hour-time { --raster-fill: var(--d-signal); color: var(--d-on-signal); }
+/* In light, ice is a pale container, so the data takes its deep on-colour instead. */
+.device[data-tone="light"] .app[data-app="weather"] :is(.wx-bar, .wx-range-bar, .wx-key) { --raster-fill: var(--d-on-ice); }
+
+/* calendar: a week strip of live day chips over a gliding ice capsule, the day's agenda, and what is next */
+.app[data-app="calendar"] .tile { min-height: 0; }
+.app[data-app="calendar"] .cal-today { margin-left: auto; width: calc(150 * var(--px)); justify-content: center; }
+.app[data-app="calendar"] .cal-strip { position: relative; flex: none; margin-top: calc(12 * var(--px)); height: calc(116 * var(--px)); border-radius: calc(32 * var(--px)); overflow: hidden; touch-action: none; cursor: grab; }
+.app[data-app="calendar"] .cal-strip:focus-visible { outline: calc(3 * var(--px)) solid var(--d-signal); outline-offset: calc(3 * var(--px)); }
+/* concentric: the strip's 32 minus the capsule's 8 of inset */
+.app[data-app="calendar"] .cal-pick { position: absolute; left: 0; top: 0; width: 0; height: 0; border-radius: calc(24 * var(--px)); --fill: var(--d-ice); pointer-events: none; }
+.app[data-app="calendar"] .cal-track { position: absolute; top: 0; bottom: 0; left: -100%; width: 300%; display: grid; grid-template-columns: repeat(21, minmax(0, 1fr)); will-change: transform; }
+/* --on is how much of the capsule sits under a chip; its ink follows it there */
+.app[data-app="calendar"] .cal-chip { --on: 0; border: 0; padding: 0; background: transparent; cursor: pointer; font: inherit; margin: calc(8 * var(--px)) calc(5 * var(--px)); border-radius: calc(24 * var(--px)); display: grid; place-content: center; justify-items: center; gap: calc(5 * var(--px)); color: color-mix(in srgb, var(--d-on-ice) calc(var(--on) * 100%), var(--d-ink)); }
+.app[data-app="calendar"] .cal-wd { font-size: calc(14 * var(--px)); color: color-mix(in srgb, var(--d-on-ice) calc(var(--on) * 100%), var(--d-dim)); }
+.app[data-app="calendar"] .cal-date { font: 500 calc(32 * var(--px))/1 var(--sans); }
+.app[data-app="calendar"] .cal-chip.is-today .cal-date { color: var(--d-signal); }
+.app[data-app="calendar"] .cal-dots { display: flex; justify-content: center; gap: calc(4 * var(--px)); height: calc(6 * var(--px)); }
+.app[data-app="calendar"] .cal-dots i { width: calc(6 * var(--px)); height: calc(6 * var(--px)); border-radius: 50%; background: color-mix(in srgb, var(--d-on-ice) calc(var(--on) * 100%), var(--d-faint)); }
+.app[data-app="calendar"] .cal-body { flex: 1; min-height: 0; margin-top: calc(14 * var(--px)); display: grid; grid-template-rows: minmax(0, 1fr) auto; gap: calc(14 * var(--px)); }
+.app[data-app="calendar"] .cal-agenda { position: relative; padding: calc(20 * var(--px)) calc(24 * var(--px)); gap: 0; }
+.app[data-app="calendar"] .cal-agenda-head { display: flex; justify-content: space-between; align-items: baseline; gap: calc(12 * var(--px)); }
+.app[data-app="calendar"] .cal-day-title { font: 600 calc(22 * var(--px))/1.2 var(--sans); }
+.app[data-app="calendar"] .cal-rows { margin-top: calc(12 * var(--px)); display: grid; grid-template-rows: repeat(4, calc(54 * var(--px))); row-gap: calc(6 * var(--px)); }
+.app[data-app="calendar"] .cal-row { display: grid; grid-template-columns: calc(6 * var(--px)) calc(58 * var(--px)) minmax(0, 1fr) auto; column-gap: calc(14 * var(--px)); align-items: center; }
+.app[data-app="calendar"] .cal-row.is-empty { visibility: hidden; }
+.app[data-app="calendar"] .cal-bar { display: block; width: calc(6 * var(--px)); height: calc(42 * var(--px)); border-radius: calc(3 * var(--px)); --raster-fill: var(--d-dim); background: var(--raster-fill); }
+.app[data-app="calendar"] .cal-row[data-cal="home"] .cal-bar { --raster-fill: var(--d-amber); }
+.app[data-app="calendar"] .cal-row[data-cal="family"] .cal-bar { --raster-fill: var(--d-ice); }
+.app[data-app="calendar"] .cal-row[data-cal="health"] .cal-bar { --raster-fill: var(--d-leaf); }
+.device[data-tone="light"] .app[data-app="calendar"] .cal-row[data-cal="home"] .cal-bar { --raster-fill: var(--d-amber-ink); }
+.device[data-tone="light"] .app[data-app="calendar"] .cal-row[data-cal="family"] .cal-bar { --raster-fill: var(--d-on-ice); }
+.app[data-app="calendar"] .cal-time { font-size: calc(16 * var(--px)); }
+.app[data-app="calendar"] .cal-what { display: grid; gap: calc(3 * var(--px)); min-width: 0; }
+.app[data-app="calendar"] .cal-title { font: 500 calc(19 * var(--px))/1.15 var(--sans); white-space: nowrap; }
+.app[data-app="calendar"] :is(.cal-place, .cal-len) { font-size: calc(14 * var(--px)); color: var(--d-dim); white-space: nowrap; }
+.app[data-app="calendar"] .cal-empty { position: absolute; left: calc(24 * var(--px)); top: calc(96 * var(--px)); font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.app[data-app="calendar"] .cal-empty.is-hidden { visibility: hidden; }
+.app[data-app="calendar"] .cal-next { flex-direction: row; align-items: center; gap: calc(16 * var(--px)); padding: calc(18 * var(--px)) calc(24 * var(--px)); border: 0; font: inherit; color: var(--d-ink); text-align: left; cursor: pointer; }
+.app[data-app="calendar"] .cal-next > .icon { font-size: calc(32 * var(--px)); color: var(--d-dim); }
+.app[data-app="calendar"] .cal-next-text { flex: 1; min-width: 0; display: grid; gap: calc(4 * var(--px)); }
+.app[data-app="calendar"] .cal-next-title { font: 600 calc(22 * var(--px))/1.15 var(--sans); white-space: nowrap; }
+.app[data-app="calendar"] .cal-next-in { font: 300 calc(40 * var(--px))/1 var(--sans); letter-spacing: -0.02em; white-space: nowrap; }
+
+/* appliances: each cycle is a tonal fill clipped to its card, like a timer; the tip carries a Material switch */
+.app[data-app="appliances"] .ap-list { margin-top: calc(14 * var(--px)); display: grid; gap: calc(12 * var(--px)); }
+.app[data-app="appliances"] .ap-card { position: relative; overflow: hidden; height: calc(124 * var(--px)); border-radius: calc(30 * var(--px)); padding-inline: calc(24 * var(--px)) calc(18 * var(--px)); display: grid; grid-template-columns: calc(44 * var(--px)) minmax(0, 1fr) auto calc(66 * var(--px)); column-gap: calc(18 * var(--px)); align-items: center; }
+.app[data-app="appliances"] .ap-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; --fill: var(--d-s3); pointer-events: none; }
+.app[data-app="appliances"] .ap-card.is-done .ap-fill { --fill: var(--d-leaf-container); }
+.app[data-app="appliances"] .ap-icon { position: relative; font-size: calc(40 * var(--px)); color: var(--d-dim); }
+.app[data-app="appliances"] .ap-card.is-running .ap-icon { color: var(--d-ink); }
+.app[data-app="appliances"] .ap-card.is-done .ap-icon { color: var(--d-leaf); }
+.app[data-app="appliances"] :is(.ap-text, .ap-time) { position: relative; display: grid; gap: calc(6 * var(--px)); min-width: 0; }
+.app[data-app="appliances"] .ap-name { font: 600 calc(24 * var(--px))/1.1 var(--sans); }
+.app[data-app="appliances"] .ap-program { font-size: calc(15 * var(--px)); color: var(--d-dim); white-space: nowrap; }
+.app[data-app="appliances"] .ap-time { justify-items: end; }
+.app[data-app="appliances"] .ap-left { font: 300 calc(40 * var(--px))/1 var(--sans); letter-spacing: -0.02em; white-space: nowrap; }
+.app[data-app="appliances"] .ap-card:is(.is-paused, .is-idle) .ap-left { color: var(--d-dim); }
+.app[data-app="appliances"] .ap-card.is-done .ap-left { color: var(--d-leaf); }
+.app[data-app="appliances"] .ap-when { font-size: calc(14 * var(--px)); color: var(--d-dim); white-space: nowrap; }
+.app[data-app="appliances"] .ap-toggle { position: relative; --fill: var(--d-s2); }
+.app[data-app="appliances"] .ap-tip { margin-top: auto; border-radius: calc(30 * var(--px)); padding: calc(18 * var(--px)) calc(18 * var(--px)) calc(18 * var(--px)) calc(24 * var(--px)); display: grid; grid-template-columns: calc(40 * var(--px)) minmax(0, 1fr) auto; column-gap: calc(16 * var(--px)); align-items: center; }
+.app[data-app="appliances"] .ap-tip-icon { font-size: calc(34 * var(--px)); color: var(--d-leaf); }
+.app[data-app="appliances"] .ap-tip-text { display: grid; gap: calc(6 * var(--px)); min-width: 0; }
+.app[data-app="appliances"] .ap-tip-line { font: 500 calc(18 * var(--px))/1.3 var(--sans); }
+.app[data-app="appliances"] .ap-switch-wrap { display: grid; justify-items: end; gap: calc(8 * var(--px)); }
+.app[data-app="appliances"] .ap-switch-label { font-size: calc(14 * var(--px)); color: var(--d-dim); cursor: pointer; }
+.app[data-app="appliances"] .ap-switch-wrap.is-off .ap-switch-label { color: var(--d-faint); cursor: default; }
+/* the switch is concentric: its thumb is a circle inset the same distance from every edge of the capsule */
+.app[data-app="appliances"] .ap-switch { position: relative; border: 0; padding: 0; cursor: pointer; width: calc(104 * var(--px)); height: calc(60 * var(--px)); border-radius: calc(30 * var(--px)); --fill: var(--d-s3); touch-action: none; }
+.app[data-app="appliances"] .ap-switch[aria-checked="true"] { --fill: var(--d-ice); }
+.app[data-app="appliances"] .ap-switch:disabled { cursor: default; }
+.app[data-app="appliances"] .ap-thumb { position: absolute; left: 0; top: 0; width: 0; height: 0; border-radius: 50%; --fill: var(--d-faint); pointer-events: none; }
+.app[data-app="appliances"] .ap-switch[aria-checked="true"] .ap-thumb { --fill: var(--d-on-ice); }
+
+/* plants: moisture rises from the bottom of each card in a leaf container, like a dimmer */
+.app[data-app="plants"] .pl-grid { flex: 1; min-height: 0; margin-top: calc(14 * var(--px)); display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-template-rows: repeat(2, minmax(0, 1fr)); gap: calc(14 * var(--px)); }
+.app[data-app="plants"] .pl-card { position: relative; overflow: hidden; min-height: 0; border-radius: calc(32 * var(--px)); padding: calc(22 * var(--px)); display: flex; flex-direction: column; align-items: flex-start; }
+.app[data-app="plants"] .pl-fill { position: absolute; left: 0; right: 0; bottom: 0; height: 0; --fill: var(--d-leaf-container); pointer-events: none; }
+.app[data-app="plants"] .pl-top { position: relative; align-self: stretch; display: flex; justify-content: space-between; align-items: center; }
+.app[data-app="plants"] .pl-icon { font-size: calc(38 * var(--px)); color: var(--d-leaf); font-variation-settings: "FILL" 1, "wght" 400, "GRAD" 0, "opsz" 40; }
+.app[data-app="plants"] .pl-moist { font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.app[data-app="plants"] .pl-card.is-due .pl-moist { color: var(--d-signal); }
+.app[data-app="plants"] .pl-name { position: relative; margin-top: auto; font: 600 calc(24 * var(--px))/1.15 var(--sans); }
+.app[data-app="plants"] .pl-place { position: relative; margin-top: calc(4 * var(--px)); font-size: calc(14 * var(--px)); color: var(--d-dim); }
+.app[data-app="plants"] .pl-due { position: relative; margin-top: calc(10 * var(--px)); font-size: calc(15 * var(--px)); }
+.app[data-app="plants"] .pl-water { position: relative; margin-top: calc(14 * var(--px)); padding-inline: calc(18 * var(--px)) calc(22 * var(--px)); }
+.app[data-app="plants"] .pl-water.is-due { --fill: var(--d-signal); color: var(--d-on-signal); }
+.app[data-app="plants"] .pl-water.is-done .icon { color: var(--d-leaf); }
+
+/* ---------- v7 standby faces 8-11: flip clock, album, orrery, next up ---------- */
+/* ---------- standby: faces 8–11 (flip clock, album, orrery, next up) ---------- */
+/* Backgrounds, cards, the cover, planets and the day arc are drawn by faces2.glsl.js; these rules place the text. */
+.scape[data-scape="flip"] { top: 800%; }
+.scape[data-scape="album"] { top: 900%; }
+.scape[data-scape="orrery"] { top: 1000%; }
+.scape[data-scape="next"] { top: 1100%; }
+
+.face-top { position: absolute; left: calc(30 * var(--px)); right: calc(30 * var(--px)); top: calc(30 * var(--px)); display: flex; justify-content: space-between; align-items: center; font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.face-top .icon { font-size: calc(20 * var(--px)); margin-right: calc(8 * var(--px)); vertical-align: calc(-4 * var(--px)); }
+
+/* flip clock: the cards and their numerals are the shader's; this box only carries the time for assistive tech */
+.flip-cards { position: absolute; left: calc(44 * var(--px)); top: calc(108 * var(--px)); width: calc(632 * var(--px)); height: calc(336 * var(--px)); }
+
+/* album: the square sits at 180,50 (360 across); the track reads under it */
+.ambient-track { position: absolute; left: calc(60 * var(--px)); right: calc(60 * var(--px)); top: calc(436 * var(--px)); text-align: center; }
+.ambient-title { font: 600 calc(34 * var(--px))/1.1 var(--sans); letter-spacing: -0.01em; font-variation-settings: "wdth" 104; white-space: nowrap; }
+.ambient-by { font-size: calc(16 * var(--px)); color: var(--d-dim); margin-top: calc(8 * var(--px)); white-space: nowrap; }
+
+/* orrery: the date takes the orbit face's clock styles; the sun sits at 360,348 */
+.orrery-note { position: absolute; right: calc(30 * var(--px)); top: calc(40 * var(--px)); display: grid; gap: calc(8 * var(--px)); text-align: right; font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.orrery-note span:last-child { color: var(--d-faint); }
+
+/* next up: a day arc from midnight (40,368) over noon (360,296) to midnight (680,368) */
+.next-count { position: absolute; left: calc(30 * var(--px)); top: calc(70 * var(--px)); font: 250 calc(118 * var(--px))/0.9 var(--sans); letter-spacing: -0.04em; font-variation-settings: "wdth" 118, "ROND" 20; white-space: nowrap; }
+.next-unit { font: 300 calc(40 * var(--px))/1 var(--sans); letter-spacing: 0; color: var(--d-dim); margin: 0 calc(26 * var(--px)) 0 calc(10 * var(--px)); }
+.next-what { position: absolute; left: calc(30 * var(--px)); right: calc(30 * var(--px)); top: calc(194 * var(--px)); display: flex; align-items: baseline; gap: calc(16 * var(--px)); white-space: nowrap; }
+.next-title { font: 300 calc(40 * var(--px))/1.1 var(--sans); }
+.next-what .mono { font-size: calc(16 * var(--px)); color: var(--d-dim); }
+.next-hours span { position: absolute; width: calc(40 * var(--px)); margin-left: calc(-20 * var(--px)); text-align: center; font-size: calc(13 * var(--px)); color: var(--d-faint); }
+.next-hours span:nth-child(1) { left: calc(196 * var(--px)); top: calc(334 * var(--px)); }
+.next-hours span:nth-child(2) { left: calc(360 * var(--px)); top: calc(316 * var(--px)); }
+.next-hours span:nth-child(3) { left: calc(524 * var(--px)); top: calc(334 * var(--px)); }
+.next-tick { position: absolute; width: calc(12 * var(--px)); height: calc(12 * var(--px)); margin: calc(-6 * var(--px)) 0 0 calc(-6 * var(--px)); border-radius: 50%; --raster-fill: var(--d-dim); background: var(--raster-fill); }
+.next-tick.is-past { --raster-fill: var(--d-faint); }
+.next-tick.is-next { --raster-fill: var(--d-signal); }
+.next-rows { position: absolute; left: calc(30 * var(--px)); right: calc(30 * var(--px)); top: calc(404 * var(--px)); display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: calc(16 * var(--px)); }
+.next-row .mono { display: block; font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.next-row-title { display: block; margin-top: calc(4 * var(--px)); font: 500 calc(20 * var(--px))/1.2 var(--sans); color: var(--d-dim); white-space: nowrap; }
+.next-row.is-past .mono, .next-row.is-past .next-row-title { color: var(--d-faint); }
+.next-row.is-next .mono { color: var(--d-signal); }
+.next-row.is-next .next-row-title { color: var(--d-ink); }
+
+/* ---------- v7 deeper apps: energy, music, timers, shopping, settings ---------- */
+/* Bezel v7: styles for the deepened apps. Load after device.css. Sizes use the panel unit, --px. */
+
+/* ---------- energy: the next leaf, and looking back across the week ---------- */
+.energy-next { margin-top: calc(14 * var(--px)); display: grid; gap: calc(8 * var(--px)); }
+.energy-next-text { font-size: calc(15 * var(--px)); color: var(--d-dim); }
+.energy-next-track { position: relative; display: block; height: calc(6 * var(--px)); border-radius: calc(3 * var(--px)); --raster-fill: var(--d-s3); background: var(--raster-fill); }
+.energy-next-fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: calc(3 * var(--px)); --raster-fill: var(--d-leaf); background: var(--raster-fill); }
+.energy-week { touch-action: none; cursor: ew-resize; }
+.day-bar.is-scrub { --raster-fill: var(--d-ink); }
+
+/* ---------- music: the back of a sleeve, shuffle and repeat ---------- */
+.album-tracks {
+  position: absolute; left: 50%; top: 40%; width: calc(250 * var(--px)); height: calc(250 * var(--px));
+  margin: calc(-125 * var(--px)) 0 0 calc(-125 * var(--px)); padding: calc(20 * var(--px)) calc(20 * var(--px)) calc(16 * var(--px));
+  display: flex; flex-direction: column; gap: calc(10 * var(--px)); color: var(--d-ink);
+  opacity: 0; pointer-events: none; transform-origin: 50% 50%; will-change: transform, opacity;
+}
+.album-tracks-head { font-size: calc(13 * var(--px)); color: var(--d-dim); }
+.album-tracks-list { list-style: none; margin: 0; padding: 0; display: grid; gap: calc(7 * var(--px)); }
+.album-tracks-list li { display: grid; grid-template-columns: calc(22 * var(--px)) minmax(0, 1fr) auto; align-items: center; gap: calc(8 * var(--px)); font-size: calc(15 * var(--px)); line-height: calc(22 * var(--px)); }
+.album-tracks-list li.is-single .track-title { font-weight: 600; }
+.track-n, .track-len { font-size: calc(13 * var(--px)); color: var(--d-dim); }
+.track-n.icon { font-size: calc(18 * var(--px)); color: var(--d-signal); }
+.track-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.no-gl .album-tracks { background: var(--d-s2); }
+
+.album-actions { align-items: center; gap: calc(14 * var(--px)); }
+.album-toggle { border: 0; cursor: pointer; font: inherit; flex: none; width: calc(56 * var(--px)); height: calc(56 * var(--px)); border-radius: calc(28 * var(--px)); display: grid; place-items: center; color: var(--d-dim); --fill: var(--d-s2); }
+.album-toggle .icon { font-size: calc(26 * var(--px)); }
+.album-toggle[aria-pressed="true"] { --fill: var(--d-ice); color: var(--d-on-ice); border-radius: calc(18 * var(--px)); }
+
+/* ---------- timers: paused, and naming ---------- */
+.timer-row { cursor: pointer; }
+.timer-row button.timer-name { border: 0; margin: 0; padding: 0; background: none; cursor: pointer; justify-self: start; text-align: left; font-family: var(--code); font-weight: 400; font-size: calc(15 * var(--px)); line-height: 1.2; color: var(--d-dim); }
+.timer-row.is-target .timer-name { color: var(--d-ink); }
+.timer-row.is-paused .timer-fill { --fill: var(--d-s2); }
+.timer-row.is-paused .timer-left { color: var(--d-dim); }
+.timer-names { margin-top: calc(18 * var(--px)); display: flex; align-items: center; gap: calc(10 * var(--px)); }
+.timer-names-label { font-size: calc(15 * var(--px)); color: var(--d-dim); margin-right: calc(4 * var(--px)); }
+.timer-names .tonal { flex: 1; justify-content: center; padding-inline: calc(12 * var(--px)); }
+.timer-names .tonal.is-on { --fill: var(--d-ice); color: var(--d-on-ice); }
+
+/* ---------- shopping: swipe to delete, clear ticked ---------- */
+.notes-list { position: relative; }
+.note-item { touch-action: none; }
+/* while an item moves, the DOM draws it (household.js sets data-live), so CSS paints its fill */
+.gl .note-item[data-live] { background: var(--fill) !important; }
+.note-well { position: absolute; left: 0; top: 0; display: flex; align-items: center; justify-content: flex-end; padding-inline: calc(24 * var(--px)); border-radius: calc(24 * var(--px)); color: var(--d-dim); --fill: var(--d-s2); pointer-events: none; }
+.note-well .icon { font-size: calc(26 * var(--px)); }
+.note-well.is-armed { --fill: var(--d-signal); color: var(--d-on-signal); }
+.notes-clear { margin-left: auto; }
+
+/* ---------- settings: seven rows fit the panel; options answer on pointer-down ---------- */
+.app[data-app="settings"] .settings-list { gap: calc(8 * var(--px)); }
+.app[data-app="settings"] .setting { min-height: calc(72 * var(--px)); }
+.opt:active { transition-duration: 40ms; background: color-mix(in srgb, var(--d-ink) 12%, transparent); }
+.opt[aria-pressed="true"]:active { background: color-mix(in srgb, var(--d-ice) 82%, var(--d-on-ice)); }
+.opt-step { width: calc(56 * var(--px)); padding: 0; display: grid; place-items: center; color: var(--d-ink); }
+.opt-step .icon { font-size: calc(26 * var(--px)); }
+.opt-value { min-width: calc(84 * var(--px)); align-self: center; text-align: center; font-size: calc(15 * var(--px)); color: var(--d-ink); }

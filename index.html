@@ -1,0 +1,642 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bezel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Google+Sans+Code:wght@300..700&family=Google+Sans+Flex:opsz,wdth,wght,ROND@6..144,25..151,1..1000,0..100&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,300..600,0..1,0&icon_names=add,air,album,apps,arrow_back,bathtub,bed,bedtime,bolt,calendar_month,center_focus_strong,chair,check,checklist,chevron_left,chevron_right,cloud,coffee,dark_mode,delete,desk,dishwasher_gen,do_not_disturb_on,door_front,eco,energy_savings_leaf,event,forest,garage,garage_home,grass,groups,heat,home,humidity_percentage,kitchen,light_mode,lightbulb,local_florist,local_laundry_service,lock,lock_open,luggage,mode_cool,mode_heat,music_note,notifications,park,partly_cloudy_day,pause,pause_circle,planet,play_arrow,play_circle,potted_plant,power_settings_new,psychiatry,public,rainy,remove,repeat,restart_alt,schedule,settings,shield,shuffle,skip_next,skip_previous,spa,sunny,thermostat,thermostat_auto,thunderstorm,timer,today,train,umbrella,volume_up,water_drop,waving_hand,wb_twilight&display=block">
+<link rel="stylesheet" href="bezel.css">
+<link rel="stylesheet" href="device.css">
+</head>
+<body>
+<div class="page">
+  <header class="masthead">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1 class="brand-name">Bezel</h1>
+        <p class="brand-line">material structure · apple light · detent motion</p>
+      </div>
+    </div>
+    <div class="controls">
+      <div class="control">
+        <span class="control-label" id="tone-label">panel</span>
+        <div class="seg" id="tone" role="group" aria-labelledby="tone-label">
+          <button type="button" id="tone-dark" data-value="dark" aria-pressed="true">Dark</button>
+          <button type="button" id="tone-light" data-value="light" aria-pressed="false">Light</button>
+        </div>
+      </div>
+      <div class="control">
+        <span class="control-label" id="variant-label">glass</span>
+        <div class="seg" id="variant" role="group" aria-labelledby="variant-label">
+          <button type="button" id="variant-regular" data-value="regular" aria-pressed="true">Regular</button>
+          <button type="button" id="variant-clear" data-value="clear" aria-pressed="false">Clear</button>
+        </div>
+      </div>
+      <div class="control">
+        <span class="control-label" id="light-label">light</span>
+        <div class="seg" id="light" role="group" aria-labelledby="light-label">
+          <button type="button" id="light-pointer" data-value="pointer" aria-pressed="true">Pointer</button>
+          <button type="button" id="light-tilt" data-value="tilt" aria-pressed="false">Tilt</button>
+        </div>
+      </div>
+      <div class="control">
+        <span class="control-label" id="colour-label">colour</span>
+        <div class="seg" id="colour" role="group" aria-labelledby="colour-label">
+          <button type="button" id="colour-bezel" data-value="bezel" aria-pressed="true">Bezel</button>
+          <button type="button" id="colour-cover" data-value="cover" aria-pressed="false">Cover</button>
+          <button type="button" class="seed" id="colour-sage" data-value="#6f8f6a" aria-pressed="false" aria-label="Sage" style="--seed: #6f8f6a"></button>
+          <button type="button" class="seed" id="colour-iris" data-value="#6a6ff0" aria-pressed="false" aria-label="Iris" style="--seed: #6a6ff0"></button>
+          <button type="button" class="seed" id="colour-rose" data-value="#d0607e" aria-pressed="false" aria-label="Rose" style="--seed: #d0607e"></button>
+        </div>
+      </div>
+      <label class="check" for="calm"><input type="checkbox" id="calm"> Calm version</label>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="stage" aria-label="Live panel">
+      <div class="device" id="device" data-tone="dark">
+        <div class="device-case">
+          <div class="screen-holder">
+            <div class="screen" id="screen">
+              <canvas class="screen-canvas" id="canvas" aria-hidden="true"></canvas>
+              <div class="screens" id="screens">
+
+                <section class="scr" data-slot="0" aria-label="Overview">
+                  <div class="home-view">
+                    <div class="home-col" id="home-col">
+                      <div class="status mono"><span id="status-time">sun 13 sep · 18:42</span><span>18° partly cloudy</span></div>
+                      <div class="chips">
+                        <button type="button" class="chip surface" data-surface data-scene="meeting" aria-pressed="false"><span class="icon">groups</span><span class="mono">meeting</span></button>
+                        <button type="button" class="chip surface is-on" data-surface data-scene="coffee" aria-pressed="true"><span class="icon">coffee</span><span class="mono">coffee</span></button>
+                        <button type="button" class="chip surface" data-surface data-scene="focus" aria-pressed="false"><span class="icon">center_focus_strong</span><span class="mono">focus</span></button>
+                        <button type="button" class="chip surface" data-surface data-scene="away" aria-pressed="false"><span class="icon">luggage</span><span class="mono">away</span></button>
+                      </div>
+                      <div class="level" id="level" role="slider" tabindex="0" aria-label="Main light" aria-valuemin="0" aria-valuemax="100" aria-valuenow="72">
+                        <div class="level-seg level-on surface" id="level-on" data-surface data-ink data-clip="level"></div>
+                        <div class="level-seg level-off surface" id="level-off" data-surface data-clip="level"></div>
+                        <div class="level-handle surface" id="level-handle" data-surface></div>
+                        <div class="level-stop" id="level-stop" data-raster></div>
+                        <div class="level-label" id="level-label"><span class="icon">lightbulb</span><span class="mono">main</span></div>
+                        <div class="level-value mono num" id="level-value">72%</div>
+                      </div>
+                      <div class="tiles">
+                        <div class="tile surface" data-surface data-go="2">
+                          <div class="tile-label mono"><span class="icon">thermostat</span>living room</div>
+                          <div class="big num" id="climate-set">21.5°</div>
+                          <div class="tile-label mono">22.8° now</div>
+                          <div class="stepper">
+                            <button type="button" class="step surface" data-surface data-step="-0.5" aria-label="Cooler"><span class="icon">remove</span></button>
+                            <button type="button" class="step surface" data-surface data-step="0.5" aria-label="Warmer"><span class="icon">add</span></button>
+                          </div>
+                        </div>
+                        <div class="tile surface" data-surface data-go="4">
+                          <div class="tile-label mono">now playing</div>
+                          <div class="media">
+                            <div class="media-art" id="media-art" data-raster="image"></div>
+                            <div class="media-text">
+                              <div class="media-title" id="media-title">Low Orbit</div>
+                              <div class="media-by mono" id="media-by">harbor lights</div>
+                            </div>
+                          </div>
+                          <div class="stepper">
+                            <span class="tile-label mono">office speaker</span>
+                            <button type="button" class="fab surface" data-surface id="media-play" aria-label="Pause"><span class="icon">pause</span></button>
+                          </div>
+                        </div>
+                      </div>
+                      <div class="more">
+                        <div class="tile surface" data-surface>
+                          <div class="tile-label mono">hallway</div>
+                          <div class="big num" data-room="hallway">87%</div>
+                          <div class="meter surface" id="meter-1" data-surface><div class="meter-fill surface" data-surface data-room="hallway" data-clip="meter-1" style="width: 87%"></div></div>
+                        </div>
+                        <div class="tile surface" data-surface>
+                          <div class="tile-label mono">desk lamp</div>
+                          <div class="big num" data-room="office">40%</div>
+                          <div class="meter surface" id="meter-2" data-surface><div class="meter-fill surface" data-surface data-room="office" data-clip="meter-2" style="width: 40%"></div></div>
+                        </div>
+                        <div class="tile surface" data-surface>
+                          <div class="tile-label mono">humidity</div>
+                          <div class="big num">46%</div>
+                          <div class="meter surface" id="meter-3" data-surface><div class="meter-fill is-ice surface" data-surface data-clip="meter-3" style="width: 46%"></div></div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="scr" data-slot="1" aria-label="Rooms">
+                  <div class="page-view" id="rooms-view">
+                    <div class="page-head">
+                      <div><div class="page-title">rooms</div><div class="page-sub mono" id="rooms-sub">4 of 6 lit</div></div>
+                      <button type="button" class="tonal surface" data-surface id="all-off"><span class="icon">power_settings_new</span><span class="mono">all off</span></button>
+                    </div>
+                    <div class="rooms">
+                      <button type="button" class="room surface" data-surface id="room-living" data-level="0.72" aria-pressed="true"><span class="room-fill surface" data-surface data-clip="room-living"></span><span class="room-top"><span class="icon">chair</span><span class="room-state mono num">72%</span></span><span class="room-name">living room</span><span class="room-detail mono">3 lights</span></button>
+                      <button type="button" class="room surface" data-surface id="room-kitchen" data-level="0.8" aria-pressed="true"><span class="room-fill surface" data-surface data-clip="room-kitchen"></span><span class="room-top"><span class="icon">kitchen</span><span class="room-state mono num">80%</span></span><span class="room-name">kitchen</span><span class="room-detail mono">2 lights</span></button>
+                      <button type="button" class="room surface" data-surface id="room-bedroom" data-level="0" aria-pressed="false"><span class="room-fill surface" data-surface data-clip="room-bedroom"></span><span class="room-top"><span class="icon">bed</span><span class="room-state mono num">off</span></span><span class="room-name">bedroom</span><span class="room-detail mono">2 lights</span></button>
+                      <button type="button" class="room surface" data-surface id="room-office" data-level="0.4" aria-pressed="true"><span class="room-fill surface" data-surface data-clip="room-office"></span><span class="room-top"><span class="icon">desk</span><span class="room-state mono num">40%</span></span><span class="room-name">office</span><span class="room-detail mono">1 light</span></button>
+                      <button type="button" class="room surface" data-surface id="room-hallway" data-level="0.87" aria-pressed="true"><span class="room-fill surface" data-surface data-clip="room-hallway"></span><span class="room-top"><span class="icon">door_front</span><span class="room-state mono num">87%</span></span><span class="room-name">hallway</span><span class="room-detail mono">2 lights</span></button>
+                      <button type="button" class="room surface" data-surface id="room-bathroom" data-level="0" aria-pressed="false"><span class="room-fill surface" data-surface data-clip="room-bathroom"></span><span class="room-top"><span class="icon">bathtub</span><span class="room-state mono num">off</span></span><span class="room-name">bathroom</span><span class="room-detail mono">1 light</span></button>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="scr" data-slot="2" aria-label="Climate">
+                  <div class="page-view" id="climate-view">
+                    <div class="page-head">
+                      <div><div class="page-title">climate</div><div class="page-sub mono">living room · <span id="mode-text">heating</span></div></div>
+                      <div class="page-meta mono"><span class="icon">water_drop</span><span>46%</span><span class="icon">air</span><span>412 ppm</span></div>
+                    </div>
+                    <div class="dial" id="dial" role="slider" tabindex="0" aria-label="Set temperature" aria-valuemin="16" aria-valuemax="28" aria-valuenow="21.5">
+                      <div class="dial-caption mono" id="dial-caption">heating to</div>
+                      <div class="dial-value num" id="dial-value">21.5°</div>
+                      <div class="dial-now mono">now <span class="num">22.8°</span></div>
+                    </div>
+                    <div class="modes" role="group" aria-label="Mode">
+                      <button type="button" class="mode surface is-on" data-surface data-mode="heat" aria-pressed="true"><span class="icon">mode_heat</span><span class="mono">heat</span></button>
+                      <button type="button" class="mode surface" data-surface data-mode="cool" aria-pressed="false"><span class="icon">mode_cool</span><span class="mono">cool</span></button>
+                      <button type="button" class="mode surface" data-surface data-mode="auto" aria-pressed="false"><span class="icon">thermostat_auto</span><span class="mono">auto</span></button>
+                      <button type="button" class="mode surface" data-surface data-mode="off" aria-pressed="false"><span class="icon">power_settings_new</span><span class="mono">off</span></button>
+                    </div>
+                  </div>
+                  <div class="knob" id="knob" data-glass aria-hidden="true"></div>
+                </section>
+
+                <section class="scr" data-slot="3" aria-label="Today">
+                  <div class="page-view" id="today-view">
+                    <div class="page-head">
+                      <div><div class="page-title">today</div><div class="page-sub mono" data-clock="date">sunday 13 sep</div></div>
+                      <div class="page-meta mono"><span class="icon">partly_cloudy_day</span><span>18° · h 21° · l 12°</span></div>
+                    </div>
+                    <div class="today">
+                      <div class="tile surface" data-surface>
+                        <div class="tile-label mono">next hours</div>
+                        <div class="hours">
+                          <div class="hour"><span class="mono num">18°</span><i class="hour-bar is-now" data-raster style="height: 88%"></i><span class="mono">now</span></div>
+                          <div class="hour"><span class="mono num">17°</span><i class="hour-bar" data-raster style="height: 75%"></i><span class="mono" data-clock="hour" data-offset="1">19</span></div>
+                          <div class="hour"><span class="mono num">16°</span><i class="hour-bar" data-raster style="height: 63%"></i><span class="mono" data-clock="hour" data-offset="2">20</span></div>
+                          <div class="hour"><span class="mono num">15°</span><i class="hour-bar" data-raster style="height: 50%"></i><span class="mono" data-clock="hour" data-offset="3">21</span></div>
+                          <div class="hour"><span class="mono num">14°</span><i class="hour-bar" data-raster style="height: 38%"></i><span class="mono" data-clock="hour" data-offset="4">22</span></div>
+                          <div class="hour"><span class="mono num">14°</span><i class="hour-bar" data-raster style="height: 38%"></i><span class="mono" data-clock="hour" data-offset="5">23</span></div>
+                          <div class="hour"><span class="mono num">13°</span><i class="hour-bar" data-raster style="height: 25%"></i><span class="mono" data-clock="hour" data-offset="6">00</span></div>
+                          <div class="hour"><span class="mono num">12°</span><i class="hour-bar" data-raster style="height: 13%"></i><span class="mono" data-clock="hour" data-offset="7">01</span></div>
+                        </div>
+                      </div>
+                      <div class="tile surface" data-surface>
+                        <div class="tile-label mono"><span class="icon">event</span>tomorrow</div>
+                        <div class="agenda">
+                          <div class="agenda-row"><span class="mono num">08:15</span><span>school run</span></div>
+                          <div class="agenda-row"><span class="mono num">11:00</span><span>plumber · kitchen</span></div>
+                          <div class="agenda-row"><span class="mono num">19:30</span><span>dinner at mia's</span></div>
+                        </div>
+                      </div>
+                      <div class="tile surface" data-surface>
+                        <div class="tile-label mono"><span class="icon">train</span>departures</div>
+                        <div class="transit-row"><i class="badge badge-s1" data-raster>S1</i><span class="transit-to">city centre</span><b class="num" data-clock="depart" data-at="4">4</b><span class="mono">min</span></div>
+                        <div class="transit-row"><i class="badge badge-s2" data-raster>S2</i><span class="transit-to">airport</span><b class="num" data-clock="depart" data-at="11">11</b><span class="mono">min</span></div>
+                      </div>
+                      <button type="button" class="tile reminder-tile surface" data-surface id="reminder" aria-pressed="false">
+                        <span class="tile-label mono"><span class="icon" id="reminder-icon">delete</span>tonight</span>
+                        <span class="reminder">bins out</span>
+                        <span class="tile-label mono" id="reminder-when">recycling · by 19:00</span>
+                      </button>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="scr" data-slot="4" aria-label="Apps">
+                  <div class="page-view" id="apps-view">
+                    <div class="page-head">
+                      <div><div class="page-title">apps</div><div class="page-sub mono">fourteen on this panel</div></div>
+                      <div class="page-meta mono"><span class="icon">schedule</span><span data-clock="hm">18:42</span></div>
+                    </div>
+                    <div class="launcher">
+                      <button type="button" class="app-icon" data-live data-go="1" aria-label="Rooms"><span class="app-tile" style="--tile: var(--d-amber-container); --glyph: var(--d-amber-ink)"><span class="icon">lightbulb</span></span><span class="app-name">rooms</span></button>
+                      <button type="button" class="app-icon" data-live data-go="2" aria-label="Climate"><span class="app-tile" style="--tile: var(--d-s2); --glyph: var(--d-signal)"><span class="icon">thermostat</span></span><span class="app-name">climate</span></button>
+                      <button type="button" class="app-icon" data-live data-go="3" aria-label="Today"><span class="app-tile" style="--tile: var(--d-s2); --glyph: var(--d-ink)"><span class="icon">event</span></span><span class="app-name">today</span></button>
+                      <button type="button" class="app-icon" data-live data-app="weather" aria-label="Weather"><span class="app-tile" style="--tile: var(--d-ice); --glyph: var(--d-on-ice)"><span class="icon">partly_cloudy_day</span></span><span class="app-name">weather</span></button>
+                      <button type="button" class="app-icon" data-live data-app="calendar" aria-label="Calendar"><span class="app-tile" style="--tile: var(--d-s3); --glyph: var(--d-signal)"><span class="icon">calendar_month</span></span><span class="app-name">calendar</span></button>
+                      <button type="button" class="app-icon" data-live data-app="music" aria-label="Music"><span class="app-tile" style="--tile: var(--d-signal); --glyph: var(--d-on-signal)"><span class="icon">album</span></span><span class="app-name">music</span></button>
+                      <button type="button" class="app-icon" data-live data-app="energy" aria-label="Energy"><span class="app-tile" style="--tile: var(--d-leaf-container); --glyph: var(--d-leaf)"><span class="icon">eco</span></span><span class="app-name">energy</span></button>
+                      <button type="button" class="app-icon" data-live data-app="timers" aria-label="Timers"><span class="app-tile" style="--tile: var(--d-ice); --glyph: var(--d-on-ice)"><span class="icon">timer</span></span><span class="app-name">timers</span></button>
+                      <button type="button" class="app-icon" data-live data-app="security" aria-label="Security"><span class="app-tile" style="--tile: var(--d-s3); --glyph: var(--d-ink)"><span class="icon">shield</span></span><span class="app-name">security</span></button>
+                      <button type="button" class="app-icon" data-live data-app="notes" aria-label="Shopping"><span class="app-tile" style="--tile: var(--d-amber); --glyph: var(--d-on-amber)"><span class="icon">checklist</span></span><span class="app-name">shopping</span></button>
+                      <button type="button" class="app-icon" data-live data-app="appliances" aria-label="Appliances"><span class="app-tile" style="--tile: var(--d-s2); --glyph: var(--d-amber-ink)"><span class="icon">local_laundry_service</span></span><span class="app-name">appliances</span></button>
+                      <button type="button" class="app-icon" data-live data-app="plants" aria-label="Plants"><span class="app-tile" style="--tile: var(--d-leaf); --glyph: var(--d-leaf-container)"><span class="icon">potted_plant</span></span><span class="app-name">plants</span></button>
+                      <button type="button" class="app-icon" data-live data-go="6" aria-label="Standby"><span class="app-tile" style="--tile: var(--d-s2); --glyph: var(--d-dim)"><span class="icon">bedtime</span></span><span class="app-name">standby</span></button>
+                      <button type="button" class="app-icon" data-live data-app="settings" aria-label="Settings"><span class="app-tile" style="--tile: var(--d-s3); --glyph: var(--d-dim)"><span class="icon">settings</span></span><span class="app-name">settings</span></button>
+                    </div>
+                  </div>
+                </section>
+
+                <section class="scr" data-slot="5" aria-label="Now playing">
+                  <div class="play-view" id="play-view">
+                    <div class="np-head">
+                      <div>
+                        <div class="np-title" id="np-title">Low Orbit</div>
+                        <div class="np-by mono" id="np-by">harbor lights · low orbit</div>
+                      </div>
+                      <div class="tile-label mono">office speaker</div>
+                    </div>
+                    <div class="np-ring" id="np-ring" aria-hidden="true"></div>
+                    <div class="np-time mono num"><span id="np-elapsed">1:14</span><span id="np-left">−2:53</span></div>
+                  </div>
+                  <div class="transport" id="transport" data-glass>
+                    <button type="button" data-skip="-1" aria-label="Previous track"><span class="icon">skip_previous</span></button>
+                    <button type="button" class="play" id="np-play" aria-label="Pause"><span class="icon">pause</span></button>
+                    <button type="button" data-skip="1" aria-label="Next track"><span class="icon">skip_next</span></button>
+                  </div>
+                </section>
+
+                <section class="scr" data-slot="6" aria-label="Standby">
+                  <div class="scapes" id="scapes">
+                    <div class="scape" data-scape="orbit">
+                      <div class="amb-clock num" data-clock="hm">18:42</div>
+                      <div class="amb-date mono" data-clock="date">sunday 13 sep</div>
+                      <div class="amb-weather"><div class="big num">18°</div><div class="tile-label mono"><span class="icon">partly_cloudy_day</span>partly cloudy</div></div>
+                      <div class="transit mono">
+                        <span><i class="badge badge-s1" data-raster>S1</i><b class="num" data-clock="depart" data-at="4">4</b> min · <span data-clock="depart" data-at="4" data-nth="1">19</span></span>
+                        <span><i class="badge badge-s2" data-raster>S2</i><b class="num" data-clock="depart" data-at="11">11</b> min · <span data-clock="depart" data-at="11" data-nth="1">26</span></span>
+                      </div>
+                    </div>
+                    <div class="scape" data-scape="dots">
+                      <div class="dots-caption mono"><span data-clock="date">sunday 13 sep</span><span>18° partly cloudy</span></div>
+                    </div>
+                    <div class="scape" data-scape="dial">
+                      <div class="dial-top mono"><span data-clock="short">sun 13 sep</span><span>18° partly cloudy</span></div>
+                    </div>
+                    <div class="scape" data-scape="horizon">
+                      <div class="amb-clock num" data-clock="hm">18:42</div>
+                      <div class="amb-date mono" data-clock="date">sunday 13 sep</div>
+                      <div class="sun-times mono"><span>sunrise <b class="num">06:52</b></span><span>sunset <b class="num">19:31</b></span></div>
+                    </div>
+                    <div class="scape" data-scape="words">
+                      <div class="words" id="words" aria-label="Word clock"><div class="w-row"><i data-w="it">it</i>l<i data-w="is">is</i>asampm</div><div class="w-row">ac<i data-w="quarter">quarter</i>dc</div><div class="w-row"><i data-w="twenty">twenty</i><i data-w="five">five</i>x</div><div class="w-row"><i data-w="half">half</i>s<i data-w="ten">ten</i>f<i data-w="to">to</i></div><div class="w-row"><i data-w="past">past</i>eru<i data-w="h9">nine</i></div><div class="w-row"><i data-w="h1">one</i><i data-w="h6">six</i><i data-w="h3">three</i></div><div class="w-row"><i data-w="h4">four</i><i data-w="h5">five</i><i data-w="h2">two</i></div><div class="w-row"><i data-w="h8">eight</i><i data-w="h11">eleven</i></div><div class="w-row"><i data-w="h7">seven</i><i data-w="h12">twelve</i></div><div class="w-row"><i data-w="h10">ten</i>se<i data-w="oclock">oclock</i></div></div>
+                    </div>
+                    <div class="scape" data-scape="world">
+                      <div class="world-top mono"><span data-clock="short">sun 13 sep</span><span>four cities</span></div>
+                      <div class="cities"><div class="city"><div class="city-name mono">here</div><div class="city-time num" data-city="local">18:42</div><div class="city-diff mono" data-city-diff="local">here</div></div><div class="city"><div class="city-name mono">london</div><div class="city-time num" data-city="Europe/London">18:42</div><div class="city-diff mono" data-city-diff="Europe/London">here</div></div><div class="city"><div class="city-name mono">new york</div><div class="city-time num" data-city="America/New_York">18:42</div><div class="city-diff mono" data-city-diff="America/New_York">here</div></div><div class="city"><div class="city-name mono">tokyo</div><div class="city-time num" data-city="Asia/Tokyo">18:42</div><div class="city-diff mono" data-city-diff="Asia/Tokyo">here</div></div></div>
+                    </div>
+                    <div class="scape" data-scape="moon">
+                      <div class="moon-text"><div class="moon-phase" id="moon-phase">waxing gibbous</div><div class="moon-lit mono" id="moon-lit">82% lit · full moon in 3 days</div></div>
+                    </div>
+                    <div class="scape" data-scape="tree">
+                      <div class="tree-top"><div class="amb-date mono" data-clock="date">sunday 13 sep</div><div class="tree-day" id="tree-day">day 12 of growing</div></div>
+                      <div class="tree-note mono" id="tree-note">3.4 kWh saved today</div>
+                    </div>
+                    <div class="scape" data-scape="flip">
+                      <div class="face-top mono"><span data-clock="date">sunday 13 sep</span><span>18° partly cloudy</span></div>
+                      <div class="flip-cards" role="img" aria-label="18:42" data-flip></div>
+                    </div>
+                    <div class="scape" data-scape="album">
+                      <div class="face-top mono"><span><span class="icon">music_note</span>office speaker</span><span data-clock="hm">18:42</span></div>
+                      <div class="ambient-track">
+                        <div class="ambient-title" data-np="title">Low Orbit</div>
+                        <div class="ambient-by mono" data-np="by">harbor lights · low orbit</div>
+                      </div>
+                    </div>
+                    <div class="scape" data-scape="orrery">
+                      <div class="amb-clock num" data-orrery="day">13</div>
+                      <div class="amb-date mono" data-orrery="month">sunday · september</div>
+                      <div class="orrery-note mono"><span data-orrery="namesake">day of the sun</span><span>a mercury year a minute</span></div>
+                    </div>
+                    <div class="scape" data-scape="next">
+                      <div class="face-top mono"><span><span class="icon">event</span>next up</span><span data-clock="short">sun 13 sep</span></div>
+                      <div class="next-count" data-next="count" aria-label="school run in 9 hours 12 minutes"><span class="num" data-next="h">9</span><span class="next-unit" data-next="hu">h</span><span class="num" data-next="m">12</span><span class="next-unit" data-next="mu">min</span></div>
+                      <div class="next-what"><span class="next-title" data-next="title">school run</span><span class="mono" data-next="when">tomorrow · 08:15</span></div>
+                      <div class="next-hours mono" aria-hidden="true"><span>06</span><span>12</span><span>18</span></div>
+                      <div class="next-ticks" data-next="ticks" aria-hidden="true"></div>
+                      <div class="next-rows">
+                        <div class="next-row" data-at="08:15"><span class="mono num">08:15</span><span class="next-row-title">school run</span></div>
+                        <div class="next-row" data-at="11:00"><span class="mono num">11:00</span><span class="next-row-title">plumber · kitchen</span></div>
+                        <div class="next-row" data-at="19:30"><span class="mono num">19:30</span><span class="next-row-title">dinner at mia's</span></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="scape-index" id="scape-index" aria-hidden="true"><i class="is-on"></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div>
+                  <div class="amb-actions">
+                    <button type="button" class="pill" id="pill-back" data-glass aria-pressed="false"><span class="icon">waving_hand</span><span class="mono">we're back</span></button>
+                    <button type="button" class="pill" id="pill-out" data-glass aria-pressed="false"><span class="icon">luggage</span><span class="mono">we're out</span></button>
+                  </div>
+                </section>
+
+              </div>
+              <div class="app-layer" id="app-layer" hidden>
+                <section class="app" data-app="music" hidden aria-label="Music">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">music</div><div class="page-sub mono">eight albums · office speaker</div></div></div>
+                  <div class="coverflow" id="coverflow" role="listbox" tabindex="0" aria-label="Albums"><div class="album-tracks" id="album-tracks" data-live aria-hidden="true"><div class="album-tracks-head mono" id="album-tracks-head"></div><ol class="album-tracks-list" id="album-tracks-list"></ol></div></div>
+                  <div class="album-meta"><div class="album-title" id="album-title">Low Orbit</div><div class="album-by mono" id="album-by">harbor lights · 2026</div></div>
+                  <div class="album-actions"><button type="button" class="album-toggle surface" data-surface id="album-shuffle" aria-pressed="false" aria-label="Shuffle"><span class="icon">shuffle</span></button><button type="button" class="tonal surface" data-surface id="album-play"><span class="icon">play_arrow</span><span class="mono">play album</span></button><button type="button" class="album-toggle surface" data-surface id="album-repeat" aria-pressed="false" aria-label="Repeat"><span class="icon">repeat</span></button></div>
+                </section>
+                <section class="app" data-app="energy" hidden aria-label="Energy">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">energy</div><div class="page-sub mono" id="energy-sub">your tree grows on what you save</div></div></div>
+                  <div class="tree-stage" id="tree-stage" aria-label="Your tree"></div>
+                  <div class="energy-side">
+                    <div class="tile-label mono"><span class="icon">bolt</span>saved today</div>
+                    <div class="big num" id="energy-saved">3.4 kWh</div>
+                    <div class="tile-label mono" id="energy-usual">11.2 kWh on a usual sunday</div>
+                    <div class="energy-rows">
+                      <div class="energy-row"><span class="mono">lights</span><b class="num" id="save-lights">1.6</b></div>
+                      <div class="energy-row"><span class="mono">heating</span><b class="num" id="save-heat">1.4</b></div>
+                      <div class="energy-row"><span class="mono">standby power</span><b class="num" id="save-standby">0.4</b></div>
+                    </div>
+                    <div class="energy-next"><div class="energy-next-text mono" id="energy-next-text">next leaf in 0.6 kWh</div><div class="energy-next-track" id="energy-next-track" data-raster><i class="energy-next-fill" id="energy-next-fill" data-raster></i></div></div>
+                    <div class="energy-week" id="energy-week"><div class="day"><i class="day-bar" data-raster style="height: 50%"></i><span class="mono">m</span></div><div class="day"><i class="day-bar" data-raster style="height: 50%"></i><span class="mono">t</span></div><div class="day"><i class="day-bar" data-raster style="height: 50%"></i><span class="mono">w</span></div><div class="day"><i class="day-bar" data-raster style="height: 50%"></i><span class="mono">t</span></div><div class="day"><i class="day-bar" data-raster style="height: 50%"></i><span class="mono">f</span></div><div class="day"><i class="day-bar" data-raster style="height: 50%"></i><span class="mono">s</span></div><div class="day"><i class="day-bar" data-raster style="height: 50%"></i><span class="mono">s</span></div></div>
+                    <div class="tile-label mono" id="energy-streak">12 days in a row</div>
+                  </div>
+                </section>
+                <section class="app" data-app="timers" hidden aria-label="Timers">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">timers</div><div class="page-sub mono" id="timers-sub">none running</div></div></div>
+                  <div class="timer-presets"><button type="button" class="tonal surface" data-surface data-add="60"><span class="icon">add</span><span class="mono">1 min</span></button><button type="button" class="tonal surface" data-surface data-add="180"><span class="icon">add</span><span class="mono">3 min</span></button><button type="button" class="tonal surface" data-surface data-add="300"><span class="icon">add</span><span class="mono">5 min</span></button><button type="button" class="tonal surface" data-surface data-add="600"><span class="icon">add</span><span class="mono">10 min</span></button></div>
+                  <div class="timer-list"><div class="timer-row surface" data-surface id="timer-0" hidden><span class="timer-fill surface" data-surface data-clip="timer-0"></span><button type="button" class="timer-name mono" aria-label="Name this timer">timer</button><span class="timer-left num">0:00</span><button type="button" class="step surface" data-surface data-more aria-label="One more minute"><span class="icon">add</span></button><button type="button" class="step surface" data-surface data-remove aria-label="Remove timer"><span class="icon">delete</span></button></div><div class="timer-row surface" data-surface id="timer-1" hidden><span class="timer-fill surface" data-surface data-clip="timer-1"></span><button type="button" class="timer-name mono" aria-label="Name this timer">timer</button><span class="timer-left num">0:00</span><button type="button" class="step surface" data-surface data-more aria-label="One more minute"><span class="icon">add</span></button><button type="button" class="step surface" data-surface data-remove aria-label="Remove timer"><span class="icon">delete</span></button></div><div class="timer-row surface" data-surface id="timer-2" hidden><span class="timer-fill surface" data-surface data-clip="timer-2"></span><button type="button" class="timer-name mono" aria-label="Name this timer">timer</button><span class="timer-left num">0:00</span><button type="button" class="step surface" data-surface data-more aria-label="One more minute"><span class="icon">add</span></button><button type="button" class="step surface" data-surface data-remove aria-label="Remove timer"><span class="icon">delete</span></button></div></div>
+                  <div class="timer-names" id="timer-names" hidden><span class="timer-names-label mono">name</span><button type="button" class="tonal surface" data-surface data-timer-name="tea" aria-pressed="false"><span class="mono">tea</span></button><button type="button" class="tonal surface" data-surface data-timer-name="eggs" aria-pressed="false"><span class="mono">eggs</span></button><button type="button" class="tonal surface" data-surface data-timer-name="pasta" aria-pressed="false"><span class="mono">pasta</span></button><button type="button" class="tonal surface" data-surface data-timer-name="rice" aria-pressed="false"><span class="mono">rice</span></button><button type="button" class="tonal surface" data-surface data-timer-name="bread" aria-pressed="false"><span class="mono">bread</span></button></div>
+                  <div class="timer-empty mono" id="timer-empty">add a timer; it keeps running in the island when you leave</div>
+                </section>
+                <section class="app" data-app="security" hidden aria-label="Security">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">security</div><div class="page-sub mono" id="security-sub">all doors locked</div></div></div>
+                  <div class="lock-card surface" data-surface>
+                    <div class="lock-head"><span class="icon" id="lock-icon">lock</span><div><div class="lock-name">front door</div><div class="lock-state mono" id="lock-state">locked</div></div></div>
+                    <div class="lock-track surface" data-surface id="lock-track"><span class="lock-hint mono" id="lock-hint">slide to unlock</span><span class="lock-knob" id="lock-knob" data-glass aria-hidden="true"></span></div>
+                  </div>
+                  <div class="alarm modes" role="group" aria-label="Alarm"><button type="button" class="mode surface" data-surface data-alarm="off" aria-pressed="false"><span class="icon">power_settings_new</span><span class="mono">off</span></button><button type="button" class="mode surface is-on" data-surface data-alarm="home" aria-pressed="true"><span class="icon">home</span><span class="mono">home</span></button><button type="button" class="mode surface" data-surface data-alarm="away" aria-pressed="false"><span class="icon">luggage</span><span class="mono">away</span></button></div>
+                  <div class="events" id="events"><div class="event-row"><span class="mono num">17:12</span><span>front door unlocked · mia</span></div><div class="event-row"><span class="mono num">08:03</span><span>garage closed</span></div><div class="event-row"><span class="mono num">07:58</span><span>alarm set to home</span></div></div>
+                </section>
+                <section class="app" data-app="notes" hidden aria-label="Shopping">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">shopping</div><div class="page-sub mono" id="notes-sub">4 to get</div></div><button type="button" class="tonal surface notes-clear" data-surface id="notes-clear" hidden><span class="icon">delete</span><span class="mono">clear ticked</span></button></div>
+                  <div class="notes-list"><div class="note-well surface" data-surface id="note-well" hidden aria-hidden="true"><span class="icon">delete</span></div><button type="button" class="note-item surface" data-surface aria-pressed="false"><span class="icon">check</span><span class="note-text">oat milk</span></button><button type="button" class="note-item surface" data-surface aria-pressed="false"><span class="icon">check</span><span class="note-text">lemons</span></button><button type="button" class="note-item surface" data-surface aria-pressed="false"><span class="icon">check</span><span class="note-text">rye bread</span></button><button type="button" class="note-item surface" data-surface aria-pressed="false"><span class="icon">check</span><span class="note-text">dish soap</span></button><button type="button" class="note-item surface" data-surface aria-pressed="false" hidden><span class="icon">check</span><span class="note-text"></span></button><button type="button" class="note-item surface" data-surface aria-pressed="false" hidden><span class="icon">check</span><span class="note-text"></span></button><button type="button" class="note-item surface" data-surface aria-pressed="false" hidden><span class="icon">check</span><span class="note-text"></span></button></div>
+                  <div class="quick-add"><button type="button" class="chip-add tonal surface" data-surface data-item="eggs"><span class="icon">add</span><span class="mono">eggs</span></button><button type="button" class="chip-add tonal surface" data-surface data-item="coffee beans"><span class="icon">add</span><span class="mono">coffee beans</span></button><button type="button" class="chip-add tonal surface" data-surface data-item="apples"><span class="icon">add</span><span class="mono">apples</span></button></div>
+                </section>
+                <section class="app" data-app="settings" hidden aria-label="Settings">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">settings</div><div class="page-sub mono">this panel</div></div></div>
+                  <div class="settings-list">
+                    <div class="setting surface" data-surface><span class="setting-name">colour</span><span class="setting-options" data-setting="colour"><button type="button" class="opt" data-value="bezel">bezel</button><button type="button" class="opt" data-value="cover">cover</button><button type="button" class="opt" data-value="#6f8f6a">sage</button><button type="button" class="opt" data-value="#6a6ff0">iris</button></span></div>
+                    <div class="setting surface" data-surface><span class="setting-name">panel</span><span class="setting-options" data-setting="tone"><button type="button" class="opt" data-value="dark">dark</button><button type="button" class="opt" data-value="light">light</button></span></div>
+                    <div class="setting surface" data-surface><span class="setting-name">dock hides</span><span class="setting-options" data-setting="idle"><button type="button" class="opt" data-value="4000">after 4 s</button><button type="button" class="opt" data-value="10000">after 10 s</button><button type="button" class="opt" data-value="0">never</button></span></div>
+                    <div class="setting surface" data-surface><span class="setting-name">calm version</span><span class="setting-options" data-setting="calm"><button type="button" class="opt" data-value="off">off</button><button type="button" class="opt" data-value="on">on</button></span></div>
+                    <div class="setting surface" data-surface><span class="setting-name">standby face</span><span class="setting-options setting-picker" data-setting="standbyFace"><button type="button" class="opt opt-step" data-step="-1" aria-label="Previous standby face"><span class="icon">chevron_left</span></button><span class="opt-value mono" data-value-label aria-live="polite">orbit</span><button type="button" class="opt opt-step" data-step="1" aria-label="Next standby face"><span class="icon">chevron_right</span></button></span></div>
+                    <div class="setting surface" data-surface><span class="setting-name">quiet</span><span class="setting-options" data-setting="quiet"><button type="button" class="opt" data-value="off">off</button><button type="button" class="opt" data-value="on">on</button></span></div>
+                    <div class="setting surface" data-surface><span class="setting-name">standby after 2 min idle</span><span class="setting-options" data-setting="autoStandby"><button type="button" class="opt" data-value="off">off</button><button type="button" class="opt" data-value="on">on</button></span></div>
+                  </div>
+                </section>
+                <section class="app" data-app="weather" hidden aria-label="Weather">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">weather</div><div class="page-sub mono" id="wx-sub">home · updated 18:40</div></div><div class="page-meta mono wx-sun"><span class="icon">wb_twilight</span><span class="num">06:52 · 19:31</span></div></div>
+                  <div class="wx-grid">
+                    <div class="tile wx-hero surface" data-surface>
+                      <div class="tile-label mono">now · home</div>
+                      <div class="wx-now"><div class="big num wx-temp" id="wx-now-temp">18°</div><span class="icon wx-now-icon is-sun" id="wx-now-icon">partly_cloudy_day</span></div>
+                      <div class="wx-cond" id="wx-now-cond">partly cloudy</div>
+                      <div class="tile-label mono num" id="wx-now-range">h 21° · l 12°</div>
+                      <div class="wx-advice" id="wx-advice"><span class="icon" id="wx-advice-icon">umbrella</span><span class="mono" id="wx-advice-text">rain from 21:00 · take an umbrella</span></div>
+                    </div>
+                    <div class="tile wx-week surface" data-surface role="group" aria-label="Seven days">
+                      <button type="button" class="wx-day surface is-on" data-surface data-day="0" aria-pressed="true"><span class="wx-day-name mono">today</span><span class="icon wx-day-icon">partly_cloudy_day</span><span class="wx-day-rain mono num">70%</span><span class="wx-day-lo mono num">12°</span><span class="wx-range"><i class="wx-range-track" data-raster></i><i class="wx-range-bar" data-raster></i><i class="wx-range-now" data-raster></i></span><span class="wx-day-hi mono num">21°</span></button>
+                      <button type="button" class="wx-day surface" data-surface data-day="1" aria-pressed="false"><span class="wx-day-name mono">mon</span><span class="icon wx-day-icon">rainy</span><span class="wx-day-rain mono num">80%</span><span class="wx-day-lo mono num">11°</span><span class="wx-range"><i class="wx-range-track" data-raster></i><i class="wx-range-bar" data-raster></i><i class="wx-range-now" data-raster></i></span><span class="wx-day-hi mono num">17°</span></button>
+                      <button type="button" class="wx-day surface" data-surface data-day="2" aria-pressed="false"><span class="wx-day-name mono">tue</span><span class="icon wx-day-icon">cloud</span><span class="wx-day-rain mono num">30%</span><span class="wx-day-lo mono num">10°</span><span class="wx-range"><i class="wx-range-track" data-raster></i><i class="wx-range-bar" data-raster></i><i class="wx-range-now" data-raster></i></span><span class="wx-day-hi mono num">16°</span></button>
+                      <button type="button" class="wx-day surface" data-surface data-day="3" aria-pressed="false"><span class="wx-day-name mono">wed</span><span class="icon wx-day-icon">partly_cloudy_day</span><span class="wx-day-rain mono num"></span><span class="wx-day-lo mono num">9°</span><span class="wx-range"><i class="wx-range-track" data-raster></i><i class="wx-range-bar" data-raster></i><i class="wx-range-now" data-raster></i></span><span class="wx-day-hi mono num">19°</span></button>
+                      <button type="button" class="wx-day surface" data-surface data-day="4" aria-pressed="false"><span class="wx-day-name mono">thu</span><span class="icon wx-day-icon">sunny</span><span class="wx-day-rain mono num"></span><span class="wx-day-lo mono num">11°</span><span class="wx-range"><i class="wx-range-track" data-raster></i><i class="wx-range-bar" data-raster></i><i class="wx-range-now" data-raster></i></span><span class="wx-day-hi mono num">23°</span></button>
+                      <button type="button" class="wx-day surface" data-surface data-day="5" aria-pressed="false"><span class="wx-day-name mono">fri</span><span class="icon wx-day-icon">sunny</span><span class="wx-day-rain mono num"></span><span class="wx-day-lo mono num">13°</span><span class="wx-range"><i class="wx-range-track" data-raster></i><i class="wx-range-bar" data-raster></i><i class="wx-range-now" data-raster></i></span><span class="wx-day-hi mono num">24°</span></button>
+                      <button type="button" class="wx-day surface" data-surface data-day="6" aria-pressed="false"><span class="wx-day-name mono">sat</span><span class="icon wx-day-icon">thunderstorm</span><span class="wx-day-rain mono num">60%</span><span class="wx-day-lo mono num">14°</span><span class="wx-range"><i class="wx-range-track" data-raster></i><i class="wx-range-bar" data-raster></i><i class="wx-range-now" data-raster></i></span><span class="wx-day-hi mono num">20°</span></button>
+                    </div>
+                    <div class="tile wx-strip surface" data-surface>
+                      <div class="wx-strip-head"><span class="tile-label mono" id="wx-strip-label"><span class="icon">schedule</span><span id="wx-strip-text">next 12 hours</span></span><span class="tile-label mono"><i class="wx-key" data-raster></i>rain chance</span></div>
+                      <div class="wx-hours" id="wx-hours">
+                        <div class="wx-hour is-now"><span class="wx-hour-temp mono num">18°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num"></span><span class="wx-hour-time mono num" data-raster>now</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">17°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">20%</span><span class="wx-hour-time mono num" data-raster>19</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">16°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">40%</span><span class="wx-hour-time mono num" data-raster>20</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">15°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">60%</span><span class="wx-hour-time mono num" data-raster>21</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">14°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">70%</span><span class="wx-hour-time mono num" data-raster>22</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">14°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">70%</span><span class="wx-hour-time mono num" data-raster>23</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">13°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">60%</span><span class="wx-hour-time mono num" data-raster>00</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">12°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">60%</span><span class="wx-hour-time mono num" data-raster>01</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">12°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">50%</span><span class="wx-hour-time mono num" data-raster>02</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">11°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">50%</span><span class="wx-hour-time mono num" data-raster>03</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">11°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">60%</span><span class="wx-hour-time mono num" data-raster>04</span></div>
+                        <div class="wx-hour"><span class="wx-hour-temp mono num">11°</span><span class="wx-hour-bar"><i class="wx-bar-track" data-raster></i><i class="wx-bar" data-raster></i></span><span class="wx-hour-rain mono num">70%</span><span class="wx-hour-time mono num" data-raster>05</span></div>
+                      </div>
+                    </div>
+                  </div>
+                </section>
+                <section class="app" data-app="calendar" hidden aria-label="Calendar">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">calendar</div><div class="page-sub mono" id="cal-sub">september 2026 · week 37</div></div><button type="button" class="tonal surface cal-today" data-surface id="cal-today" disabled><span class="icon">today</span><span class="mono">today</span></button></div>
+                  <div class="cal-strip surface" data-surface id="cal-strip" role="group" tabindex="0" aria-label="Week. Swipe for another week; arrow keys change the day.">
+                    <span class="cal-pick surface" data-surface data-clip="cal-strip" id="cal-ghost" aria-hidden="true"></span>
+                    <span class="cal-pick surface" data-surface data-clip="cal-strip" id="cal-pick" aria-hidden="true"></span>
+                    <div class="cal-track" id="cal-track" data-live></div>
+                  </div>
+                  <div class="cal-body">
+                    <div class="tile cal-agenda surface" data-surface id="cal-agenda">
+                      <div class="cal-agenda-head"><span class="cal-day-title" id="cal-day-title">sunday 13 september</span><span class="tile-label mono" id="cal-day-count">today · 2 events</span></div>
+                      <div class="cal-rows" id="cal-rows">
+                        <div class="cal-row" data-cal="family"><i class="cal-bar" data-raster></i><span class="cal-time mono num">11:00</span><span class="cal-what"><span class="cal-title">brunch</span><span class="cal-place mono">at home</span></span><span class="cal-len mono num">1 h 30</span></div>
+                        <div class="cal-row" data-cal="home"><i class="cal-bar" data-raster></i><span class="cal-time mono num">19:00</span><span class="cal-what"><span class="cal-title">bins out</span><span class="cal-place mono">recycling</span></span><span class="cal-len mono num">30 min</span></div>
+                        <div class="cal-row is-empty"><i class="cal-bar" data-raster></i><span class="cal-time mono num">00:00</span><span class="cal-what"><span class="cal-title">free</span><span class="cal-place mono">free</span></span><span class="cal-len mono num">0 min</span></div>
+                        <div class="cal-row is-empty"><i class="cal-bar" data-raster></i><span class="cal-time mono num">00:00</span><span class="cal-what"><span class="cal-title">free</span><span class="cal-place mono">free</span></span><span class="cal-len mono num">0 min</span></div>
+                      </div>
+                      <div class="cal-empty mono is-hidden" id="cal-empty">nothing planned · a free day</div>
+                    </div>
+                    <button type="button" class="tile cal-next surface" data-surface id="cal-next"><span class="icon">notifications</span><span class="cal-next-text"><span class="tile-label mono" id="cal-next-when">next up · today 19:00</span><span class="cal-next-title" id="cal-next-title">bins out · recycling</span></span><span class="cal-next-in num" id="cal-next-in">in 18 min</span></button>
+                  </div>
+                </section>
+                <section class="app" data-app="appliances" hidden aria-label="Appliances">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">appliances</div><div class="page-sub mono" id="ap-sub">1 running · washer done at 19:20</div></div></div>
+                  <div class="ap-list">
+                    <div class="ap-card surface is-running" data-surface id="ap-washer"><span class="ap-fill surface" data-surface data-clip="ap-washer"></span><span class="icon ap-icon">local_laundry_service</span><span class="ap-text"><span class="ap-name">washer</span><span class="ap-program mono">cotton 40° · spin</span></span><span class="ap-time"><span class="ap-left num">38 min</span><span class="ap-when mono num">done at 19:20</span></span><button type="button" class="step surface ap-toggle" data-surface aria-label="Pause the washer"><span class="icon">pause</span></button></div>
+                    <div class="ap-card surface is-idle" data-surface id="ap-dryer"><span class="ap-fill surface" data-surface data-clip="ap-dryer"></span><span class="icon ap-icon">heat</span><span class="ap-text"><span class="ap-name">dryer</span><span class="ap-program mono">cotton dry</span></span><span class="ap-time"><span class="ap-left num">1 h 10</span><span class="ap-when mono num">ready</span></span><button type="button" class="step surface ap-toggle" data-surface aria-label="Start the dryer"><span class="icon">play_arrow</span></button></div>
+                    <div class="ap-card surface is-idle" data-surface id="ap-dishwasher"><span class="ap-fill surface" data-surface data-clip="ap-dishwasher"></span><span class="icon ap-icon">dishwasher_gen</span><span class="ap-text"><span class="ap-name">dishwasher</span><span class="ap-program mono">eco 50°</span></span><span class="ap-time"><span class="ap-left num">2 h 50</span><span class="ap-when mono num">ready</span></span><button type="button" class="step surface ap-toggle" data-surface aria-label="Start the dishwasher"><span class="icon">play_arrow</span></button></div>
+                  </div>
+                  <div class="ap-tip surface" data-surface id="ap-tip">
+                    <span class="icon ap-tip-icon">energy_savings_leaf</span>
+                    <span class="ap-tip-text"><span class="tile-label mono">energy tip</span><span class="ap-tip-line" id="ap-tip-line">power is 38% cheaper from 23:00 · delay the dishwasher</span></span>
+                    <span class="ap-switch-wrap"><span class="ap-switch-label mono" id="ap-delay-label">delay start to 23:00</span><button type="button" class="ap-switch surface" data-surface id="ap-delay" role="switch" aria-checked="false" aria-labelledby="ap-delay-label"><span class="ap-thumb surface" data-surface data-clip="ap-delay" id="ap-thumb"></span></button></span>
+                  </div>
+                </section>
+                <section class="app" data-app="plants" hidden aria-label="Plants">
+                  <div class="app-head"><button type="button" class="app-back surface" data-surface aria-label="Back to apps"><span class="icon">arrow_back</span></button><div><div class="page-title">plants</div><div class="page-sub mono" id="pl-sub">basil needs water today</div></div></div>
+                  <div class="pl-grid">
+                    <div class="pl-card surface" data-surface id="pl-monstera"><span class="pl-fill surface" data-surface data-clip="pl-monstera"></span><span class="pl-top"><span class="icon pl-icon">potted_plant</span><span class="pl-moist mono num">53%</span></span><span class="pl-name">monstera</span><span class="pl-place mono">living room · by the window</span><span class="pl-due mono">water in 3 days</span><button type="button" class="tonal surface pl-water" data-surface aria-label="Monstera watered"><span class="icon">water_drop</span><span class="mono">watered</span></button></div>
+                    <div class="pl-card surface is-due" data-surface id="pl-basil"><span class="pl-fill surface" data-surface data-clip="pl-basil"></span><span class="pl-top"><span class="icon pl-icon">psychiatry</span><span class="pl-moist mono num">14%</span></span><span class="pl-name">basil</span><span class="pl-place mono">kitchen sill</span><span class="pl-due mono">water today</span><button type="button" class="tonal surface pl-water is-due" data-surface aria-label="Basil watered"><span class="icon">water_drop</span><span class="mono">watered</span></button></div>
+                    <div class="pl-card surface" data-surface id="pl-orchid"><span class="pl-fill surface" data-surface data-clip="pl-orchid"></span><span class="pl-top"><span class="icon pl-icon">local_florist</span><span class="pl-moist mono num">47%</span></span><span class="pl-name">orchid</span><span class="pl-place mono">bathroom shelf</span><span class="pl-due mono">water in 4 days</span><button type="button" class="tonal surface pl-water" data-surface aria-label="Orchid watered"><span class="icon">water_drop</span><span class="mono">watered</span></button></div>
+                    <div class="pl-card surface" data-surface id="pl-snake"><span class="pl-fill surface" data-surface data-clip="pl-snake"></span><span class="pl-top"><span class="icon pl-icon">grass</span><span class="pl-moist mono num">81%</span></span><span class="pl-name">snake plant</span><span class="pl-place mono">bedroom corner</span><span class="pl-due mono">water in 11 days</span><button type="button" class="tonal surface pl-water" data-surface aria-label="Snake plant watered"><span class="icon">water_drop</span><span class="mono">watered</span></button></div>
+                  </div>
+                </section>
+              </div>
+              <div class="activities" id="activities" aria-label="Live activities"><button type="button" class="activity" id="activity-0" data-glass><span class="icon">timer</span><span class="activity-text"><span class="activity-label">timer</span><span class="activity-value">0:00</span></span><span class="activity-bar"><i></i></span></button><button type="button" class="activity" id="activity-1" data-glass><span class="icon">timer</span><span class="activity-text"><span class="activity-label">timer</span><span class="activity-value">0:00</span></span><span class="activity-bar"><i></i></span></button><button type="button" class="activity" id="activity-2" data-glass><span class="icon">timer</span><span class="activity-text"><span class="activity-label">timer</span><span class="activity-value">0:00</span></span><span class="activity-bar"><i></i></span></button><button type="button" class="activity-orb" id="activity-orb" aria-label="Live activities"><svg class="orb-ring" viewBox="0 0 64 64" aria-hidden="true"><circle class="orb-track" cx="32" cy="32" r="27"></circle><circle class="orb-fill" cx="32" cy="32" r="27" pathLength="100"></circle></svg><span class="icon">timer</span><span class="orb-pips" aria-hidden="true"><i></i><i></i><i></i></span></button></div>
+              <div class="cc-edge" id="cc-edge" aria-hidden="true"></div>
+              <div class="cc" id="cc" hidden aria-label="Control center">
+                <div class="cc-module cc-scenes" id="cc-scenes" data-glass><span class="cc-pick surface" data-surface id="cc-pick"></span><button type="button" class="cc-scene" data-cc-scene="meeting" aria-label="meeting scene"><span class="icon">groups</span></button><button type="button" class="cc-scene" data-cc-scene="coffee" aria-label="coffee scene"><span class="icon">coffee</span></button><button type="button" class="cc-scene" data-cc-scene="focus" aria-label="focus scene"><span class="icon">center_focus_strong</span></button><button type="button" class="cc-scene" data-cc-scene="away" aria-label="away scene"><span class="icon">luggage</span></button></div>
+                <div class="cc-module cc-media" id="cc-media" data-glass><span class="cc-art"></span><div class="cc-track"><div class="cc-title" id="cc-title">Low Orbit</div><div class="cc-by mono" id="cc-by">harbor lights</div></div><div class="cc-transport"><button type="button" data-cc-skip="-1" aria-label="Previous track"><span class="icon">skip_previous</span></button><button type="button" id="cc-play" aria-label="Pause"><span class="icon">pause</span></button><button type="button" data-cc-skip="1" aria-label="Next track"><span class="icon">skip_next</span></button></div></div>
+                <div class="cc-slider" id="cc-bright" data-glass role="slider" tabindex="0" aria-label="Main light" aria-valuemin="0" aria-valuemax="100"><span class="cc-fill surface" data-surface data-clip="cc-bright"></span><span class="icon">light_mode</span></div>
+                <div class="cc-slider" id="cc-volume" data-glass role="slider" tabindex="0" aria-label="Volume" aria-valuemin="0" aria-valuemax="100"><span class="cc-fill surface" data-surface data-clip="cc-volume"></span><span class="icon">volume_up</span></div>
+                <div class="cc-slider" id="cc-heat" data-glass role="slider" tabindex="0" aria-label="Temperature" aria-valuemin="0" aria-valuemax="100"><span class="cc-fill surface" data-surface data-clip="cc-heat"></span><span class="cc-value mono" id="cc-heat-value">21.5°</span><span class="icon">thermostat</span></div>
+                <button type="button" class="cc-toggle" id="cc-quiet" data-glass aria-pressed="false"><span class="icon">do_not_disturb_on</span><span class="mono">quiet</span></button>
+                <button type="button" class="cc-toggle" id="cc-lock" data-glass aria-pressed="false"><span class="icon">lock</span><span class="mono">door</span></button>
+                <button type="button" class="cc-toggle" id="cc-lights" data-glass aria-pressed="false"><span class="icon">lightbulb</span><span class="mono">all off</span></button>
+                <button type="button" class="cc-toggle" id="cc-timer" data-glass aria-pressed="false"><span class="icon">timer</span><span class="mono">5 min</span></button>
+                <div class="cc-grabber" aria-hidden="true"></div>
+              </div>
+              <div class="pager" id="pager" data-glass aria-hidden="true"><i class="is-on"></i><i></i><i></i><i></i></div>
+              <div class="island" id="toast" data-glass role="status" aria-live="polite"><span class="icon" id="toast-icon">check</span><span class="mono" id="toast-text"></span></div>
+              <nav class="dock" id="dock" data-glass aria-label="Sections">
+                <button type="button" class="dock-item is-on" data-section="0" aria-current="page"><span class="icon">home</span><span class="mono">home</span></button>
+                <button type="button" class="dock-item" data-section="1"><span class="icon">apps</span><span class="mono">apps</span></button>
+                <button type="button" class="dock-item" data-section="2"><span class="icon">music_note</span><span class="mono">playing</span></button>
+                <button type="button" class="dock-item" data-section="3"><span class="icon">bedtime</span><span class="mono">standby</span></button>
+              </nav>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="stage-note">4.0″ panel · 720 × 720 · example data. Swipe between the four home pages, then apps, now playing and standby. Open an app from the launcher and it grows out of its icon; flick through albums in Music; your tree in Energy grows with what you save. Weather, calendar, appliances and plants open from the launcher too; appliance cycles run 20× fast. Swipe standby up for twelve faces. Running timers, cycles and music float in a stack of live activities you can throw to any corner, or past a side to fold them into an orb. Pull down from the top edge for the control center. Drag an app down to send it home, or catch it on the way. The dock tucks away when you pause; touch to bring it back.</p>
+    </section>
+
+    <aside class="sheet">
+      <section>
+        <p class="eyebrow">what it is</p>
+        <h2>Material's structure, lit and moved like Apple glass</h2>
+        <p class="lede">Content sits on solid Material tonal surfaces. The controls floating above it are liquid glass: it bends everything behind it, text included, keeps what is under it legible, and catches one light.</p>
+        <p class="dim">Drawn from embedded wall-panel dashboards: tonal tiles, pill sliders, lowercase mono labels and one warm signal colour. Motion comes from Detent's engine and patterns. Numbers are sourced, or marked as our own tuning.</p>
+      </section>
+
+      <section>
+        <p class="eyebrow">the rules</p>
+        <ul class="rules">
+          <li><b>Glass is for controls</b><span>Only the floating layer is glass; content stays on tonal surfaces. Never glass on glass. <cite>apple hig · materials</cite></span></li>
+          <li><b>Glass bends everything</b><span>Text, icons and surfaces under glass are refracted at its rim; nothing sits on top pretending to be behind it. <cite>wwdc25 · meet liquid glass</cite></span></li>
+          <li><b>Regular glass stays legible</b><span>It blurs and evens out the brightness behind it. Clear glass stays transparent and dims bright media by 35%. <cite>apple hig · materials</cite></span></li>
+          <li><b>One light</b><span>A thin line of light on the cut edge, brightest facing one light direction that the pointer or the device's tilt leans. <cite>wwdc25 · meet liquid glass</cite></span></li>
+          <li><b>Glass is liquid, within its group</b><span>Pressed glass flexes and glows from the finger; shapes in one group melt together, as in a glass container; separate groups never touch. <cite>wwdc25 · meet liquid glass</cite></span></li>
+          <li><b>Chrome steps back</b><span>On home and standby the dock tucks away after a few idle seconds and while you scroll down; any touch brings it back. <cite>bezel</cite></span></li>
+          <li><b>Messages arrive from the top</b><span>Confirmations grow out of a small island at the top edge and shrink back into it, well clear of the controls. <cite>detent · dynamic island morph</cite></span></li>
+          <li><b>Fills carry their ink</b><span>Where the light slider fills under its label, the label takes the fill's on-colour exactly at the edge. Room dimmers fill with a quiet tonal container instead, so their words never split. <cite>m3 · color roles</cite></span></li>
+          <li><b>Apps come from their icons</b><span>An app grows out of the icon you touched and shrinks back into it; launcher icons cascade in from where you arrived. <cite>apple hig · motion</cite></span></li>
+          <li><b>Faces keep room for actions</b><span>Each standby face says where its actions may sit, and the actions glide there as you page between faces, so nothing covers a clock. <cite>bezel</cite></span></li>
+          <li><b>Everything can be caught</b><span>Apps, the control center and the activity stack track the finger and can be caught mid-flight; letting go hands your velocity to a spring. <cite>detent · patterns</cite></span></li>
+          <li><b>Live activities float</b><span>What is running lives in a small glass stack you can throw to any corner, the picture-in-picture pattern; it steps back while the control center is open. <cite>wwdc18 · designing fluid interfaces</cite></span></li>
+          <li><b>The control center steps the page back</b><span>Pulling down dims and desaturates what is behind; its modules cascade in a beat apart and keep far enough apart that their glass never merges. <cite>apple hig · materials</cite></span></li>
+          <li><b>Concentric corners</b><span>Inner radius = outer radius − padding; a capsule's radius is half its height; a fill takes its track's outer corners. <cite>wwdc25 · new design system</cite></span></li>
+          <li><b>Two voices</b><span>Google Sans Flex for what you read at a glance; Google Sans Code, lowercase, for quiet labels. <cite>bezel</cite></span></li>
+          <li><b>One signal</b><span>Orange marks the primary action and heat. Ice fills tonal controls and cooling; amber means a light is on. <cite>m3 · color roles</cite></span></li>
+          <li><b>Motion from Detent</b><span>Presses answer on pointer-down; drags track 1:1; releases hand their velocity to a sourced spring; flings coast and resist at the edges; dials click between detents. <cite>detent · patterns</cite></span></li>
+          <li><b>A calm version</b><span>Reduced transparency makes glass solid with a rim; reduced motion removes overshoot, drift and parallax. <cite>apple hig · accessibility</cite></span></li>
+        </ul>
+      </section>
+
+      <section>
+        <p class="eyebrow">tokens</p>
+        <h3>Colour · current panel tone</h3>
+        <div class="swatches" id="swatches"></div>
+        <h3>Dynamic colour · Monet</h3>
+        <p class="dim">Choose Cover or a basic colour and the panel takes its palette from one seed, as Android's Monet does. The seed is scored from the album art after a 128-colour quantizer, grown into HCT tonal palettes, and every role reads a fixed tone, so contrast holds whatever the seed.</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>role</th><th>tone, dark · light</th><th>palette</th></tr></thead>
+            <tbody>
+              <tr><td>ground · surfaces 1, 2, 3</td><td>4, 10, 13, 19 · 92, 99, 95, 90</td><td>neutral</td></tr>
+              <tr><td>ink · dim · faint</td><td>94, 70, 42 · 10, 40, 70</td><td>neutral, neutral variant</td></tr>
+              <tr><td>signal · on signal</td><td>62, 8 · 56, 100</td><td>the seed's hue, chroma ≥ 56 so it stays vivid</td></tr>
+              <tr><td>ice · on ice</td><td>88, 14 in both</td><td>the seed's colour-temperature complement, chroma 16</td></tr>
+              <tr><td>amber · amber container</td><td>harmonized · 22 · 90</td><td>amber turned toward the seed, M3 harmonize</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Type</h3>
+        <div class="type-spec">
+          <div class="t-display num">21.5°</div>
+          <div class="t-meta">google sans flex · 300 · wdth 112 — numerals and glanceable values</div>
+          <div class="t-title">Low Orbit</div>
+          <div class="t-meta">google sans flex · 600 — titles and interface text</div>
+          <div class="t-label">we're back · 4 min · office 38%</div>
+          <div class="t-meta">google sans code · 400 — lowercase labels and data</div>
+        </div>
+        <p class="dim">Material 3's default face is Roboto. Google Sans Flex is Google's own expressive face and a deliberate choice here, with Roboto Flex as the open fallback.</p>
+        <h3>Shape · Material 3 corner scale (dp)</h3>
+        <div class="shapes">
+          <span class="shape"><i style="border-radius:0"></i>0</span>
+          <span class="shape"><i style="border-radius:4px"></i>4</span>
+          <span class="shape"><i style="border-radius:8px"></i>8</span>
+          <span class="shape"><i style="border-radius:12px"></i>12</span>
+          <span class="shape"><i style="border-radius:16px"></i>16</span>
+          <span class="shape"><i style="border-radius:20px"></i>20</span>
+          <span class="shape"><i style="border-radius:26px"></i>28</span>
+          <span class="shape"><i style="border-radius:26px"></i>32</span>
+          <span class="shape"><i style="border-radius:26px"></i>48</span>
+          <span class="shape"><i style="border-radius:999px"></i>full</span>
+        </div>
+        <p class="dim">Swatches above 28 are capped at half their 52 px height, which is exactly where a capsule begins.</p>
+        <h3>Motion · from Detent</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>role</th><th>spring or model</th><th>detent source</th></tr></thead>
+            <tbody>
+              <tr><td>press held, value following a finger</td><td>response 0.15 · 0.86</td><td><code>apple-swiftui-interactive-spring</code></td></tr>
+              <tr><td>press release, lens travel, island growing</td><td>duration 0.5 · bounce 0.15</td><td><code>apple-swiftui-snappy</code></td></tr>
+              <tr><td>dock tucking away, island shrinking</td><td>duration 0.5 · bounce 0</td><td><code>apple-swiftui-smooth</code></td></tr>
+              <tr><td>tap-to-set, value settling</td><td>response 0.4 · 1.0</td><td><code>apple-wwdc18-pip</code></td></tr>
+              <tr><td>climate dial clicking between detents</td><td>response 0.4 · 0.8</td><td><code>apple-wwdc18-rotation</code></td></tr>
+              <tr><td>droplet melting back</td><td>duration 0.5 · bounce 0.3</td><td><code>apple-swiftui-bouncy</code></td></tr>
+              <tr><td>page turns, scapes</td><td>duration 0.45 · bounce 0.12</td><td>paging pattern</td></tr>
+              <tr><td>flick scrolling</td><td>decay 0.998, rubber band 0.55, edge spring mass 0.5 · k 100 · ζ 1.1</td><td>momentum pattern</td></tr>
+              <tr><td>colour, glass strength · state layers</td><td>1600 · 1.0 · 3800 · 1.0</td><td><code>m3-default-effects</code> · <code>m3-fast-effects</code></td></tr>
+              <tr><td>the standby dial's second hand</td><td>800 · 0.6</td><td><code>m3-expressive-fast-spatial</code></td></tr>
+              <tr><td>the light leaning</td><td>response 0.4 · 1.0</td><td>our tuning</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>Glass</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>parameter</th><th>value</th><th>basis</th></tr></thead>
+            <tbody>
+              <tr><td>bezel profile</td><td>y = (1 − (1 − x)⁴)^¼, 0.9 × corner radius, 8–28 px</td><td>kube.io reconstruction · width our tuning</td></tr>
+              <tr><td>refraction</td><td>Snell's law, n = 1.5, through a 26 px slab</td><td>index from kube.io · thickness our tuning</td></tr>
+              <tr><td>regular glass</td><td>10 px frost; evens luminosity toward the panel's tone</td><td>behaviour apple hig · amounts our tuning</td></tr>
+              <tr><td>clear glass</td><td>1 px frost; 35% dimming</td><td>apple hig · materials</td></tr>
+              <tr><td>shadow</td><td>deeper under bigger glass and over busy content</td><td>behaviour wwdc25 · amounts our tuning</td></tr>
+              <tr><td>edge light · dispersion</td><td>1 px line, strongest facing the light · 0.03</td><td>our tuning</td></tr>
+              <tr><td>liquid merge</td><td>16 px, only within a group: dock, transport, standby actions, island, dial knob, pager</td><td>behaviour apple glass containers · distance our tuning</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <p class="eyebrow">per platform</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>platform</th><th>glass</th></tr></thead>
+            <tbody>
+              <tr><td>iOS · macOS 26</td><td>Use the system material: <code>glassEffect(_:in:)</code>, <code>GlassEffectContainer</code>, <code>.buttonStyle(.glass)</code>. Bezel supplies the tokens, not the pixels.</td></tr>
+              <tr><td>Android 13+</td><td>AGSL <code>RuntimeShader</code> through <code>RenderEffect</code>; Kyant0's backdrop library (Apache-2.0). Android 12: blur only. Older: solid.</td></tr>
+              <tr><td>Flutter</td><td><code>liquid_glass_renderer</code> needs Impeller, so no web or desktop; elsewhere a frosted <code>BackdropFilter</code>.</td></tr>
+              <tr><td>Web</td><td>Draw what sits under the glass, text included, into WebGL and refract it, as here. SVG displacement through <code>backdrop-filter</code> works in Chromium only.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section>
+        <p class="eyebrow">sources</p>
+        <ul class="sources">
+          <li><a href="https://developer.apple.com/design/human-interface-guidelines/materials">Apple HIG · Materials</a></li>
+          <li><a href="https://developer.apple.com/videos/play/wwdc2025/219/">WWDC25 · Meet Liquid Glass</a> and <a href="https://developer.apple.com/videos/play/wwdc2025/356/">Get to know the new design system</a></li>
+          <li><a href="https://m3.material.io/styles/color/roles">Material 3 · colour roles</a> and <a href="https://m3.material.io/styles/typography/type-scale-tokens">type scale tokens</a></li>
+          <li><a href="https://github.com/androidx/androidx/blob/androidx-main/compose/material3/material3/src/commonMain/kotlin/androidx/compose/material3/tokens/ShapeTokens.kt">Compose Material 3 shape tokens</a> and <a href="https://github.com/androidx/androidx/blob/androidx-main/compose/material3/material3/src/commonMain/kotlin/androidx/compose/material3/tokens/ExpressiveMotionTokens.kt">motion tokens</a></li>
+          <li><a href="https://github.com/TomAs-1226/Detent">Detent</a> — the motion engine, presets and patterns</li>
+          <li><a href="https://kube.io/blog/liquid-glass-css-svg/">kube.io · refraction with CSS and SVG</a></li>
+          <li><a href="https://github.com/Kyant0/AndroidLiquidGlass">Kyant0 · AndroidLiquidGlass</a> and <a href="https://pub.dev/packages/liquid_glass_renderer">liquid_glass_renderer</a></li>
+          <li><a href="https://github.com/dotstartech/wall-panel">dotstartech · wall-panel</a>, the 720 × 720 reference hardware</li>
+        </ul>
+      </section>
+    </aside>
+  </main>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
