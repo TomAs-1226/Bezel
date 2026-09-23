@@ -66,6 +66,11 @@ earthquake bar_chart show_chart timeline motion_photos_on camera auto_mode flag 
 visibility lightbulb health_and_safety pin_drop my_location adjust square circle change_history
 radio_button_unchecked more_horiz expand_more expand_less chevron_right keyboard_arrow_down
 data_usage hourglass_top downloading save target filter_center_focus frame_inspect
+history account_tree fiber_manual_record auto_awesome computer settings_ethernet send inbox outbox
+undo restore psychology code terminal call_split cloud_upload cloud_off cloud_done storage device_hub
+restart_alt schedule gamepad insights query_stats local_fire_department stop_circle keyboard chat
+upload_file description rule difference assignment task_alt pending bookmark swap_horiz neurology
+network_check signal_cellular_alt usb_off conversion_path schema videocam_off movie
 """.split()
 
 ICON_SIZES = [("outline", "sym_outline.ttf", [24, 32, 40]), ("fill", "sym_fill.ttf", [32])]

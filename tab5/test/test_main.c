@@ -3,7 +3,6 @@
 #include "bz_motion.h"
 #include "cat_can.h"
 #include "cat_logs.h"
-#include "cat_dsp.h"
 #include "json_lite.h"
 #include "mpack_lite.h"
 
@@ -223,19 +222,8 @@ static void logs(void)
     NEAR(log.duration_s, 4.0, 1e-6);
 }
 
-static void dsp(void)
-{
-    static int16_t buf[1024];
-    for (int i = 0; i < 1024; i++) buf[i] = (int16_t)(16000 * sin(2 * M_PI * 1234.5 * i / 16000.0));
-    static cat_spectrum_t sp;
-    cat_spectrum(buf, 1024, 16000, 60, &sp);
-    NEAR(sp.peak_hz, 1234.5, 3.0);          /* bins are 15.6 Hz; interpolation lands within a few Hz */
-    NEAR(sp.peak_db, 20 * log10(16000 / 32768.0), 1.5);
-}
-
 int main(void)
 {
-    dsp();
     springs();
     msgpack();
     json();

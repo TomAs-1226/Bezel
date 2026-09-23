@@ -27,15 +27,18 @@ file(GLOB APP_SOURCES
   ${ROOT}/components/bezel/src/*.c
   ${ROOT}/components/bezel/fonts/*.c
   ${ROOT}/components/catalyst/src/*.c
+  ${ROOT}/components/assist/src/*.c
   ${ROOT}/components/ui/src/*.c)
-add_executable(catalyst_tab_sim ${APP_SOURCES} sim_main.c hal_sim.c png.c)
+add_executable(catalyst_tab_sim ${APP_SOURCES} sim_main.c hal_sim.c hal_sim_net.c png.c)
 target_include_directories(catalyst_tab_sim PRIVATE
   ${ROOT}/components/nt4/include ${ROOT}/components/bezel/include
-  ${ROOT}/components/catalyst/include ${ROOT}/components/ui/include ${ROOT}/components/tab_hal/include
+  ${ROOT}/components/catalyst/include ${ROOT}/components/assist/include ${ROOT}/components/ui/include
+  ${ROOT}/components/tab_hal/include
   ${LVGL_DIR})
 target_compile_options(catalyst_tab_sim PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-format-truncation)
 find_package(ZLIB REQUIRED)
-target_link_libraries(catalyst_tab_sim lvgl ZLIB::ZLIB m pthread)
+find_package(OpenSSL REQUIRED)
+target_link_libraries(catalyst_tab_sim lvgl ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto m pthread)
 
 # Unit tests for the portable pieces: springs, msgpack, json, the Catalyst parsers.
 file(GLOB TEST_SOURCES ${ROOT}/test/*.c)
@@ -43,8 +46,7 @@ if(TEST_SOURCES)
   add_executable(catalyst_tab_tests ${TEST_SOURCES}
     ${ROOT}/components/nt4/src/mpack_lite.c ${ROOT}/components/nt4/src/json_lite.c
     ${ROOT}/components/bezel/src/bz_motion.c
-    ${ROOT}/components/catalyst/src/cat_can.c ${ROOT}/components/catalyst/src/cat_logs.c
-    ${ROOT}/components/catalyst/src/cat_dsp.c)
+    ${ROOT}/components/catalyst/src/cat_can.c ${ROOT}/components/catalyst/src/cat_logs.c)
   target_include_directories(catalyst_tab_tests PRIVATE ${ROOT}/components/nt4/include
     ${ROOT}/components/bezel/include ${ROOT}/components/catalyst/include)
   target_link_libraries(catalyst_tab_tests m)

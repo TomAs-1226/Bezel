@@ -456,6 +456,7 @@ void ui_page_motion(lv_obj_t *page)
 
 /* ================================================================== tools */
 
+/* Three rows: the robot through Catalyst, the controller and its history, the tablet and the PC. */
 static const struct { const ui_app_t *app; const char *icon; const char *label; const char *hint; } TOOLS[] = {
     { &APP_PREFLIGHT, BZ_I_CHECKLIST, "preflight", "go / no-go" },
     { &APP_ALERTS, BZ_I_WARNING, "alerts", "errors, health" },
@@ -463,11 +464,17 @@ static const struct { const ui_app_t *app; const char *icon; const char *label; 
     { &APP_AUTO, BZ_I_FLAG, "auto", "chooser" },
     { &APP_FIELD, BZ_I_STADIUM, "field", "pose, vision" },
     { &APP_ROBOT, BZ_I_SMART_TOY, "robot", "spec, versions" },
-    { &APP_LISTEN, BZ_I_GRAPHIC_EQ, "listen", "mic spectrum" },
-    { &APP_LEVEL, BZ_I_STRAIGHTEN, "level", "imu angle" },
-    { &APP_LENS, BZ_I_PHOTO_CAMERA, "lens", "camera" },
+    { &APP_SYSTEMCORE, BZ_I_DEVELOPER_BOARD, "systemcore", "cores, buses" },
+    { &APP_MOTORS, BZ_I_HISTORY, "motors", "lifetime, wear" },
+    { &APP_STATES, BZ_I_ACCOUNT_TREE, "states", "timelines" },
+    { &APP_CONTROLS, BZ_I_SPORTS_ESPORTS, "controls", "bindings" },
+    { &APP_RECORDER, BZ_I_FIBER_MANUAL_RECORD, "recorder", "black box" },
     { &APP_CANTAP, BZ_I_CABLE, "can tap", "bus sniffer" },
+    { &APP_ASSIST, BZ_I_AUTO_AWESOME, "assist", "ai technician" },
+    { &APP_LINK, BZ_I_COMPUTER, "link", "pc, patches" },
     { &APP_LOGS, BZ_I_RECEIPT_LONG, "logs", "ds logs, sd" },
+    { &APP_LEVEL, BZ_I_STRAIGHTEN, "level", "imu angle" },
+    { &APP_LENS, BZ_I_PHOTO_CAMERA, "lens", "camera, clips" },
     { &APP_SETTINGS, BZ_I_SETTINGS, "settings", "team, link" },
 };
 
@@ -482,16 +489,16 @@ void ui_page_tools(lv_obj_t *page)
     lv_obj_set_width(grid, W - 2 * PAD);
     lv_obj_set_pos(grid, PAD, BODY_Y);
     for (int i = 0; i < n; i++) {
-        lv_obj_t *t = bz_tile(grid, w, 200);
+        lv_obj_t *t = bz_tile(grid, w, 148);
         lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_t *ic = bz_tile(t, 76, 76);
+        lv_obj_t *ic = bz_tile(t, 56, 56);
         lv_obj_add_style(ic, bz_style_fill(BZ_C_SURFACE3), 0);
-        lv_obj_set_style_radius(ic, 24, 0);
+        lv_obj_set_style_radius(ic, 18, 0);
         lv_obj_set_style_pad_all(ic, 0, 0);
-        lv_obj_t *g = bz_icon(ic, TOOLS[i].icon, 40, BZ_C_INK);
+        lv_obj_t *g = bz_icon(ic, TOOLS[i].icon, 32, BZ_C_INK);
         lv_obj_center(g);
         lv_obj_t *l = bz_label(t, TOOLS[i].label, BZ_F_NAME, BZ_C_INK);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, -22);
+        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, -20);
         lv_obj_t *h = bz_label(t, TOOLS[i].hint, BZ_F_CAPTION, BZ_C_DIM);
         lv_obj_align(h, LV_ALIGN_BOTTOM_LEFT, 0, 0);
         bz_on_tap(t, open_app_tap, (void *)TOOLS[i].app);

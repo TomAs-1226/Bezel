@@ -62,8 +62,13 @@ void ui_page_motion(lv_obj_t *page);
 void ui_page_tools(lv_obj_t *page);
 
 /* Apps. */
-extern const ui_app_t APP_PREFLIGHT, APP_ALERTS, APP_TUNE, APP_AUTO, APP_FIELD, APP_LISTEN, APP_LEVEL,
-    APP_LENS, APP_CANTAP, APP_LOGS, APP_ROBOT, APP_SETTINGS;
+extern const ui_app_t APP_PREFLIGHT, APP_ALERTS, APP_TUNE, APP_AUTO, APP_FIELD, APP_LEVEL, APP_LENS,
+    APP_CANTAP, APP_LOGS, APP_ROBOT, APP_SETTINGS;
+/* Systemcore and Catalyst depth (ui_apps_sc.c): the controller's own health through catalyst-agent,
+ * every motor's lifetime, mechanism state timelines, the controls manifest, and the run recorder. */
+extern const ui_app_t APP_SYSTEMCORE, APP_MOTORS, APP_STATES, APP_CONTROLS, APP_RECORDER;
+/* The assistant and the PC (ui_app_assist.c): the AI technician, and Catalyst Link's inbox and patches. */
+extern const ui_app_t APP_ASSIST, APP_LINK;
 
 /* The control center: pulled down from the top edge. */
 void ui_cc_init(void);

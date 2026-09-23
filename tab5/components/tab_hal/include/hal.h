@@ -50,10 +50,7 @@ typedef struct {
 } hal_battery_t;
 bool hal_battery(hal_battery_t *out);
 
-/* ---- audio ---- */
-/* Mono microphone samples at *rate Hz, whatever is buffered (up to max). Starts the mics on first use. */
-int hal_mic_read(int16_t *buf, int max, int *rate);
-void hal_mic_stop(void);
+/* ---- audio: the speaker only (the microphones are deliberately unused) ---- */
 /* A short tone on the speaker: detent ticks, chimes. Non-blocking. */
 void hal_tone(float hz, int ms, float volume01);
 void hal_set_volume(float v01);
@@ -65,6 +62,12 @@ const uint16_t *hal_camera_frame(int *w, int *h);
 void hal_camera_stop(void);
 /* Encodes the current frame as JPEG (hardware codec on the P4) to `path`. */
 bool hal_camera_snapshot(const char *path);
+/* A clip: the camera's frames through the P4's hardware H.264 encoder into `path` as an Annex-B
+ * elementary stream (plays in VLC/ffplay; `ffmpeg -i x.h264 -c copy x.mp4` boxes it). The camera must
+ * be running. Stops by itself at `max_s`. */
+bool hal_clip_start(const char *path, double max_s);
+double hal_clip_stop(void);               /* seconds recorded */
+bool hal_clip_active(double *seconds);
 
 /* ---- time ---- */
 bool hal_rtc_get(struct tm *out);
@@ -79,16 +82,86 @@ void hal_kv_set(const char *key, const char *value);
 /* ---- network ---- */
 typedef enum { HAL_LINK_NONE, HAL_LINK_WIFI, HAL_LINK_USB, HAL_LINK_SIM } hal_link_t;
 typedef struct {
-    hal_link_t link;
-    bool up;
+    hal_link_t link;     /* the way to the robot: USB while the tether is up, else Wi-Fi */
+    bool up;             /* Wi-Fi associated with an address */
     char ssid[33];
     int rssi;
-    char ip[16];
+    char ip[16];         /* Wi-Fi's */
 } hal_net_t;
 void hal_net(hal_net_t *out);
 void hal_wifi_join(const char *ssid, const char *pass);
 typedef struct { char ssid[33]; int rssi; bool secure; } hal_ap_t;
 int hal_wifi_scan(hal_ap_t *out, int max);  /* blocking, a couple of seconds */
+
+/* USB tether on the USB-A host port (the USB-C port only takes power): Systemcore's own USB-C
+ * gadget through an A-to-C cable (CDC-NCM/ECM or RNDIS; Systemcore answers at 172.26.0.1), or any
+ * USB-Ethernet dongle (CDC-ECM, or the ASIX/Realtek chips esp-iot-solution drives) into the robot's
+ * radio or switch. DHCP first; with no answer in a few seconds, the fallback address. Routes by
+ * subnet: the robot over the tether, everything else (the PC, the internet) over Wi-Fi. */
+typedef struct {
+    bool present;        /* a USB network adapter is enumerated */
+    bool up;             /* link up with an IPv4 address */
+    bool dhcp;           /* the address came from DHCP (else the fallback) */
+    char kind[16];       /* "ncm", "ecm", "rndis", "ax88179", …; "" with nothing attached */
+    char ip[16], gw[16], mask[16];
+    uint8_t mac[6];
+    uint64_t rx_bytes, tx_bytes;
+    int mbps;            /* 0 when the adapter doesn't say */
+} hal_tether_t;
+void hal_tether(hal_tether_t *out);
+/* The static address used when DHCP doesn't answer, e.g. "10.58.5.60" / "255.255.255.0" for team 5805. */
+void hal_tether_fallback(const char *ip, const char *mask);
+
+/* mDNS browse (e.g. "_catalyst-link", "_tcp"): blocking up to timeout_ms. */
+typedef struct { char name[48]; char host[64]; char ip[16]; int port; } hal_service_t;
+int hal_mdns_browse(const char *service, const char *proto, hal_service_t *out, int max, int timeout_ms);
+
+/* HTTP/1.1 client, http:// and https:// (TLS verified against the platform's CA bundle), with the
+ * body streamed as it arrives — Server-Sent Events for the assistant, JSON for everything else.
+ * Blocking: call it from a worker thread (hal_thread), never the UI thread. */
+typedef struct hal_http hal_http_t;
+typedef struct {
+    const char *method;          /* "GET" when NULL */
+    const char *url;
+    const char *headers;         /* extra request headers, each "Name: value\r\n"; may be NULL */
+    const char *body;            /* may be NULL */
+    size_t body_len;
+    int timeout_ms;              /* connect, and each read; 0: 10 s */
+} hal_http_req_t;
+/* Sends the request and reads the response head. NULL when it never got a response (err says why). */
+hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, size_t errn);
+/* The next bytes of the body, chunked encoding already removed: > 0 bytes, 0 at the end, < 0 error. */
+int hal_http_read(hal_http_t *h, char *buf, int max);
+void hal_http_close(hal_http_t *h);
+
+/* One whole response into `out` (NUL-terminated, truncated to max-1). Returns the status, or -1. */
+static inline int hal_http_fetch(const hal_http_req_t *req, char *out, int max, int *len)
+{
+    int status = -1, n = 0;
+    char err[64];
+    hal_http_t *h = hal_http_open(req, &status, err, sizeof err);
+    if (!h) {
+        if (len) *len = 0;
+        if (max > 0) out[0] = 0;
+        return -1;
+    }
+    for (;;) {
+        if (n >= max - 1) break;
+        int r = hal_http_read(h, out + n, max - 1 - n);
+        if (r <= 0) {
+            if (r < 0) status = -1;
+            break;
+        }
+        n += r;
+    }
+    hal_http_close(h);
+    out[n] = 0;
+    if (len) *len = n;
+    return status;
+}
+
+/* A worker thread (core 0 on the tablet: core 1 renders). stack in bytes; TLS wants >= 12 KB. */
+bool hal_thread(const char *name, void *(*fn)(void *), void *arg, int stack);
 
 /* ---- CAN tap (TWAI, listen-only, through a Grove CAN transceiver on Port A) ---- */
 typedef struct {
