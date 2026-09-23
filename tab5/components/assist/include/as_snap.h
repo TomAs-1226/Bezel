@@ -20,12 +20,13 @@ typedef struct {
     int count;             /* tunables in it */
 } snap_info_t;
 
-void snap_init(cat_robot_t *robot);
-int snap_take(const char *reason);           /* returns its id, or -1 with nothing to snapshot */
-bool snap_revert(int id);                    /* writes every value in it back; false if the robot's gone */
+/* Safe from any thread (the store has its own lock); `r` is the caller's own copy of the robot. */
+void snap_init(void);                        /* loads the snapshots kept on microSD */
+int snap_take(const cat_robot_t *r, const char *reason);  /* its id, or -1 with nothing to snapshot */
+bool snap_revert(const cat_robot_t *r, int id);           /* writes each value back; false if the robot's gone */
 int snap_list(snap_info_t *out, int max);    /* newest first */
 /* The differences between a snapshot and the robot now, one "key  old → now" per line. */
-int snap_diff(int id, char *out, int max);
+int snap_diff(const cat_robot_t *r, int id, char *out, int max);
 
 #ifdef __cplusplus
 }

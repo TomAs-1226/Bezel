@@ -10,7 +10,8 @@
  *   - a work order dropped in Catalyst Link's inbox for the PC's own agent to pick up later.
  *
  * The conversation runs on its own worker thread (hal_thread); the UI only reads snapshots of it under
- * the lock, and answers confirmations. Nothing here touches LVGL. */
+ * the lock, and answers confirmations. Nothing here touches LVGL; nothing here reads the UI's robot model
+ * except through assist_feed(). */
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -77,7 +78,10 @@ typedef struct {
     bool fell_back;                    /* a server-side fallback served some turn */
 } as_usage_t;
 
-void assist_init(cat_robot_t *robot);          /* once, after the model exists; starts the worker */
+void assist_init(void);                        /* once, at boot; starts the worker */
+/* The UI thread hands over the robot as of each model update (10 Hz); assist copies it under its own
+ * lock, so its worker never reads the UI's model while the UI writes it. */
+void assist_feed(const cat_robot_t *r);
 void assist_configure(const assist_config_t *c);
 /* false with a reason when it can't run: no Link and no key, Link unreachable… */
 bool assist_ready(char *why, size_t n);
