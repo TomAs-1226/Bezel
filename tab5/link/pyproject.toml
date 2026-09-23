@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "catalyst-link"
+version = "1.0.0"
+description = "Catalyst Link: the PC-side companion of Catalyst Tab (read-only code, patch branches, a work-order inbox, a Claude proxy)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["anthropic>=1.8"]
+
+[project.optional-dependencies]
+mdns = ["zeroconf>=0.130"]
+
+[project.scripts]
+catalyst-link = "catalyst_link.cli:main"
+
+[tool.setuptools]
+packages = ["catalyst_link"]

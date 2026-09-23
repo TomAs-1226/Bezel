@@ -1,0 +1,4 @@
+# The Claude proxy (POST /v1/messages). The Link runs without it, reporting "claude": false.
+anthropic>=1.8
+# Optional: advertise _catalyst-link._tcp over mDNS so the tablet finds the Link by itself.
+zeroconf>=0.130
