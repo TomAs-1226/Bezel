@@ -223,6 +223,9 @@ static void logs(void)
     NEAR(log.duration_s, 4.0, 1e-6);
 }
 
+/* test_sc.c: catalyst-agent, motor history, controls, state lanes, the recorder's CSV */
+void test_sc(int *checks, int *fails);
+
 int main(void)
 {
     springs();
@@ -231,6 +234,7 @@ int main(void)
     can();
     logs();
     test_assist(&checks, &fails);
+    test_sc(&checks, &fails);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

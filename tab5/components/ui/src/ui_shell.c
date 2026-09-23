@@ -918,6 +918,7 @@ void ui_init(const ui_config_t *cfg)
     settings_load();
     if (cfg->team > 0 && !hal_kv_get("team", (char[8]){ 0 }, 8)) S.team = cfg->team;
     cat_model_init(cfg->nt);
+    ui_sc_boot();
     ui_apply_addresses();
     bz_ui_set_mode(S.dark, S.calm);
     hal_set_brightness(S.brightness);

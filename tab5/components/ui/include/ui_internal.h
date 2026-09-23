@@ -74,6 +74,8 @@ extern const ui_app_t APP_ASSIST, APP_LINK;
 void ui_cc_init(void);
 /* The assistant's orb, over every screen (ui_app_assist.c). */
 void ui_orb_init(void);
+/* Starts the state recorder, so the states app has a timeline from boot (ui_apps_sc.c). */
+void ui_sc_boot(void);
 
 /* Helpers. */
 lv_obj_t *ui_head(lv_obj_t *page, const char *title, const char *label); /* returns the right-hand row */

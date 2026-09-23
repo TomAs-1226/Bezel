@@ -60,7 +60,8 @@ if(TEST_SOURCES)
     ${ROOT}/components/bezel/src/bz_motion.c
     ${ROOT}/components/catalyst/src/cat_can.c ${ROOT}/components/catalyst/src/cat_logs.c
     ${ROOT}/components/assist/src/as_json.c ${ROOT}/components/assist/src/as_sse.c
-    ${ROOT}/components/assist/src/as_conv.c ${ROOT}/components/assist/src/as_tooldefs.c)
+    ${ROOT}/components/assist/src/as_conv.c ${ROOT}/components/assist/src/as_tooldefs.c
+    ${ROOT}/components/catalyst/src/cat_sc.c)
   target_include_directories(catalyst_tab_tests PRIVATE ${ROOT}/components/nt4/include
     ${ROOT}/components/bezel/include ${ROOT}/components/catalyst/include
     ${ROOT}/components/assist/include ${ROOT}/components/assist/src)

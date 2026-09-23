@@ -86,3 +86,43 @@ wait 1
 tap 200 600
 wait 1.2
 shot 19-pulse-light
+# Systemcore and Catalyst depth (docs/systemcore.md). With python3 tools/fake_agent.py running too, the
+# systemcore and motors screens show catalyst-agent's detail; without it, the NetworkTables summary.
+mode dark
+tap 856 644
+wait 1
+tap 125 340
+wait 4.5
+shot 20-systemcore
+tap 90 48
+wait 0.8
+tap 330 340
+wait 3
+shot 21-motors
+tap 90 48
+wait 0.8
+tap 535 340
+wait 1.2
+tap 971 48
+wait 1.2
+shot 22-states
+tap 90 48
+wait 0.8
+tap 740 340
+wait 1.2
+tap 960 424
+wait 1
+shot 23-controls
+tap 90 48
+wait 0.8
+tap 945 340
+wait 1.5
+tap 516 610
+wait 2
+tap 663 610
+wait 1.5
+shot 24-recorder
+tap 516 610
+wait 1
+tap 90 48
+wait 0.8
