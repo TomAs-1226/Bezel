@@ -79,7 +79,7 @@ dependencies:
       require: private
       version: '>=4.4'
     source:
-      registry_url: https://components.espressif.com
+      registry_url: https://components.espressif.com/
       type: service
     version: 1.0.4
   espressif/esp_hosted:
@@ -313,6 +313,100 @@ dependencies:
       registry_url: https://components.espressif.com
       type: service
     version: 1.5.2
+  espressif/iot_eth:
+    component_hash: 3be03ff933e27e17887becbed16305a561b35b66a5a4978ac51ae7f9f2ec70ea
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: '*'
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.1.0
+  espressif/iot_usbh_cdc:
+    component_hash: e924a79e9b7926b38bee52234d9f90101d8926f5e560dd5edf51c395546eac87
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: '*'
+    - name: espressif/usb
+      registry_url: https://components.espressif.com
+      require: public
+      rules:
+      - if: idf_version >=6.0
+      - if: target not in ["linux"]
+      version: ^1.4.0
+    - name: idf
+      require: private
+      version: '>=5.1'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    version: 3.1.0
+  espressif/iot_usbh_ecm:
+    component_hash: d5a216b80f1c457f2b55116b290bdb9553606de6c720f011c2264a05f6507ba5
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: '*'
+    - name: espressif/iot_eth
+      registry_url: https://components.espressif.com
+      require: public
+      version: '*'
+    - name: espressif/iot_usbh_cdc
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^3.1
+    - name: idf
+      require: private
+      version: '>=5.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    version: 0.4.0
+  espressif/iot_usbh_rndis:
+    component_hash: 87d4041d93a0a74be31972dfc22082714ff2adcfc31e59ac9f11efa552e030b5
+    dependencies:
+    - name: espressif/cmake_utilities
+      registry_url: https://components.espressif.com
+      require: private
+      version: '*'
+    - name: espressif/iot_eth
+      registry_url: https://components.espressif.com
+      require: public
+      version: '*'
+    - name: espressif/iot_usbh_cdc
+      registry_url: https://components.espressif.com
+      require: public
+      version: ^3.1
+    - name: idf
+      require: private
+      version: '>=5.2'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    targets:
+    - esp32s2
+    - esp32s3
+    - esp32s31
+    - esp32p4
+    version: 0.5.0
   espressif/m5stack_tab5:
     component_hash: d1df864fc61daaab580fa8e5799ca73bf0e309e677dfa814099c8faa351bc834
     dependencies:
@@ -463,14 +557,19 @@ dependencies:
       type: service
     version: 9.3.0
 direct_dependencies:
+- espressif/esp_h264
 - espressif/esp_hosted
 - espressif/esp_lcd_touch
 - espressif/esp_lvgl_port
 - espressif/esp_wifi_remote
+- espressif/iot_eth
+- espressif/iot_usbh_cdc
+- espressif/iot_usbh_ecm
+- espressif/iot_usbh_rndis
 - espressif/m5stack_tab5
 - espressif/mdns
 - idf
 - lvgl/lvgl
-manifest_hash: 3b745b68831e3f926ce4461256ec4d75b72499c9b4ab7687fed88cb5d26f4dc9
+manifest_hash: f3672320384b37f8a132de84adc1055cb5022291d1396673398da905f87a4b53
 target: esp32p4
 version: 2.0.0
