@@ -105,6 +105,10 @@ void assist_usage(as_usage_t *out);
 /* Suggested openers for the current robot state ("Why is Elevator hot?"), for chips under the prompt. */
 int assist_suggestions(const char **out, int max);
 
+/* Points the direct route at another base URL instead of https://api.anthropic.com (tests use a local
+ * fake; "" restores the default). assist_init also reads it from the kv key "ai_base". */
+void assist_set_base_url(const char *url);
+
 #ifdef __cplusplus
 }
 #endif

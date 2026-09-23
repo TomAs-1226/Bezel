@@ -11,6 +11,7 @@
 #include <string.h>
 
 static int fails, checks;
+void test_assist(int *checks, int *fails); /* test_assist.c */
 #define CHECK(c) do { checks++; if (!(c)) { fails++; printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
 #define NEAR(a, b, e) CHECK(fabs((double)(a) - (double)(b)) <= (e))
 
@@ -229,6 +230,7 @@ int main(void)
     json();
     can();
     logs();
+    test_assist(&checks, &fails);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }
