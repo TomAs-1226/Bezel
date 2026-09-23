@@ -27,6 +27,7 @@ typedef struct {
     int patches;           /* patch branches proposed from the tablet */
     int outbox;            /* items waiting on microSD */
     double last_ok;        /* hal_seconds() of the last good answer */
+    bool auth;             /* the Link accepted the token (reachable with auth false: the token is wrong) */
 } link_status_t;
 
 typedef struct {
@@ -35,6 +36,7 @@ typedef struct {
     char status[16];       /* "open", "claimed", "done", "rejected" / patches: "proposed", "merged", "dropped" */
     char branch[80];       /* patches */
     char when[24];         /* "2026-09-23 14:12" */
+    char check[12];        /* patches: the compile check, "none", "passed", "failed" or "timeout" */
 } link_item_t;
 
 void link_init(void);                                  /* starts the poller */

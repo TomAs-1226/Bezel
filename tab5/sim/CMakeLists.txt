@@ -40,14 +40,29 @@ find_package(ZLIB REQUIRED)
 find_package(OpenSSL REQUIRED)
 target_link_libraries(catalyst_tab_sim lvgl ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto m pthread)
 
+# The assistant end to end without the UI: this HAL, a robot over NT4, the Messages API (tools/fake_claude.py).
+file(GLOB E2E_SOURCES
+  ${ROOT}/components/nt4/src/*.c
+  ${ROOT}/components/catalyst/src/*.c
+  ${ROOT}/components/assist/src/*.c)
+add_executable(assist_e2e ${E2E_SOURCES} assist_e2e.c hal_sim.c hal_sim_net.c png.c)
+target_include_directories(assist_e2e PRIVATE
+  ${ROOT}/components/nt4/include ${ROOT}/components/bezel/include ${ROOT}/components/catalyst/include
+  ${ROOT}/components/assist/include ${ROOT}/components/tab_hal/include)
+target_compile_options(assist_e2e PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-format-truncation)
+target_link_libraries(assist_e2e ZLIB::ZLIB OpenSSL::SSL OpenSSL::Crypto m pthread)
+
 # Unit tests for the portable pieces: springs, msgpack, json, the Catalyst parsers.
 file(GLOB TEST_SOURCES ${ROOT}/test/*.c)
 if(TEST_SOURCES)
   add_executable(catalyst_tab_tests ${TEST_SOURCES}
     ${ROOT}/components/nt4/src/mpack_lite.c ${ROOT}/components/nt4/src/json_lite.c
     ${ROOT}/components/bezel/src/bz_motion.c
-    ${ROOT}/components/catalyst/src/cat_can.c ${ROOT}/components/catalyst/src/cat_logs.c)
+    ${ROOT}/components/catalyst/src/cat_can.c ${ROOT}/components/catalyst/src/cat_logs.c
+    ${ROOT}/components/assist/src/as_json.c ${ROOT}/components/assist/src/as_sse.c
+    ${ROOT}/components/assist/src/as_conv.c ${ROOT}/components/assist/src/as_tooldefs.c)
   target_include_directories(catalyst_tab_tests PRIVATE ${ROOT}/components/nt4/include
-    ${ROOT}/components/bezel/include ${ROOT}/components/catalyst/include)
+    ${ROOT}/components/bezel/include ${ROOT}/components/catalyst/include
+    ${ROOT}/components/assist/include ${ROOT}/components/assist/src)
   target_link_libraries(catalyst_tab_tests m)
 endif()
