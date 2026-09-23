@@ -39,18 +39,41 @@ read as raw HTML, **[S]** the Tab5 schematic PDF. Anything not confirmed from on
 
 1. **Silicon revision.** Tab5 units are v1.x. ESP-IDF ≥ 5.5.3 targets v3 by default; this project sets
    `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y` where the IDF has that option, and keeps 360 MHz.
-2. **Three panels.** ILI9881C (≈48 Hz), ST7123 (≈58 Hz), ST7121 (≈57 Hz), told apart by the touch
-   controller at boot.
+2. **Three panels, all at ~60.5 Hz.** ILI9881C, ST7123, ST7121, told apart by the touch controller at
+   boot. The BSP's timing gives 48.2 / 66.1 / 65.5 Hz — the DPI clock is PLL_F240M over an integer
+   divider rounded down, so the BSP's "70 MHz" for the ST712x is really 80 MHz, and its 60 MHz for the
+   ILI9881C is 60. Catalyst Tab runs all three from an 80 MHz pixel clock with the BSP's vertical
+   timing and a wider horizontal back porch, logging the rate at boot:
+
+   | Panel | BSP: clock, total → rate | Catalyst Tab: HBP, total → rate |
+   |---|---|---|
+   | ILI9881C | 60 MHz, 940 × 1324 → 48.2 Hz | 198, 998 × 1324 → 60.54 Hz |
+   | ST7123 | 80 MHz, 802 × 1510 → 66.1 Hz | 113, 875 × 1510 → 60.55 Hz |
+   | ST7121 | 80 MHz, 802 × 1524 → 65.5 Hz | 105, 867 × 1524 → 60.55 Hz |
+
+   RGB565 at 80 MHz needs 1280 Mbit/s of the two lanes' 2000 (1930 on the ST7121). The BSP keeps these
+   configs private, so tab_hal links with `--wrap=esp_lcd_new_panel_dpi` and adjusts the config on its
+   way into esp_lcd. `CATALYST_BSP_PANEL_TIMING` restores the BSP's. UNVERIFIED on all three panels.
 3. **Landscape without tearing.** LVGL's port can't combine software rotation with direct mode or
    tear avoidance. Catalyst Tab doesn't use the port: it composes a landscape frame itself and has the
    PPA rotate only the changed rectangles into the back of two DPI frame buffers, swapped on vsync.
-4. **PSRAM bandwidth** is the budget: scan-out alone reads ~107 MB/s. Nothing is recomposed that
-   didn't change; glass blur is rebuilt only when the content under it changes.
-5. **Charging** needs CHG_EN set by firmware, and the upstream BSP's Wi-Fi feature call is reported to
+   `hal_present()` is asynchronous: it queues the rotations as non-blocking PPA transactions (last
+   frame's areas, then this frame's) and returns; a core-0 task waits for the PPA's completion
+   interrupts, hands the buffer to the DPI controller and waits for the vsync. At most one frame is in
+   flight, so the UI core composes frame N+1 while the PPA turns frame N.
+4. **PSRAM bandwidth** is the budget: scan-out alone reads ~112 MB/s at 60.5 Hz. Nothing is recomposed
+   that didn't change; glass blur is rebuilt only when the content under it changes.
+5. **The PPA and the cache.** Before a transaction the PPA driver invalidates the output's cache lines
+   over whole rows, which would discard nearby CPU writes (or, past a buffer's end, someone else's).
+   The HAL only lets the PPA write inside the heap block that holds the destination (found once with
+   `heap_caps_walk()`), writes that window back first, and finishes on the CPU whatever the window
+   can't cover. Each task that uses the PPA has its own client: a client queues one blocking
+   transaction at a time, and a second caller would be refused, not queued.
+6. **Charging** needs CHG_EN set by firmware, and the upstream BSP's Wi-Fi feature call is reported to
    reinitialise expander 0x44 and clear it — this firmware drives the expanders itself.
-6. **The LP core** can't see the IMU or RTC interrupts (they go to a PMS150G power MCU), so "sleep" on
+7. **The LP core** can't see the IMU or RTC interrupts (they go to a PMS150G power MCU), so "sleep" on
    a Tab5 is a timed or IMU-triggered power-on. The LP core isn't used.
-7. **After a hard power loss** wait 5 s before powering on, or the IMU may not initialise [D].
+8. **After a hard power loss** wait 5 s before powering on, or the IMU may not initialise [D].
 
 ## Pin map
 
@@ -169,3 +192,12 @@ Everything below has only been compiled; each item is marked `UNVERIFIED` in the
 5. **HTTPS streaming**: an SSE response should arrive event by event, not in 4 KB lumps.
 6. **Clips**: the PPA's YUV420 output layout is assumed to be the encoder's `O_UYY_E_VYY` (wrong would
    show as scrambled colour); check the file plays in ffplay/VLC from its start.
+7. **Panel timing**: the boot log prints `panel …: BSP timing … running 80 MHz, … -> 60.5x Hz`. A rolling,
+   torn or blank picture means that panel refuses the wider line: build with `CATALYST_BSP_PANEL_TIMING`
+   and report which panel.
+8. **Asynchronous present**: no `present: … overdue` warnings in the log while animating, and no stale
+   rectangles after fast scrolling (the catch-up re-rotates last frame's areas from their own sources).
+9. **PPA addressing**: rotations and compositor copies now read from the first pixel of each area (any
+   2-byte address, described from a 64- or 4-byte aligned base) and write only inside the destination's
+   heap block. Garbled or shifted rectangles would point here; the boot log's in-place blend self-test
+   exercises the same path.
