@@ -498,7 +498,7 @@ static void rb_refresh(void)
     kv(&RB.link[1], "protocol", "%s", st.protocol);
     if (st.state == NT4_CONNECTED) kv(&RB.link[2], "round trip", "%.1f ms", st.rtt_us / 1000.0);
     else kv(&RB.link[2], "round trip", "%s", "");
-    kv(&RB.link[3], "topics", "%u", st.topics);
+    kv(&RB.link[3], "topics", "%u", (unsigned)st.topics);
     kv(&RB.link[4], "received", "%.1f kB", st.rx_bytes / 1024.0);
     kv(&RB.link[5], "last error", "%s", st.last_error);
     if (r->have_sc) {

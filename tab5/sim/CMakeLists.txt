@@ -31,7 +31,7 @@ file(GLOB APP_SOURCES
 add_executable(catalyst_tab_sim ${APP_SOURCES} sim_main.c hal_sim.c png.c)
 target_include_directories(catalyst_tab_sim PRIVATE
   ${ROOT}/components/nt4/include ${ROOT}/components/bezel/include
-  ${ROOT}/components/catalyst/include ${ROOT}/components/ui/include ${ROOT}/components/hal/include
+  ${ROOT}/components/catalyst/include ${ROOT}/components/ui/include ${ROOT}/components/tab_hal/include
   ${LVGL_DIR})
 target_compile_options(catalyst_tab_sim PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-format-truncation)
 find_package(ZLIB REQUIRED)

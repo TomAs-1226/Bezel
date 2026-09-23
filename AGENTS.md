@@ -214,6 +214,21 @@ relying on their internals; this file only describes what they're for.
 - Push only when the user explicitly asks, and push to **both** remotes — `origin` carries a GitHub
   and a Forgejo push URL.
 
+## Catalyst Tab (`tab5/`)
+
+`tab5/` is Bezel on a microcontroller: an ESP-IDF firmware for the M5Stack Tab5 and a Linux simulator
+built from the same C. Its README says how to build both; its `docs/` hold the hardware research, the
+Catalyst topic contract and the Bezel port's numbers. Things that bite:
+
+- Everything above `components/tab_hal/` is portable C and must stay that way — the simulator is how
+  changes are verified. Run `sim/tour.txt` and look at the shots, and `catalyst_tab_tests`.
+- No project component may be named `hal` (it replaces ESP-IDF's own); the HAL is `tab_hal`.
+- Glass objects live on the glass layer (`bz_ui_glass()`), everything they frost on the content layer
+  (`bz_ui_content()`), mirroring `[data-glass]` here.
+- Motion uses `bz_motion.c`'s roles (the same `SPRINGS` as `motion.js`), never LVGL animations.
+- The tablet never commands a robot: it writes only declared tunables, the auto choice and a
+  Limelight's LED, as Catalyst Console does.
+
 ## Publishing the specimen as an artifact
 
 `python tools/artifact.py` writes `dist/artifact.html`: the page without its document wrapper, which

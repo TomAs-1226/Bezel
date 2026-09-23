@@ -1,0 +1,88 @@
+# Every screen, in order. From tab5/build (with tools/fake_robot.py running):
+#   ./sim/catalyst_tab_sim --script ../sim/tour.txt --out shots
+wait 2.5
+shot 01-pulse
+tap 532 644
+wait 1
+shot 02-devices
+tap 640 644
+wait 1.5
+shot 03-power
+tap 748 644
+wait 1
+shot 04-motion
+tap 856 644
+wait 1
+shot 05-tools
+tap 125 204
+wait 4.2
+shot 06-preflight
+tap 90 48
+wait 0.8
+tap 330 204
+wait 1
+shot 07-alerts
+tap 90 48
+wait 0.8
+tap 535 204
+wait 1
+shot 08-tune
+tap 90 48
+wait 0.8
+tap 740 204
+wait 1
+shot 09-auto
+tap 90 48
+wait 0.8
+tap 945 204
+wait 1
+shot 10-field
+tap 90 48
+wait 0.8
+tap 1150 204
+wait 1
+shot 11-robot
+tap 90 48
+wait 0.8
+tap 125 418
+wait 2
+shot 12-listen
+tap 90 48
+wait 0.8
+tap 330 418
+wait 1.5
+shot 13-level
+tap 90 48
+wait 0.8
+tap 535 418
+wait 1.5
+shot 14-lens
+tap 90 48
+wait 0.8
+tap 740 418
+wait 2.5
+shot 15-cantap
+tap 90 48
+wait 0.8
+tap 945 418
+wait 1
+tap 640 134
+wait 1.5
+shot 16-logs
+tap 90 48
+wait 0.8
+tap 1150 418
+wait 1.2
+shot 17-settings
+tap 90 48
+wait 0.8
+tap 424 644
+wait 1
+drag 640 4 640 330 0.35
+wait 1
+shot 18-control-center
+tap 630 350
+wait 1
+tap 200 600
+wait 1.2
+shot 19-pulse-light

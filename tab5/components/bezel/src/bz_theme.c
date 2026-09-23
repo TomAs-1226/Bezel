@@ -551,7 +551,7 @@ void bz_level_on_change(lv_obj_t *o, bz_level_fn fn, void *user)
 typedef struct {
     float *v;
     int n, head, count;
-    float lo, hi;
+    float lo, hi, min_span;
     bz_color_role_t color;
 } spark_t;
 
@@ -578,6 +578,11 @@ static void spark_draw(lv_event_t *e)
         }
         float pad = (hi - lo) * 0.15f + 1e-3f;
         lo -= pad; hi += pad;
+        if (hi - lo < S->min_span) {
+            float mid = (hi + lo) / 2;
+            lo = mid - S->min_span / 2;
+            hi = mid + S->min_span / 2;
+        }
     }
     lv_draw_line_dsc_t d;
     lv_draw_line_dsc_init(&d);
@@ -630,6 +635,12 @@ void bz_spark_range(lv_obj_t *o, float lo, float hi)
     spark_t *S = lv_obj_get_user_data(o);
     S->lo = lo;
     S->hi = hi;
+}
+
+void bz_spark_min_span(lv_obj_t *o, float span)
+{
+    spark_t *S = lv_obj_get_user_data(o);
+    S->min_span = span;
 }
 
 void bz_spark_color(lv_obj_t *o, bz_color_role_t c)

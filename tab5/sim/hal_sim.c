@@ -79,7 +79,7 @@ bool hal_imu(hal_imu_t *o)
     float jx = 0.004f * sinf((float)t * 7.1f), jy = 0.004f * sinf((float)t * 5.3f + 1);
     o->ax = sinf(g_tilt_x) + jx;
     o->ay = sinf(g_tilt_y) + jy;
-    o->az = sqrtf(fmaxf(0, 1 - o->ax * o->ax - o->ay * o->ay));
+    o->az = -sqrtf(fmaxf(0, 1 - o->ax * o->ax - o->ay * o->ay)); /* face up: gravity into the glass */
     o->gx = 0.3f * sinf((float)t * 3);
     o->gy = 0.2f * cosf((float)t * 2);
     o->gz = 0;

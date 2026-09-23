@@ -255,7 +255,7 @@ static bool dslog(const uint8_t *d, size_t len, cat_log_t *o)
     }
     uint32_t ver = (uint32_t)be(d, 4);
     if (ver != 3 && ver != 4) {
-        snprintf(o->error, sizeof o->error, "dslog version %u", ver);
+        snprintf(o->error, sizeof o->error, "dslog version %u", (unsigned)ver);
         return false;
     }
     o->start_unix = (int64_t)be(d + 4, 8) - LABVIEW_EPOCH;

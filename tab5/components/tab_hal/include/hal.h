@@ -35,7 +35,8 @@ const char *hal_panel_name(void);        /* "ILI9881C", "ST7123", "ST7121", "sim
 
 /* ---- sensors ---- */
 typedef struct {
-    float ax, ay, az;    /* g, in the screen's frame: x right, y down, z out of the glass */
+    float ax, ay, az;    /* gravity's direction in g, in the landscape screen frame: x right, y down,
+                            z out of the glass. Held upright: (0, 1, 0); lying face up: (0, 0, -1) */
     float gx, gy, gz;    /* deg/s */
     bool ok;
 } hal_imu_t;

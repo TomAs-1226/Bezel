@@ -103,3 +103,4 @@ The controls above the live panel change how it's drawn:
 | `scenes.js` | Album art canvas painting and atlas building |
 | `detent/` | A copy of Detent's spring solver, gesture math and easing (`spring.js`, `gesture.js`, `velocity.js`, `easing.js`) |
 | `tools/artifact.py` | Turns `index.html` into the page an artifact publish takes |
+| `tab5/` | **Catalyst Tab**: Bezel ported to the M5Stack Tab5 (ESP32-P4) as a diagnostics handheld for FrcCatalyst robots — its own README |

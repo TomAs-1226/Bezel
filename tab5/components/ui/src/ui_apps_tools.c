@@ -289,7 +289,8 @@ static void level_frame(double now, double dt)
     hal_imu_t m;
     if (!hal_imu(&m) || !m.ok || LV.held) return;
     float edge = atan2f(m.ax, m.ay) * 57.2958f;
-    float pitch = atan2f(m.ay, m.az) * 57.2958f, roll = atan2f(m.ax, m.az) * 57.2958f;
+    /* lying face up, gravity points into the glass (-z) */
+    float pitch = atan2f(m.ay, -m.az) * 57.2958f, roll = atan2f(m.ax, -m.az) * 57.2958f;
     const float k = 0.15f; /* a light low-pass: hands shake */
     LV.edge += (edge - LV.edge) * k;
     LV.pitch += (pitch - LV.pitch) * k;
@@ -364,14 +365,15 @@ static void level_build(lv_obj_t *b)
     reading(t, &LV.main, "angle", BZ_F_CLOCK, "°", 0);
     LV.label_main = LV.main.label;
     LV.mode = bz_label(t, "", BZ_F_LABEL, BZ_C_DIM);
-    lv_obj_set_pos(LV.mode, 0, 160);
+    lv_obj_set_width(LV.mode, 480);
+    lv_obj_set_pos(LV.mode, 0, 166);
     lv_obj_t *row = bz_row(t, 10);
     lv_obj_align(row, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     ui_button(row, BZ_I_ADJUST, "zero here", lv_zero, NULL);
     LV.hold_chip = ui_chip(row, "hold", lv_hold, NULL);
     LV.dial = bz_box(t);
     lv_obj_set_size(LV.dial, 250, 250);
-    lv_obj_align(LV.dial, LV_ALIGN_RIGHT_MID, 0, 10);
+    lv_obj_align(LV.dial, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
     lv_obj_add_event_cb(LV.dial, level_draw, LV_EVENT_DRAW_MAIN, NULL);
 
     lv_obj_t *c = bz_tile(b, W - 2 * PAD - 560 - BZ_GAP, APP_H);
@@ -733,7 +735,7 @@ static void lg_show(void)
     lv_obj_remove_flag(LG.detail, LV_OBJ_FLAG_HIDDEN);
     char mb[16], tr[16];
     ui_text(LG.stats, "%s · %u records · %d:%02d\n\nlowest battery %s v\nbrownouts %d · dips under 6.8 v %d\nworst trip %s ms\npacket loss %.1f %%\nbusiest can %.0f %%\npeak cpu %.0f %%",
-            l->kind, l->records, (int)l->duration_s / 60, (int)l->duration_s % 60,
+            l->kind, (unsigned)l->records, (int)l->duration_s / 60, (int)l->duration_s % 60,
             bz_fmt(mb, sizeof mb, l->min_battery == l->min_battery, "%.2f", l->min_battery), l->brownouts, l->dips,
             bz_fmt(tr, sizeof tr, l->have[CAT_LOG_TRIP], "%.1f", l->max_trip_ms), l->avg_loss * 100, l->max_can * 100, l->max_cpu * 100);
     static const cat_log_series_t series[4] = { CAT_LOG_BATTERY, CAT_LOG_TRIP, CAT_LOG_CAN, CAT_LOG_CPU };

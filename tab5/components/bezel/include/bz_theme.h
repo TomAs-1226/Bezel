@@ -84,6 +84,8 @@ void bz_level_on_change(lv_obj_t *level, bz_level_fn fn, void *user);
 lv_obj_t *bz_spark(lv_obj_t *parent, int w, int h, int n);
 void bz_spark_push(lv_obj_t *spark, float v);
 void bz_spark_range(lv_obj_t *spark, float lo, float hi); /* lo == hi → auto */
+/* Auto-ranging never zooms tighter than `span`, so sensor noise doesn't read as a trend. */
+void bz_spark_min_span(lv_obj_t *spark, float span);
 void bz_spark_color(lv_obj_t *spark, bz_color_role_t c);
 void bz_spark_clear(lv_obj_t *spark);
 

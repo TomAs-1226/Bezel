@@ -254,6 +254,7 @@ void ui_page_power(lv_obj_t *page)
     lv_obj_t *vu = bz_label(vr, "v", BZ_F_NAME, BZ_C_DIM);
     lv_obj_set_style_pad_bottom(vu, 12, 0);
     PW.spark = bz_spark(t, PW_RIGHT - 2 * BZ_PAD_TILE, 70, 120);
+    bz_spark_min_span(PW.spark, 1.0f);
     lv_obj_set_pos(PW.spark, 0, 132);
     lv_obj_t *cl = bz_label(t, "total current", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_set_pos(cl, 0, 222);
@@ -263,6 +264,7 @@ void ui_page_power(lv_obj_t *page)
     PW.total = bz_label(cr, "\xe2\x80\x94", BZ_F_NAME, BZ_C_INK);
     bz_label(cr, "a", BZ_F_LABEL, BZ_C_DIM);
     PW.curr_spark = bz_spark(t, PW_RIGHT - 2 * BZ_PAD_TILE, 70, 120);
+    bz_spark_min_span(PW.curr_spark, 20.0f);
     lv_obj_set_pos(PW.curr_spark, 0, 252);
     bz_spark_color(PW.curr_spark, BZ_C_ICE);
     PW.foot = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
