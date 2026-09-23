@@ -67,7 +67,7 @@ visibility lightbulb health_and_safety pin_drop my_location adjust square circle
 radio_button_unchecked more_horiz expand_more expand_less chevron_right keyboard_arrow_down
 data_usage hourglass_top downloading save target filter_center_focus frame_inspect
 history account_tree fiber_manual_record auto_awesome computer settings_ethernet send inbox outbox
-undo restore psychology code terminal call_split cloud_upload cloud_off cloud_done storage device_hub
+undo psychology code terminal call_split cloud_upload cloud_off cloud_done storage device_hub
 restart_alt schedule gamepad insights query_stats local_fire_department stop_circle keyboard chat
 upload_file description rule difference assignment task_alt pending bookmark swap_horiz neurology
 network_check signal_cellular_alt usb_off conversion_path schema videocam_off movie
@@ -109,13 +109,20 @@ def available(path, ranges):
     return ",".join(hex(cp) for cp in keep)
 
 
-def conv(name, path, size, ranges, extra_symbols=None):
+def conv(name, path, size, ranges, extra_symbols=None, fallback=None):
     out = os.path.join(OUT, name + ".c")
+    wanted = ranges
     ranges = available(path, ranges)
     args = ["lv_font_conv", "--no-compress", "--no-prefilter", "--bpp", "4", "--size", str(size), "--format", "lvgl",
             "--lv-font-name", name, "--lv-include", "lvgl.h", "-o", out, "--font", path]
     if ranges:
         args += ["-r", ranges]
+    if fallback:
+        # what this face lacks (Google Sans Flex has no arrows) from a face that has it (Google Sans Code)
+        have = set(int(c, 16) for c in ranges.split(",")) if ranges else set()
+        missing = ",".join(c for c in available(fallback, wanted).split(",") if c and int(c, 16) not in have)
+        if missing:
+            args += ["--font", fallback, "-r", missing]
     if extra_symbols:
         args += ["-r", extra_symbols]
     subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
@@ -149,7 +156,8 @@ def main():
     for name, src, size, ranges, frozen in TEXT_FONTS:
         path = tnum(src, a.fonts) if frozen else os.path.join(a.fonts, src)
         print("font", name)
-        conv(name, path, size, ranges)
+        fallback = os.path.join(a.fonts, "code400.ttf") if src.startswith("flex") else None
+        conv(name, path, size, ranges, fallback=fallback)
     for style, src, sizes in ICON_SIZES:
         present = icon_ranges if style == "outline" else ",".join(hex(cp) for _, cp in icons if cp in fill_cmap)
         for s in sizes:

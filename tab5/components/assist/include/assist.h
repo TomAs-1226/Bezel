@@ -96,6 +96,9 @@ uint32_t assist_rev(void);                     /* bumps on any change; cheap, no
 void assist_lock(void);
 int assist_count(void);
 const as_entry_t *assist_entry(int i);
+/* The id of entry 0: ids only grow, so a view can tell entries that dropped off the front (a long
+ * conversation, a reset) from new ones. Under the lock. */
+int assist_first(void);
 void assist_unlock(void);
 
 bool assist_confirm_pending(as_confirm_t *out);

@@ -28,7 +28,7 @@ static struct {
     char url[96], token[80];
     bool discovered;
     link_status_t st;
-    link_item_t inbox[LIST_MAX], patches[LIST_MAX];
+    link_item_t *inbox, *patches; /* LIST_MAX each, on the heap (static internal RAM is scarce on the P4) */
     int ninbox, npatches;
     double lists_read;     /* when something last read the lists: they refresh only while wanted */
     int outbox;
@@ -336,14 +336,14 @@ static void refresh_lists(void)
         if (link_get("/inbox?status=open", buf, N) == 200) {
             int n = parse_items(buf, "items", tmp, LIST_MAX);
             pthread_mutex_lock(&L.lock);
-            memcpy(L.inbox, tmp, (size_t)n * sizeof *tmp);
+            if (L.inbox) memcpy(L.inbox, tmp, (size_t)n * sizeof *tmp);
             L.ninbox = n;
             pthread_mutex_unlock(&L.lock);
         }
         if (link_get("/code/patches", buf, N) == 200) {
             int n = parse_items(buf, "patches", tmp, LIST_MAX);
             pthread_mutex_lock(&L.lock);
-            memcpy(L.patches, tmp, (size_t)n * sizeof *tmp);
+            if (L.patches) memcpy(L.patches, tmp, (size_t)n * sizeof *tmp);
             L.npatches = n;
             pthread_mutex_unlock(&L.lock);
         }
@@ -405,8 +405,12 @@ void link_init(void)
     hal_kv_get("link_url", url, sizeof url);
     hal_kv_get("link_token", token, sizeof token);
     pthread_mutex_lock(&L.lock);
-    bool start = !L.started;
-    L.started = true;
+    if (!L.inbox) {
+        L.inbox = calloc(LIST_MAX, sizeof *L.inbox);
+        L.patches = calloc(LIST_MAX, sizeof *L.patches);
+    }
+    bool start = !L.started && L.inbox && L.patches;
+    L.started = start || L.started;
     if (!L.url[0]) normalize(url, L.url, sizeof L.url);
     if (!L.token[0]) snprintf(L.token, sizeof L.token, "%s", token);
     pthread_mutex_unlock(&L.lock);
@@ -444,7 +448,8 @@ int link_inbox(link_item_t *out, int max)
     pthread_mutex_lock(&L.lock);
     L.lists_read = hal_seconds();
     int n = L.ninbox < max ? L.ninbox : max;
-    memcpy(out, L.inbox, (size_t)(n > 0 ? n : 0) * sizeof *out);
+    if (L.inbox) memcpy(out, L.inbox, (size_t)(n > 0 ? n : 0) * sizeof *out);
+    else n = 0;
     pthread_mutex_unlock(&L.lock);
     return n;
 }
@@ -454,7 +459,8 @@ int link_patches(link_item_t *out, int max)
     pthread_mutex_lock(&L.lock);
     L.lists_read = hal_seconds();
     int n = L.npatches < max ? L.npatches : max;
-    memcpy(out, L.patches, (size_t)(n > 0 ? n : 0) * sizeof *out);
+    if (L.patches) memcpy(out, L.patches, (size_t)(n > 0 ? n : 0) * sizeof *out);
+    else n = 0;
     pthread_mutex_unlock(&L.lock);
     return n;
 }

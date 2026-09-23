@@ -11,6 +11,7 @@
  *   mode dark|light           tone
  *   calm on|off               reduced motion + solid glass
  *   tilt X Y                  lean the simulated IMU (radians)
+ *   ask TEXT                  put a question to the assistant, as if typed
  *   stats                     print compositor timing
  *   trace NAME | trace end    cost every frame between the two for the ESP32-P4 (see bz_ui.c's model)
  *                             and print the distribution; frames over 16.7 ms miss 60 Hz
@@ -250,6 +251,14 @@ int main(int argc, char **argv)
                 void bz_comp_debug_dump(bz_comp_t *c, const char *dir);
                 bz_comp_debug_dump(bz_ui_comp(), g_out);
             } else if (px) png_write_rgb565(path, px, w, h);
+        } else if (!strcmp(cmd, "ask")) {
+            bool assist_send(const char *text);
+            const char *q = line + 3;
+            while (*q == ' ') q++;
+            char buf[512];
+            snprintf(buf, sizeof buf, "%s", q);
+            buf[strcspn(buf, "\n")] = 0;
+            if (!assist_send(buf)) fprintf(stderr, "script: the assistant is busy or not set up\n");
         } else if (!strcmp(cmd, "stats")) {
             bz_comp_stats_t st;
             bz_comp_stats(bz_ui_comp(), &st);

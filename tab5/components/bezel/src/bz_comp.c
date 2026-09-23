@@ -102,11 +102,14 @@ struct bz_comp {
     bz_comp_stats_t stats;
     uint32_t part_lut_ring[2];
     uint32_t part_flat[2], part_edge[2], part_shadow[2];
+    struct glass_job *job;           /* per compose_group call, kept off the stack and out of static RAM */
+    struct cell *cells;              /* a damaged area's cells */
 };
 
-static float PROF[PROF_N + 1], SLOPE[PROF_N + 1];
+/* Tables, on the heap: the P4's static internal RAM is spoken for (the USB host's ISR code lives there). */
+static float *PROF, *SLOPE;
 #define GLOW_N 1024
-static uint8_t GLOW[GLOW_N];      /* exp(-d / R) over d² in [0, (4R)²), ×255 */
+static uint8_t *GLOW;             /* exp(-d / R) over d² in [0, (4R)²), ×255 */
 
 /* ------------------------------------------------------------------ areas */
 
@@ -214,10 +217,14 @@ static const int8_t BAYER[16] = { -8, 0, -6, 2, 4, -4, 6, -2, -5, 3, -7, 1, 7, -
  * reads instead of three clamps and three multiplies per pixel. */
 #define QOFF 256
 #define QN 1024
-static uint16_t Q_R[QN], Q_G[QN], Q_B[QN];
+static uint16_t *Q_R, *Q_G, *Q_B;
 
 static void quant_init(void)
 {
+    if (Q_R) return;
+    Q_R = malloc(QN * 2 * 3);
+    Q_G = Q_R + QN;
+    Q_B = Q_G + QN;
     for (int i = 0; i < QN; i++) {
         int v = i - QOFF;
         v = v < 0 ? 0 : v > 255 ? 255 : v;
@@ -423,7 +430,10 @@ static float band_of(const bz_glass_shape_t *s)
 /* The bezel profile (1 − (1 − x)^4)^(1/4) and its slope, tabulated: they were two powf per pixel. */
 static void tables_init(void)
 {
-    if (PROF[PROF_N] != 0) return;
+    if (PROF) return;
+    PROF = malloc(sizeof(float) * (PROF_N + 1) * 2);
+    SLOPE = PROF + PROF_N + 1;
+    GLOW = malloc(GLOW_N);
     for (int i = 0; i <= PROF_N; i++) {
         float x = (float)i / PROF_N;
         float om = 1 - x, om4 = om * om * om * om;
@@ -1007,6 +1017,7 @@ bz_comp_t *bz_comp_create(int w, int h, uint16_t *content, uint32_t *ink, uint16
     c->tw = (w + TILE - 1) / TILE;
     c->th = (h + TILE - 1) / TILE;
     c->tiles = calloc((size_t)(c->tw * c->th), 1);
+
     bz_comp_damage_all(c);
     return c;
 }
@@ -1239,7 +1250,7 @@ static void build_backdrop(bz_comp_t *c)
 
 /* ------------------------------------------------------------------ glass */
 
-typedef struct {
+typedef struct glass_job {
     group_t *g;
     bz_area_t a;
     /* per shape of the cluster */
@@ -1400,7 +1411,9 @@ static void compose_group(bz_comp_t *c, group_t *g, const bz_area_t *r)
 {
     bz_area_t a;
     if (!area_intersect(&a, r, &g->bbox)) return;
-    static glass_job_t J;
+    if (!c->job) c->job = malloc(sizeof *c->job);
+    glass_job_t J_, *Jp = c->job ? c->job : &J_;
+#define J (*Jp)
     memset(&J, 0, sizeof J);
     J.g = g;
     J.a = a;
@@ -1438,6 +1451,7 @@ static void compose_group(bz_comp_t *c, group_t *g, const bz_area_t *r)
     c->stats.glass_edge_px += c->part_edge[0] + c->part_edge[1];
     c->stats.glass_shadow_px += c->part_shadow[0] + c->part_shadow[1];
     if (heap) { free(J.vrow[0]); free(J.vrow[1]); }
+#undef J
     uint32_t px = (uint32_t)area_size(&a);
     c->stats.glass_px += px;
     if (g->fast && !c->calm) c->stats.glass_fast_px += px;
@@ -1447,11 +1461,12 @@ static void compose_group(bz_comp_t *c, group_t *g, const bz_area_t *r)
 
 enum { SRC_CONTENT = -1, SRC_MIXED = -2, SRC_BACK = -3 };
 
-typedef struct {
+typedef struct cell {
     bz_area_t a;
     bool compose;
     int src;              /* SRC_CONTENT, a layer slot, or SRC_MIXED */
 } cell_t;
+#define MAX_CELLS 256
 
 static int cmp_i16(const void *a, const void *b) { return *(const int16_t *)a - *(const int16_t *)b; }
 
@@ -1709,6 +1724,7 @@ static void emit(bz_comp_t *c, bz_present_t *out, int *n, int max, const cell_t 
 int bz_comp_compose(bz_comp_t *c, bz_present_t *out, int max)
 {
     if (!c->ndirty) return 0;
+    if (!c->cells && !(c->cells = malloc(sizeof(cell_t) * MAX_CELLS))) return 0;
     int64_t t0 = now_us();
     memset(&c->stats, 0, sizeof c->stats);
     if (c->outs[1]) c->out = c->outs[++c->frame & 1];
@@ -1743,10 +1759,10 @@ int bz_comp_compose(bz_comp_t *c, bz_present_t *out, int max)
     }
 
     int n = 0;
-    static cell_t cells[256];
+    cell_t *cells = c->cells;
     for (int i = 0; i < c->ndirty; i++) {
         bz_area_t *D = &c->dirty[i];
-        int k = split(c, D, cells, (int)(sizeof cells / sizeof cells[0]), false);
+        int k = split(c, D, cells, MAX_CELLS, false);
         /* too many pieces for the panel's queue: take this area whole */
         if (k < 0 || n + k > max - (c->ndirty - i - 1)) {
             bool layered = false;

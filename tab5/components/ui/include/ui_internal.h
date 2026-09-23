@@ -72,6 +72,8 @@ extern const ui_app_t APP_ASSIST, APP_LINK;
 
 /* The control center: pulled down from the top edge. */
 void ui_cc_init(void);
+/* The assistant's orb, over every screen (ui_app_assist.c). */
+void ui_orb_init(void);
 
 /* Helpers. */
 lv_obj_t *ui_head(lv_obj_t *page, const char *title, const char *label); /* returns the right-hand row */
@@ -87,3 +89,16 @@ lv_obj_t *ui_chip(lv_obj_t *parent, const char *text, bz_tap_fn fn, void *user);
 void ui_chip_set(lv_obj_t *chip, bool on);
 /* A vertical scroller: returns the content container; drags coast and rubber-band at the ends. */
 lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h);
+/* Brings a scroller's end into view on the `smooth` spring (a transcript following its newest line).
+ * Returns false, and does nothing, while a finger holds it or when it's been scrolled away from the end
+ * (the reader is looking back). */
+bool ui_scroller_follow(lv_obj_t *content);
+
+/* A keyboard sheet over the bottom of an app, for one entry at a time. */
+typedef struct ui_kb ui_kb_t;
+typedef void (*ui_kb_done_fn)(const char *text, void *user);
+ui_kb_t *ui_kb_create(lv_obj_t *body, int h);
+void ui_kb_show(ui_kb_t *k, const char *title, const char *text, bool secret, bool one_line, ui_kb_done_fn done,
+                void *user);
+bool ui_kb_open(const ui_kb_t *k);
+void ui_kb_hide(ui_kb_t *k);

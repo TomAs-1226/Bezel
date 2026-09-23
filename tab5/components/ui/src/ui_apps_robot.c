@@ -1,5 +1,6 @@
 /* Apps that read and (where Catalyst allows) write the robot: preflight, alerts, tune, auto, robot, field. */
 #include "ui_internal.h"
+#include "as_snap.h"
 #include "cat_preflight.h"
 
 #include <math.h>
@@ -202,7 +203,18 @@ static struct {
     lv_obj_t *vals[CAT_MAX_TUNABLES], *levels[CAT_MAX_TUNABLES], *chips[CAT_MAX_TUNABLES];
     int n;
     double last_sent_at[CAT_MAX_TUNABLES];
+    bool snapped;
 } TU;
+
+/* Before this visit's first change, a snapshot of every tunable, so the assistant (or anyone) can put
+ * them all back exactly: as_snap.h. */
+static void tu_snapshot(const cat_tunable_t *t)
+{
+    if (TU.snapped) return;
+    char why[96];
+    snprintf(why, sizeof why, "before changing %s in tune", t->name);
+    TU.snapped = snap_take(R, why) >= 0;
+}
 
 static void tu_fmt(char *buf, size_t n, const cat_tunable_t *t, double v)
 {
@@ -220,6 +232,7 @@ static void tu_level(lv_obj_t *lv, float v, bool final, void *u)
     char b[24];
     tu_fmt(b, sizeof b, t, v);
     ui_text(TU.vals[i], "%s", b);
+    tu_snapshot(t);
     /* live while dragging (NT coalesces), and once more on release */
     cat_set_tunable(R, i, v);
     TU.last_sent_at[i] = ui_now();
@@ -237,6 +250,7 @@ static void tu_toggle(lv_obj_t *o, void *u)
     if (i >= R->ntunables) return;
     const cat_tunable_t *t = &R->tunables[i];
     bool on = !(t->have && t->value != 0);
+    tu_snapshot(t);
     cat_set_tunable(R, i, on);
     TU.last_sent_at[i] = ui_now();
     ui_chip_set(o, on);
@@ -254,6 +268,7 @@ static void tu_step(lv_obj_t *o, void *u)
     const cat_tunable_t *t = &R->tunables[i];
     double step = t->step == t->step ? t->step : (fabs(t->value) > 1 ? 0.1 : 0.01);
     double v = t->value + ((code & 1) ? step : -step);
+    tu_snapshot(t);
     cat_set_tunable(R, i, v);
     TU.last_sent_at[i] = ui_now();
     char b[24], msg[96];
@@ -350,7 +365,11 @@ static void tu_refresh(void)
     ui_text(TU.note, "%s", r->have_manifest ? "declared by the robot's manifest" : r->ntunables ? "1.x TunableNumbers" : "");
 }
 
-static void tu_open(void) { TU.sig = 0; }
+static void tu_open(void)
+{
+    TU.sig = 0;
+    TU.snapped = false;
+}
 
 static void tu_build(lv_obj_t *b)
 {

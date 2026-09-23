@@ -910,6 +910,7 @@ as_phase_t assist_phase(void)
 void assist_lock(void) { pthread_mutex_lock(&A.lock); }
 void assist_unlock(void) { pthread_mutex_unlock(&A.lock); }
 int assist_count(void) { return A.n; }
+int assist_first(void) { return A.dropped; }
 const as_entry_t *assist_entry(int i) { return i >= 0 && i < A.n ? &A.ent[i].e : NULL; }
 
 void assist_usage(as_usage_t *out)

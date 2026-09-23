@@ -5,6 +5,9 @@
  * snap); an island that carries status and morphs for a message; apps that grow out of the icon that
  * opened them and can be caught mid-flight or dragged down to close. */
 #include "ui_internal.h"
+#include "as_snap.h"
+#include "assist.h"
+#include "link.h"
 
 #include <math.h>
 #include <stdarg.h>
@@ -164,6 +167,7 @@ typedef struct {
     bz_motion_t y;
     float start;
     bool dragging;
+    bool away;      /* left away from the end by a finger: don't follow new content */
 } scroller_t;
 
 static scroller_t *g_scrollers[16];
@@ -199,6 +203,7 @@ static void sc_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
     scroller_t *s = u;
     s->dragging = false;
     float lo = scroll_min(s), y = s->y.value;
+    s->away = y + bz_project(vy, BZ_RATE_NORMAL) > lo + 40;
     if (y > 0 || y < lo) {
         /* released past an edge: spring straight back to the bound, no velocity */
         bz_motion_to_v(&s->y, y > 0 ? 0 : lo, BZ_EDGE, 0);
@@ -222,6 +227,22 @@ static void scroll_frame(double now, double dt, void *user)
             bz_ui_keep_alive();
         }
     }
+}
+
+bool ui_scroller_follow(lv_obj_t *content)
+{
+    for (int i = 0; i < 16; i++) {
+        scroller_t *s = g_scrollers[i];
+        if (!s || s->content != content) continue;
+        if (s->dragging || s->away) return false;
+        float lo = scroll_min(s);
+        if (fabsf(s->y.target - lo) > 0.5f) {
+            bz_motion_to(&s->y, lo, BZ_SMOOTH);
+            bz_ui_keep_alive();
+        }
+        return true;
+    }
+    return false;
 }
 
 lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h)
@@ -873,6 +894,7 @@ static void shell_frame(double now, double dt, void *user)
     if (now - U.last_refresh >= 0.1) {
         U.last_refresh = now;
         cat_model_update(R);
+        assist_feed(R);
         island_refresh();
         for (int i = 0; i < U.nrefresh; i++) U.refresh[i].fn(U.refresh[i].user);
         if (U.app && U.app->refresh && U.k.target > 0) U.app->refresh();
@@ -924,6 +946,10 @@ void ui_init(const ui_config_t *cfg)
     build_dock();
     build_island();
     ui_cc_init();
+    ui_orb_init();
+    snap_init();
+    link_init();
+    assist_init();
     bz_ui_on_frame(scroll_frame, NULL);
     bz_ui_on_frame(shell_frame, NULL);
 }
