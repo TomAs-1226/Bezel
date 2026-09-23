@@ -3,15 +3,17 @@
  * Built on Espressif's Tab5 BSP (espressif/m5stack_tab5) for what it does well — panel detection and
  * bring-up for all three panel revisions, touch, the audio codecs, the camera's sensor pipeline, the
  * microSD slot — and on ESP-IDF directly for the rest. docs/tab5-hardware.md has the pin map and the
- * research behind every number here.
+ * research behind every number here. The network half (Wi-Fi, the USB tether, mDNS, HTTP, threads) is
+ * hal_tab5_net.c.
  *
- * Tasks: the UI (LVGL + compositor) runs on core 1; this file's workers — microphone capture, tones,
- * camera capture, CAN — run on core 0 beside the NetworkTables client, so the renderer never waits on
- * a peripheral.
+ * Tasks: the UI (LVGL + compositor) runs on core 1; this file's workers — tones, camera capture, the clip
+ * encoder, CAN — run on core 0 beside the NetworkTables client, so the renderer never waits on a
+ * peripheral. The microphones (ES7210) are deliberately left unused.
  *
  * Verified by compiling only: this file has not yet run on a Tab5. Items marked UNVERIFIED are the
  * ones most likely to need a correction on first boot. */
 #include "hal.h"
+#include "hal_tab5_priv.h"
 
 #include <dirent.h>
 #include <fcntl.h>
@@ -35,24 +37,23 @@
 #include "driver/twai.h"
 #include "esp_cache.h"
 #include "esp_codec_dev.h"
-#include "esp_event.h"
+#include "esp_h264_alloc.h"
+#include "esp_h264_enc_single_hw.h"
 #include "esp_heap_caps.h"
 #include "esp_io_expander.h"
 #include "esp_lcd_mipi_dsi.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_touch.h"
 #include "esp_log.h"
-#include "esp_netif.h"
+#include "esp_memory_utils.h"
 #include "esp_timer.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
-#include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "linux/videodev2.h"
-#include "mdns.h"
 #include "nvs.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
@@ -493,39 +494,15 @@ void hal_display(hal_display_t *o)
 
 /* ------------------------------------------------------------------ audio */
 
-#define MIC_RING 8192
+/* The ES8388 and the speaker amp only. The ES7210 and its microphones are never configured: nothing in
+ * Catalyst Tab listens. (The BSP's shared I2S bus still enables its receive channel; with no codec behind
+ * it that costs a few DMA interrupts and captures nothing.) */
 static struct {
-    esp_codec_dev_handle_t spk, mic;
-    bool mic_on;
-    int16_t ring[MIC_RING];
-    volatile uint32_t head, tail;
+    esp_codec_dev_handle_t spk;
     QueueHandle_t tones;
-    portMUX_TYPE lock;
-} A = { .lock = portMUX_INITIALIZER_UNLOCKED };
+} A;
 
 typedef struct { float hz; int ms; float vol; } tone_t;
-
-static void mic_task(void *arg)
-{
-    /* 48 kHz stereo from the ES7210, decimated ×3 to 16 kHz mono for the spectrum. UNVERIFIED: the
-     * ES7210's slot order on the Tab5; the first channel is taken as a microphone. */
-    static int16_t buf[1536 * 2];
-    for (;;) {
-        if (!A.mic_on || !A.mic) {
-            vTaskDelay(pdMS_TO_TICKS(50));
-            continue;
-        }
-        if (esp_codec_dev_read(A.mic, buf, sizeof buf) != ESP_CODEC_DEV_OK) {
-            vTaskDelay(pdMS_TO_TICKS(10));
-            continue;
-        }
-        for (int i = 0; i + 2 < 1536; i += 3) {
-            int s = (buf[2 * i] + buf[2 * i + 2] + buf[2 * i + 4]) / 3;
-            A.ring[A.head % MIC_RING] = (int16_t)s;
-            A.head++;
-        }
-    }
-}
 
 static void tone_task(void *arg)
 {
@@ -555,37 +532,14 @@ static void tone_task(void *arg)
 static void audio_init(void)
 {
     A.spk = bsp_audio_codec_speaker_init();
-    A.mic = bsp_audio_codec_microphone_init();
     esp_codec_dev_sample_info_t fs = { .sample_rate = 48000, .channel = 2, .bits_per_sample = 16 };
     if (A.spk) {
         esp_codec_dev_open(A.spk, &fs);
         esp_codec_dev_set_out_vol(A.spk, 70);
     }
-    if (A.mic) {
-        esp_codec_dev_open(A.mic, &fs);
-        esp_codec_dev_set_in_gain(A.mic, 30);
-    }
     A.tones = xQueueCreate(8, sizeof(tone_t));
-    xTaskCreatePinnedToCore(mic_task, "mic", 4096, NULL, 4, NULL, 0);
     xTaskCreatePinnedToCore(tone_task, "tone", 4096, NULL, 4, NULL, 0);
 }
-
-int hal_mic_read(int16_t *out, int max, int *rate)
-{
-    *rate = 16000;
-    if (!A.mic_on) {
-        A.mic_on = true;
-        A.tail = A.head;
-        return 0;
-    }
-    int n = 0;
-    uint32_t head = A.head;
-    if (head - A.tail > MIC_RING) A.tail = head - MIC_RING; /* the reader fell behind: drop the oldest */
-    while (A.tail != head && n < max) out[n++] = A.ring[A.tail++ % MIC_RING];
-    return n;
-}
-
-void hal_mic_stop(void) { A.mic_on = false; }
 
 void hal_tone(float hz, int ms, float v)
 {
@@ -616,6 +570,10 @@ static struct {
     jpeg_encoder_handle_t jpeg;
 } C = { .fd = -1, .ready = -1 };
 
+static void clip_take(const void *src);
+static bool clip_taking_frames(void);
+static volatile bool s_clip_taking;
+
 static void cam_task(void *arg)
 {
     int w = 0;
@@ -628,6 +586,13 @@ static void cam_task(void *arg)
         if (ioctl(C.fd, VIDIOC_DQBUF, &b) != 0) {
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
+        }
+        /* a clip gets the full-resolution frame first; s_clip_taking lets the encoder worker wait out a
+         * take in flight when the clip ends */
+        if (clip_taking_frames()) {
+            s_clip_taking = true;
+            if (clip_taking_frames()) clip_take(C.bufs[b.index]);
+            s_clip_taking = false;
         }
         /* scale 1280×720 to 960×540 on the PPA straight into the frame the UI will show */
         ppa_srm_oper_config_t op = {
@@ -684,6 +649,7 @@ bool hal_camera_start(void)
 void hal_camera_stop(void)
 {
     if (!C.on) return;
+    hal_clip_stop();
     C.on = false;
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(C.fd, VIDIOC_STREAMOFF, &type);
@@ -731,6 +697,197 @@ bool hal_camera_snapshot(const char *path)
     return ok;
 }
 
+/* ---- clips: the camera's frames through the P4's hardware H.264 encoder ----
+ *
+ * The camera task converts each full-resolution RGB565 frame on the PPA into one of two YUV420 buffers
+ * (the encoder's only input format, "O_UYY_E_VYY": the P4's packed 4:2:0, taken to be what the PPA's
+ * YUV420 output writes — UNVERIFIED on the unit; wrong would show as scrambled colour, not a crash) and
+ * hands it to a core-0 worker, which runs it through esp_h264's hardware encoder and appends the NAL units
+ * to the file. The Lens preview keeps its own path; when the worker falls behind, frames are dropped
+ * rather than queued. esp_video's V4L2 H.264 device wraps the same encoder; calling esp_h264 directly
+ * needs no second V4L2 pipeline. */
+#define CLIP_FPS 30          /* the SC202CS mode: 1280×720 at 30 fps */
+#define CLIP_BITRATE 4000000 /* ~30 MB a minute: detail enough to read a label inside a gearbox */
+#define CLIP_SLOTS 2
+
+static struct {
+    TaskHandle_t task;
+    volatile bool active;            /* taking frames */
+    FILE *fp;
+    esp_h264_enc_handle_t enc;
+    uint8_t *yuv[CLIP_SLOTS], *bits;
+    uint32_t yuv_len, bits_len;
+    QueueHandle_t full, empty;       /* slot indices: camera → encoder, encoder → camera */
+    SemaphoreHandle_t done;
+    int w, h;
+    double t_start, max_s;
+    volatile double t_first, t_last; /* when the first and the newest frame were taken */
+    volatile uint32_t taken, frames, dropped;
+    double seconds;                  /* the finished clip's length */
+    bool write_error;
+} V;
+
+static bool clip_taking_frames(void) { return V.active; }
+
+static void clip_take(const void *src)
+{
+    int slot;
+    if (xQueueReceive(V.empty, &slot, 0) != pdTRUE) {
+        V.dropped++;
+        return;
+    }
+    ppa_srm_oper_config_t op = {
+        .in = { .buffer = src, .pic_w = (uint32_t)C.src_w, .pic_h = (uint32_t)C.src_h, .block_w = (uint32_t)V.w,
+                .block_h = (uint32_t)V.h, .srm_cm = PPA_SRM_COLOR_MODE_RGB565 },
+        /* limited range, BT.709: what players assume for an HD stream that doesn't say otherwise */
+        .out = { .buffer = V.yuv[slot], .buffer_size = V.yuv_len, .pic_w = (uint32_t)V.w, .pic_h = (uint32_t)V.h,
+                 .srm_cm = PPA_SRM_COLOR_MODE_YUV420, .yuv_range = PPA_COLOR_RANGE_LIMIT,
+                 .yuv_std = PPA_COLOR_CONV_STD_RGB_YUV_BT709 },
+        .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
+        .scale_x = 1,
+        .scale_y = 1,
+        .mode = PPA_TRANS_MODE_BLOCKING,
+    };
+    if (ppa_do_scale_rotate_mirror(T.ppa_srm, &op) != ESP_OK) {
+        xQueueSend(V.empty, &slot, 0);
+        V.dropped++;
+        return;
+    }
+    double t = hal_seconds();
+    if (!V.taken++) V.t_first = t;
+    V.t_last = t;
+    xQueueSend(V.full, &slot, 0);
+}
+
+static void clip_free(void)
+{
+    if (V.enc) {
+        esp_h264_enc_close(V.enc);
+        esp_h264_enc_del(V.enc);
+    }
+    for (int i = 0; i < CLIP_SLOTS; i++) free(V.yuv[i]);
+    free(V.bits);
+    if (V.full) vQueueDelete(V.full);
+    if (V.empty) vQueueDelete(V.empty);
+    if (V.fp) fclose(V.fp);
+    V.enc = NULL;
+    V.fp = NULL;
+    V.full = V.empty = NULL;
+    V.bits = NULL;
+    memset(V.yuv, 0, sizeof V.yuv);
+}
+
+static void clip_task(void *arg)
+{
+    (void)arg;
+    uint32_t pts = 0;
+    for (;;) {
+        int slot;
+        if (xQueueReceive(V.full, &slot, pdMS_TO_TICKS(50)) == pdTRUE) {
+            esp_h264_enc_in_frame_t in = { .raw_data = { .buffer = V.yuv[slot], .len = V.yuv_len }, .pts = pts };
+            esp_h264_enc_out_frame_t out = { .raw_data = { .buffer = V.bits, .len = V.bits_len } };
+            pts += 1000 / CLIP_FPS;
+            /* the encoder emits Annex-B NAL units with SPS and PPS ahead of every IDR (once a second at
+             * gop = fps), so the file plays from its start or from any cut. UNVERIFIED on the unit. */
+            if (esp_h264_enc_process(V.enc, &in, &out) == ESP_H264_ERR_OK && out.length) {
+                if (fwrite(V.bits, 1, out.length, V.fp) != out.length && !V.write_error) {
+                    V.write_error = true;
+                    V.active = false; /* the card is full or gone: the clip ends here */
+                    ESP_LOGE(TAG, "clip: write to microSD failed");
+                }
+                V.frames++;
+            }
+            xQueueSend(V.empty, &slot, 0);
+        }
+        if (V.active && hal_seconds() - V.t_start >= V.max_s) V.active = false;
+        if (!V.active) {
+            while (s_clip_taking) vTaskDelay(1); /* a take in flight lands in `full` before the drain */
+            if (!uxQueueMessagesWaiting(V.full)) break;
+        }
+    }
+    double s = V.taken ? V.t_last - V.t_first + 1.0 / CLIP_FPS : 0;
+    V.seconds = s > V.max_s ? V.max_s : s;
+    ESP_LOGI(TAG, "clip: %.1f s, %u frames encoded, %u dropped", V.seconds, (unsigned)V.frames, (unsigned)V.dropped);
+    clip_free();
+    V.task = NULL;
+    xSemaphoreGive(V.done);
+    vTaskDelete(NULL);
+}
+
+bool hal_clip_start(const char *path, double max_s)
+{
+    if (V.task || !C.on || !path || max_s <= 0) return false;
+    if (!V.done && !(V.done = xSemaphoreCreateBinary())) return false;
+    xSemaphoreTake(V.done, 0);
+    /* the encoder works in 16-pixel macroblocks: 1280×720 already is */
+    V.w = C.src_w & ~15;
+    V.h = C.src_h & ~15;
+    V.yuv_len = (uint32_t)(V.w * V.h * 3 / 2);
+    V.taken = V.frames = V.dropped = 0;
+    V.write_error = false;
+    V.seconds = 0;
+    V.max_s = max_s;
+    uint32_t got = 0;
+    bool ok = true;
+    for (int i = 0; i < CLIP_SLOTS; i++) {
+        /* 128-byte aligned whole cache lines: the PPA writes these */
+        V.yuv[i] = esp_h264_aligned_calloc(128, 1, V.yuv_len, &got, ESP_H264_MEM_SPIRAM);
+        ok = ok && V.yuv[i];
+    }
+    /* esp_h264 asks for an output buffer as large as the input, so no frame can overflow it */
+    V.bits_len = V.yuv_len;
+    V.bits = esp_h264_aligned_calloc(128, 1, V.bits_len, &V.bits_len, ESP_H264_MEM_SPIRAM);
+    V.full = xQueueCreate(CLIP_SLOTS, sizeof(int));
+    V.empty = xQueueCreate(CLIP_SLOTS, sizeof(int));
+    ok = ok && V.bits && V.full && V.empty;
+    if (ok) {
+        esp_h264_enc_cfg_hw_t cfg = {
+            .pic_type = ESP_H264_RAW_FMT_O_UYY_E_VYY,
+            .gop = CLIP_FPS, /* an IDR a second */
+            .fps = CLIP_FPS,
+            .res = { .width = (uint16_t)V.w, .height = (uint16_t)V.h },
+            .rc = { .bitrate = CLIP_BITRATE, .qp_min = 20, .qp_max = 40 },
+        };
+        ok = esp_h264_enc_hw_new(&cfg, &V.enc) == ESP_H264_ERR_OK && esp_h264_enc_open(V.enc) == ESP_H264_ERR_OK;
+    }
+    if (ok) ok = (V.fp = fopen(path, "wb")) != NULL;
+    if (!ok) {
+        ESP_LOGE(TAG, "clip: couldn't start (memory, the encoder, or %s)", path);
+        clip_free();
+        return false;
+    }
+    for (int i = 0; i < CLIP_SLOTS; i++) xQueueSend(V.empty, &i, 0);
+    V.t_start = hal_seconds();
+    V.active = true;
+    /* internal-RAM stack: it writes the microSD through FATFS */
+    if (xTaskCreatePinnedToCore(clip_task, "clip", 6144, NULL, 4, &V.task, 0) != pdPASS) {
+        V.active = false;
+        V.task = NULL;
+        clip_free();
+        return false;
+    }
+    return true;
+}
+
+double hal_clip_stop(void)
+{
+    if (V.task) {
+        V.active = false;
+        xSemaphoreTake(V.done, pdMS_TO_TICKS(3000));
+    }
+    /* also a clip that already ended by itself at max_s: its length, reported once */
+    double s = V.seconds;
+    V.seconds = 0;
+    return s;
+}
+
+bool hal_clip_active(double *seconds)
+{
+    if (!V.task || !V.active) return false;
+    if (seconds) *seconds = hal_seconds() - V.t_start;
+    return true;
+}
+
 /* ------------------------------------------------------------------ storage */
 
 const char *hal_sd_root(void) { return T.sd ? BSP_SD_MOUNT_POINT : NULL; }
@@ -747,91 +904,18 @@ bool hal_kv_get(const char *key, char *buf, size_t n)
 
 void hal_kv_set(const char *key, const char *value)
 {
+    /* writing flash turns the cache off, and PSRAM with it: a caller whose stack lives there would fault
+     * mid-write (hal_thread() only puts a stack there when internal RAM runs out) */
+    int probe = 0;
+    if (esp_ptr_external_ram(&probe)) {
+        ESP_LOGE(TAG, "hal_kv_set(%s) from a task with a PSRAM stack: not written", key);
+        return;
+    }
     nvs_handle_t h;
     if (nvs_open("catalyst", NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_str(h, key, value);
     nvs_commit(h);
     nvs_close(h);
-}
-
-/* ------------------------------------------------------------------ network (the ESP32-C6) */
-
-static struct {
-    bool up;
-    char ip[16];
-    esp_netif_t *sta;
-} N;
-
-static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) esp_wifi_connect();
-    else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        N.up = false;
-        esp_wifi_connect(); /* keep trying: the pit network comes and goes */
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        ip_event_got_ip_t *e = data;
-        snprintf(N.ip, sizeof N.ip, IPSTR, IP2STR(&e->ip_info.ip));
-        N.up = true;
-    }
-}
-
-static void net_init(void)
-{
-    /* esp_wifi_* calls are forwarded over SDIO to the C6 by esp_wifi_remote + esp_hosted */
-    esp_netif_init();
-    esp_event_loop_create_default();
-    N.sta = esp_netif_create_default_wifi_sta();
-    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
-    if (esp_wifi_init(&cfg) != ESP_OK) {
-        ESP_LOGE(TAG, "Wi-Fi co-processor didn't answer over SDIO");
-        return;
-    }
-    esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);
-    esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL);
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_ps(WIFI_PS_NONE); /* latency over battery: a dashboard wants its packets now */
-    esp_wifi_start();
-    if (mdns_init() == ESP_OK) mdns_hostname_set("catalyst-tab");
-}
-
-void hal_net(hal_net_t *o)
-{
-    memset(o, 0, sizeof *o);
-    o->link = HAL_LINK_WIFI;
-    o->up = N.up;
-    snprintf(o->ip, sizeof o->ip, "%s", N.up ? N.ip : "");
-    wifi_ap_record_t ap;
-    if (N.up && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-        snprintf(o->ssid, sizeof o->ssid, "%s", (const char *)ap.ssid);
-        o->rssi = ap.rssi;
-    }
-}
-
-void hal_wifi_join(const char *ssid, const char *pass)
-{
-    wifi_config_t wc = { 0 };
-    snprintf((char *)wc.sta.ssid, sizeof wc.sta.ssid, "%s", ssid);
-    snprintf((char *)wc.sta.password, sizeof wc.sta.password, "%s", pass);
-    wc.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    esp_wifi_disconnect();
-    esp_wifi_set_config(WIFI_IF_STA, &wc); /* stored in NVS by the driver: rejoins on the next boot */
-    esp_wifi_connect();
-}
-
-int hal_wifi_scan(hal_ap_t *out, int max)
-{
-    if (esp_wifi_scan_start(NULL, true) != ESP_OK) return 0;
-    uint16_t n = (uint16_t)max;
-    wifi_ap_record_t *rec = calloc(n, sizeof *rec);
-    if (!rec) return 0;
-    esp_wifi_scan_get_ap_records(&n, rec);
-    for (int i = 0; i < n; i++) {
-        snprintf(out[i].ssid, sizeof out[i].ssid, "%s", (const char *)rec[i].ssid);
-        out[i].rssi = rec[i].rssi;
-        out[i].secure = rec[i].authmode != WIFI_AUTH_OPEN;
-    }
-    free(rec);
-    return n;
 }
 
 /* ------------------------------------------------------------------ CAN tap (TWAI, listen-only) */
@@ -963,7 +1047,7 @@ bool hal_init(void)
     T.sd = bsp_sdcard_mount() == ESP_OK;
     temperature_sensor_config_t tc = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
     if (temperature_sensor_install(&tc, &T.tsens) == ESP_OK) temperature_sensor_enable(T.tsens);
-    net_init();
+    hal_net_init();
     ESP_LOGI(TAG, "ready: panel %s, sd %s, imu %s", T.panel, T.sd ? "mounted" : "none", T.imu ? "ok" : "missing");
     return true;
 }

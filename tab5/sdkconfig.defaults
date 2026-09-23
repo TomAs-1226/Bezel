@@ -58,6 +58,30 @@ CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
 # robot.local (Systemcore) and roborio-TEAM-frc.local resolve through mDNS
 CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y
 CONFIG_LWIP_MAX_SOCKETS=16
+# Two interfaces (Wi-Fi and the USB tether) both run DHCP clients, and lwIP keeps one global DNS server
+# list: without this, a lease from Systemcore's dnsmasq would replace the Wi-Fi network's DNS and the
+# assistant could no longer resolve api.anthropic.com. With it, DNS follows the default netif (Wi-Fi).
+CONFIG_ESP_NETIF_SET_DNS_PER_DEFAULT_NETIF=y
+
+# HTTPS for the assistant: every mbedTLS allocation (the 16 KB record buffers, the handshake) in PSRAM, so
+# a TLS session leaves internal RAM to Wi-Fi, USB and the task stacks; the full CA bundle in flash for
+# esp_crt_bundle_attach (~65 KB, and no guessing which root a CDN moves to)
+CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
+
+# The USB tether: the enumeration filter lets a Realtek adapter come up in its CDC-ECM configuration;
+# RNDIS control responses (OID queries) are up to 1025 bytes, and iot_usbh_rndis refuses to build with
+# iot_usbh_cdc's default 256-byte control buffer
+CONFIG_USB_HOST_ENABLE_ENUM_FILTER_CALLBACK=y
+CONFIG_USBH_CDC_CONTROL_TRANSFER_BUFFER_SIZE=1025
+
+# IRAM and the small-data section share the 183 KB below 0x4FF2CBD0 (sram_low), and LVGL's
+# LV_ATTRIBUTE_FAST_MEM loops already take ~67 KB of it; the USB host's DWC interrupt path (~1.8 KB, always
+# in IRAM) overflowed it. Heap functions and ISR-side event posting move to flash instead: nothing in this
+# firmware allocates memory or posts an event from an IRAM-safe interrupt while the cache is off.
+CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+CONFIG_ESP_EVENT_POST_FROM_IRAM_ISR=n
 
 # Camera: SC2356 driven as SC202CS, 1280x720 RAW8 through the ISP
 CONFIG_CAMERA_SC202CS=y

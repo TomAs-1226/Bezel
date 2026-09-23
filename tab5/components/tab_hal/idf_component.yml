@@ -5,3 +5,14 @@ dependencies:
   espressif/mdns: "^1.8"
   espressif/esp_lvgl_port: "~2.6.0"
   espressif/esp_lcd_touch: "^1"
+  # The USB tether (hal_tab5_net.c): esp-iot-solution's USB host network drivers. iot_eth hands frames to
+  # esp_netif; iot_usbh_cdc is the host-side CDC transport both drivers sit on (^3.1 is what ecm 0.4 and
+  # rndis 0.5 require, and it builds on the usb 1.4.x the BSP already pulls in). Pinned to the minor:
+  # these are 0.x/1.x components whose APIs still move.
+  espressif/iot_eth: "~1.1.0"
+  espressif/iot_usbh_cdc: "~3.1.0"
+  espressif/iot_usbh_ecm: "~0.4.0"
+  espressif/iot_usbh_rndis: "~0.5.0"
+  # Clips (hal_tab5.c): the P4's hardware H.264 encoder. Exactly the version esp_video 2.0.1 (through the
+  # BSP) pins, so there is one copy of it.
+  espressif/esp_h264: "1.0.4"
