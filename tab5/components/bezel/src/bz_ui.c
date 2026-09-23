@@ -4,6 +4,8 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
+#include <stdio.h>
 
 #define MAX_GLASS BZ_COMP_MAX_SHAPES
 #define MAX_HOOKS 24
@@ -18,7 +20,7 @@ struct bz_glass {
     float px, py;
     bool use_rect;
     float rx, ry, rw, rh;
-    bool alive;
+    bool alive, solo;
 };
 
 static struct {
@@ -38,6 +40,12 @@ static struct {
     int tx, ty;
     int owner; /* 0 none, 1 content, 2 glass */
     bool keep_alive;
+    /* motion caches */
+    bool frozen, offscreen;
+    lv_draw_buf_t *own_buf;
+    /* performance */
+    uint32_t lvgl_px;
+    bz_ui_perf_t perf;
 } U;
 
 void bz_theme_changed(void); /* bz_theme.c */
@@ -58,14 +66,32 @@ static bz_velocity_t g_vx, g_vy;     /* the pointer's velocity, shared by every 
 static void flush_content(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 {
     (void)px;
-    bz_area_t b = { (int16_t)a->x1, (int16_t)a->y1, (int16_t)a->x2, (int16_t)a->y2 };
-    bz_comp_damage_content(U.comp, &b);
+    U.lvgl_px += (uint32_t)lv_area_get_size(a);
+    if (!U.offscreen) {
+#ifndef ESP_PLATFORM
+        if (getenv("SIM_DEBUG_FLUSH") && lv_area_get_size(a) > 200000)
+            fprintf(stderr, "flush content %d,%d-%d,%d\n", (int)a->x1, (int)a->y1, (int)a->x2, (int)a->y2);
+#endif
+        bz_area_t b = { (int16_t)a->x1, (int16_t)a->y1, (int16_t)a->x2, (int16_t)a->y2 };
+        bz_comp_damage_content(U.comp, &b);
+    }
     lv_display_flush_ready(d);
 }
+
+#ifndef ESP_PLATFORM
+/* The simulator's SIM_DEBUG_FLUSH: who asks for the whole screen to be redrawn, and when. */
+static void debug_inv(lv_event_t *e)
+{
+    const lv_area_t *a = lv_event_get_param(e);
+    if (a && lv_area_get_size(a) > 200000) fprintf(stderr, "invalidate %d,%d-%d,%d at %.3f frozen %d off %d\n", (int)a->x1,
+                                                  (int)a->y1, (int)a->x2, (int)a->y2, U.now, U.frozen, U.offscreen);
+}
+#endif
 
 static void flush_glass(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 {
     (void)px;
+    U.lvgl_px += (uint32_t)lv_area_get_size(a);
     bz_area_t b = { (int16_t)a->x1, (int16_t)a->y1, (int16_t)a->x2, (int16_t)a->y2 };
     bz_comp_damage_ink(U.comp, &b);
     lv_display_flush_ready(d);
@@ -133,12 +159,18 @@ void bz_ui_init(const bz_ui_config_t *cfg)
     lv_tick_set_cb(tick_ms);
     U.comp = bz_comp_create(cfg->w, cfg->h, cfg->content, cfg->ink, cfg->out);
     if (cfg->ops) bz_comp_set_ops(U.comp, cfg->ops);
+    uint16_t *out2 = aligned_alloc(64, (size_t)cfg->w * cfg->h * 2);
+    if (out2) bz_comp_set_out2(U.comp, out2);
 
     U.disp_content = lv_display_create(cfg->w, cfg->h);
     lv_display_set_color_format(U.disp_content, LV_COLOR_FORMAT_RGB565);
     lv_display_set_buffers(U.disp_content, cfg->content, NULL, (uint32_t)(cfg->w * cfg->h * 2),
                            LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_flush_cb(U.disp_content, flush_content);
+    U.own_buf = lv_display_get_buf_active(U.disp_content);
+#ifndef ESP_PLATFORM
+    if (getenv("SIM_DEBUG_FLUSH")) lv_display_add_event_cb(U.disp_content, debug_inv, LV_EVENT_INVALIDATE_AREA, NULL);
+#endif
 
     U.disp_glass = lv_display_create(cfg->w, cfg->h);
     lv_display_set_color_format(U.disp_glass, LV_COLOR_FORMAT_ARGB8888);
@@ -238,6 +270,7 @@ void bz_glass_set_tint(bz_glass_t *g, int tint, float amt)
 
 void bz_glass_set_press_scale(bz_glass_t *g, float s) { if (g) g->press_scale = s; }
 void bz_glass_set_radius(bz_glass_t *g, float r) { if (g) g->radius = r; }
+void bz_glass_set_solo(bz_glass_t *g, bool solo) { if (g) g->solo = solo; }
 float bz_glass_strength(const bz_glass_t *g) { return g ? g->strength.value : 0; }
 lv_obj_t *bz_glass_obj(const bz_glass_t *g) { return g ? g->obj : NULL; }
 
@@ -286,6 +319,8 @@ static bool update_glass(void)
         s->press_y = g->py;
         s->scale = bz_motion_calm() ? 1 : g->scale.value;
         s->group = g->group;
+        s->id = (uint8_t)i;
+        s->solo = g->solo;
         s->tint = (int8_t)g->tint;
         s->tint_amt = g->tint_amt.value < 0 ? 0 : g->tint_amt.value;
     }
@@ -308,12 +343,55 @@ void bz_ui_keep_alive(void) { U.keep_alive = true; }
 double bz_ui_idle_s(void) { return U.now - U.last_touch; }
 void bz_ui_wake(void) { U.last_touch = U.now; }
 
+static double wall(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+
+static float ema(float old, float v) { return old == 0 ? v : old + (v - old) * 0.1f; }
+
+/* The frame's work costed for the ESP32-P4 (360 MHz, two cores, PPA, PSRAM at 200 MHz), from what was
+ * done rather than how long this machine took: the simulator runs on a desktop CPU, and its times say
+ * little about the tablet's. Cycles per pixel are estimates for each kernel (the inner loops' operation
+ * counts, and LVGL's software renderer at ~26 ns per pixel of a typical Bezel page across its two draw
+ * units); PPA and PSRAM traffic at 400 MB/s effective. The panel is fed asynchronously — the PPA turns
+ * frame N into the panel's buffer while the cores draw frame N+1 — so a frame costs the larger of the
+ * two, plus a little. The tablet's overlay shows measured times. */
+static float model_ms(const bz_comp_stats_t *s, uint32_t lvgl_px)
+{
+    const double MHZ = 360.0, PAR = 1.8, PPA_MBS = 400.0;
+    double cpu = 0;
+    /* glass by path: the flat interior (a row-interpolated sample), the edge (bilinear, rim, blend), a
+     * shadow alone, and the rest of the box (one table read) */
+    uint32_t visited = s->glass_flat_px + s->glass_edge_px + s->glass_shadow_px;
+    cpu += s->glass_flat_px * 13.0 / PAR;
+    cpu += s->glass_edge_px * (s->glass_fast_px ? 48.0 : 80.0) / PAR;
+    cpu += s->glass_shadow_px * 18.0 / PAR;
+    cpu += (s->glass_px > visited ? s->glass_px - visited : 0) * 3.0 / PAR;
+    cpu += s->lut_px * 14.0 / PAR + s->lut_ring_px * 260.0 / PAR;
+    cpu += s->blur_src_px * 6.0 / PAR;
+    cpu += s->base_cpu_px * 8.0 / PAR;
+    cpu += s->backdrop_build_px * 22.0 / PAR;
+    double cpu_ms = cpu / (MHZ * 1000.0) + lvgl_px * 26e-6;
+    double sync = 0, async = 0;
+    sync += (double)s->composed_px * 4;              /* the base copied into out: the cores wait on it */
+    sync += (double)s->ink_px * 8;
+    async += (double)(s->composed_px + s->direct_px) * 4; /* the turn into the panel's buffer */
+    cpu_ms += sync / (PPA_MBS * 1000.0);
+    double ppa_ms = (sync + async) / (PPA_MBS * 1000.0);
+    return (float)((cpu_ms > ppa_ms ? cpu_ms : ppa_ms) + 0.5);
+}
+
 bool bz_ui_frame(double now_s)
 {
     double dt = U.last > 0 ? now_s - U.last : 0.016;
     U.last = U.now = now_s;
     bz_motion_clock(now_s);
     U.keep_alive = false;
+    U.lvgl_px = 0;
+    double t0 = wall();
 
     poll_touch();
     lv_indev_read(U.in_content);
@@ -324,14 +402,95 @@ bool bz_ui_frame(double now_s)
     bool moving = bz_motion_tick(&U.lx) | bz_motion_tick(&U.ly);
     bz_comp_set_light(U.comp, U.lx.value, U.ly.value);
 
+    double t1 = wall();
     lv_timer_handler();
+    double t2 = wall();
     moving |= update_glass();
 
-    bz_area_t areas[BZ_COMP_MAX_DIRTY];
-    int n = bz_comp_compose(U.comp, areas, BZ_COMP_MAX_DIRTY);
+    bz_present_t areas[BZ_COMP_MAX_PRESENT];
+    int n = bz_comp_compose(U.comp, areas, BZ_COMP_MAX_PRESENT);
+    double t3 = wall();
     if (n && U.cfg.present) U.cfg.present(areas, n, U.cfg.user);
+    double t4 = wall();
+
+    if (n) {
+        bz_ui_perf_t *p = &U.perf;
+        bz_comp_stats(U.comp, &p->comp);
+        p->lvgl_px = U.lvgl_px;
+        static double last_present;
+        if (last_present > 0 && now_s > last_present) p->fps = ema(p->fps, (float)(1.0 / (now_s - last_present)));
+        last_present = now_s;
+        p->frame_ms = ema(p->frame_ms, (float)((t4 - t0) * 1000));
+        p->lvgl_ms = ema(p->lvgl_ms, (float)((t2 - t1) * 1000));
+        p->compose_ms = ema(p->compose_ms, (float)((t3 - t2) * 1000));
+        p->present_ms = ema(p->present_ms, (float)((t4 - t3) * 1000));
+        p->model_ms = model_ms(&p->comp, U.lvgl_px);
+        p->frames++;
+    }
     return moving || U.keep_alive || U.pressed;
 }
+
+void bz_ui_perf(bz_ui_perf_t *out) { *out = U.perf; }
+
+/* ------------------------------------------------------------------ motion caches */
+
+void bz_ui_render_offscreen(uint16_t *buf, int stride, const lv_area_t *area, void (*prepare)(bool before, void *u),
+                            void *u)
+{
+    lv_display_t *d = U.disp_content;
+    lv_obj_t *scr = lv_display_get_screen_active(d);
+    /* anything already pending belongs on screen, not in the picture */
+    if (!U.frozen) lv_refr_now(d);
+    /* LVGL's invalidation switch is a counter: every disable here is matched by an enable */
+    lv_display_enable_invalidation(d, false);
+    if (prepare) prepare(true, u);
+    lv_obj_update_layout(scr);
+
+    /* point the display at the picture: a draw buffer the screen's size whose rows are `stride` apart,
+     * starting so that `area` lands on buf */
+    static lv_draw_buf_t db;
+    uint32_t stride_b = (uint32_t)stride * 2;
+    uint8_t *origin = (uint8_t *)buf - (size_t)area->y1 * stride_b - (size_t)area->x1 * 2;
+    lv_draw_buf_init(&db, (uint32_t)U.cfg.w, (uint32_t)U.cfg.h, LV_COLOR_FORMAT_RGB565, stride_b, origin,
+                     stride_b * (uint32_t)U.cfg.h);
+    lv_display_set_draw_buffers(d, &db, NULL);
+    U.offscreen = true;
+    lv_display_enable_invalidation(d, true);
+    if (U.frozen) lv_display_enable_invalidation(d, true);
+    lv_obj_invalidate_area(scr, area);
+    lv_refr_now(d);
+    if (U.frozen) lv_display_enable_invalidation(d, false);
+    lv_display_enable_invalidation(d, false);
+    U.offscreen = false;
+    lv_display_set_draw_buffers(d, U.own_buf, NULL);
+
+    if (prepare) prepare(false, u);
+    lv_obj_update_layout(scr);
+    lv_display_enable_invalidation(d, true);
+}
+
+void bz_ui_freeze(bool frozen)
+{
+    /* counted: the pager, an app window and the control center may each hold it */
+    static int holds;
+    holds += frozen ? 1 : -1;
+    if (holds < 0) holds = 0;
+    bool f = holds > 0;
+    if (f == U.frozen) return;
+    U.frozen = f;
+    lv_display_enable_invalidation(U.disp_content, !f);
+    if (!f) lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
+}
+
+bool bz_ui_frozen(void) { return U.frozen; }
+
+void bz_ui_copy(uint16_t *dst, int dst_stride, const uint16_t *src, int src_stride, int w, int h)
+{
+    if (U.cfg.ops && U.cfg.ops->copy565) U.cfg.ops->copy565(dst, dst_stride, src, src_stride, w, h);
+    else for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * dst_stride, src + (size_t)y * src_stride, (size_t)w * 2);
+}
+
+uint16_t *bz_ui_content_buf(void) { return U.cfg.content; }
 
 void bz_ui_set_mode(bool dark, bool calm)
 {

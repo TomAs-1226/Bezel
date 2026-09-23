@@ -28,7 +28,7 @@ typedef struct {
 
 bool hal_init(void);
 void hal_display(hal_display_t *out);
-void hal_present(const bz_area_t *areas, int n, void *user);
+void hal_present(const bz_present_t *areas, int n, void *user);
 bool hal_touch(int *x, int *y, void *user);
 void hal_set_brightness(float v01);
 const char *hal_panel_name(void);        /* "ILI9881C", "ST7123", "ST7121", "simulator" */

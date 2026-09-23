@@ -12,6 +12,8 @@
  *   calm on|off               reduced motion + solid glass
  *   tilt X Y                  lean the simulated IMU (radians)
  *   stats                     print compositor timing
+ *   trace NAME | trace end    cost every frame between the two for the ESP32-P4 (see bz_ui.c's model)
+ *                             and print the distribution; frames over 16.7 ms miss 60 Hz
  * Without a script it renders for 3 s and saves OUT/frame.png. */
 #include "bz_theme.h"
 #include "bz_ui.h"
@@ -35,12 +37,61 @@ int png_write_rgb565(const char *path, const uint16_t *px, int w, int h);
 static const char *g_out = "shots";
 static double g_next;
 
+static struct {
+    bool on;
+    char name[64];
+    float ms[4096];
+    bz_ui_perf_t worst;
+    int n;
+    uint32_t last_frame;
+} T;
+
+static int cmp_f(const void *a, const void *b)
+{
+    float x = *(const float *)a, y = *(const float *)b;
+    return x < y ? -1 : x > y;
+}
+
+static void trace_end(void)
+{
+    if (!T.on) return;
+    T.on = false;
+    if (!T.n) { printf("trace %s: no frames\n", T.name); return; }
+    float sum = 0;
+    int over = 0;
+    for (int i = 0; i < T.n; i++) { sum += T.ms[i]; over += T.ms[i] > 16.7f; }
+    qsort(T.ms, (size_t)T.n, sizeof T.ms[0], cmp_f);
+    const bz_comp_stats_t *c = &T.worst.comp;
+    printf("trace %-14s %3d frames  P4 model: avg %5.1f ms  p95 %5.1f  max %5.1f  over 16.7: %d\n", T.name, T.n,
+           sum / T.n, T.ms[(int)(T.n * 0.95f)], T.ms[T.n - 1], over);
+    printf("    worst: lvgl %u px, composed %u, direct %u, glass %u (fast %u), lut %u/%u ring, blur %u, base-cpu %u, "
+           "mix %u, ink %u, backdrop %u, cells %u\n",
+           T.worst.lvgl_px, c->composed_px, c->direct_px, c->glass_px, c->glass_fast_px, c->lut_px, c->lut_ring_px,
+           c->blur_src_px, c->base_cpu_px, c->mix_px, c->ink_px, c->backdrop_build_px, c->cells);
+}
+
 static void frame(void)
 {
     double now = hal_seconds();
     if (g_next == 0) g_next = now;
     g_next += 1.0 / 60;
     bz_ui_frame(now);
+    if (T.on) {
+        bz_ui_perf_t p;
+        bz_ui_perf(&p);
+        if (p.frames != T.last_frame && T.n < 4096) {
+            T.last_frame = p.frames;
+            if (!T.n || p.model_ms > T.worst.model_ms) T.worst = p;
+            T.ms[T.n++] = p.model_ms;
+            if (getenv("SIM_TRACE_FRAMES")) {
+                const bz_comp_stats_t *c = &p.comp;
+                printf("  %5.1f ms  lvgl %7u  comp %7u dir %7u glass %7u (flat %6u edge %6u shadow %6u) lut %6u/%6u "
+                       "blur %7u mix %6u ink %6u cells %u\n",
+                       p.model_ms, p.lvgl_px, c->composed_px, c->direct_px, c->glass_px, c->glass_flat_px, c->glass_edge_px,
+                       c->glass_shadow_px, c->lut_px, c->lut_ring_px, c->blur_src_px, c->mix_px, c->ink_px, c->cells);
+            }
+        }
+    }
     double sleep = g_next - hal_seconds();
     if (sleep > 0) usleep((useconds_t)(sleep * 1e6));
     else g_next = hal_seconds();
@@ -174,7 +225,32 @@ int main(int argc, char **argv)
         else if (!strcmp(cmd, "mode") && sscanf(line, "%*s %199s", arg) == 1) bz_ui_set_mode(strcmp(arg, "light") != 0, bz_ui_calm());
         else if (!strcmp(cmd, "calm") && sscanf(line, "%*s %199s", arg) == 1) bz_ui_set_mode(bz_ui_dark(), !strcmp(arg, "on"));
         else if (!strcmp(cmd, "tilt") && sscanf(line, "%*s %lf %lf", &a, &b) == 2) sim_tilt((float)a, (float)b);
-        else if (!strcmp(cmd, "stats")) {
+        else if (!strcmp(cmd, "trace") && sscanf(line, "%*s %63s", arg) == 1) {
+            if (!strcmp(arg, "end")) trace_end();
+            else {
+                bz_ui_perf_t p;
+                bz_ui_perf(&p);
+                memset(&T, 0, sizeof T);
+                T.on = true;
+                T.last_frame = p.frames;
+                snprintf(T.name, sizeof T.name, "%s", arg);
+            }
+        } else if (!strcmp(cmd, "dump") && sscanf(line, "%*s %199s", arg) == 1) {
+            const uint16_t *ui_debug_strip(int *stride, int *w, int *h);
+            int st, w, h;
+            const uint16_t *px = ui_debug_strip(&st, &w, &h);
+            char path[512];
+            snprintf(path, sizeof path, "%s/%s.png", g_out, arg);
+            if (!strcmp(arg, "base")) {
+                void bz_comp_debug_base(bz_comp_t *c, uint16_t *dst);
+                static uint16_t buf[HAL_W * HAL_H];
+                bz_comp_debug_base(bz_ui_comp(), buf);
+                png_write_rgb565(path, buf, HAL_W, HAL_H);
+            } else if (!strcmp(arg, "glass")) {
+                void bz_comp_debug_dump(bz_comp_t *c, const char *dir);
+                bz_comp_debug_dump(bz_ui_comp(), g_out);
+            } else if (px) png_write_rgb565(path, px, w, h);
+        } else if (!strcmp(cmd, "stats")) {
             bz_comp_stats_t st;
             bz_comp_stats(bz_ui_comp(), &st);
             printf("compose %u us, %u px, glass %u px, blur rebuilds %u, lut rebuilds %u\n", st.compose_us,

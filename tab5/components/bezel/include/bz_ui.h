@@ -18,9 +18,9 @@ typedef struct {
     int w, h;
     uint16_t *content;      /* w*h RGB565, LVGL renders the scene here (direct mode) */
     uint32_t *ink;          /* w*h ARGB8888, LVGL renders the glass layer here */
-    uint16_t *out;          /* w*h RGB565 composite; the HAL presents it */
-    /* The HAL shows `out` for these areas (rotating into the panel on the Tab5). */
-    void (*present)(const bz_area_t *areas, int n, void *user);
+    uint16_t *out;          /* w*h RGB565 composite */
+    /* The HAL shows these areas, each from its own source (rotating into the panel on the Tab5). */
+    void (*present)(const bz_present_t *areas, int n, void *user);
     /* The HAL's touch: first finger, screen coordinates. */
     bool (*read_touch)(int *x, int *y, void *user);
     void *user;
@@ -45,6 +45,35 @@ bool bz_ui_calm(void);
 /* The glass's one light, leaned by tilt: dx, dy in -1..1. Rides the `light` spring. */
 void bz_ui_lean_light(float dx, float dy);
 
+/* ---- motion caches: move a picture instead of redrawing it ----
+ *
+ * While something big moves (pages swiping, an app window growing), the content layer can be frozen and
+ * the compositor shown cached pictures of it instead (bz_comp_set_layer). */
+
+/* Renders the content layer into `buf` (RGB565, `stride` px per row; buf is the pixel at area's x1, y1)
+ * as it looks between prepare(true, u) and prepare(false, u), without touching the screen. Objects
+ * moved or hidden in prepare don't cause redraws. */
+void bz_ui_render_offscreen(uint16_t *buf, int stride, const lv_area_t *area, void (*prepare)(bool before, void *u),
+                            void *u);
+/* Frozen: LVGL stops drawing the content layer; the compositor shows whatever layers say. Thawing
+ * redraws the whole content layer once. Counted: each freeze(true) needs its freeze(false). */
+void bz_ui_freeze(bool frozen);
+bool bz_ui_frozen(void);
+/* The platform's fast copy (PPA on the Tab5). */
+void bz_ui_copy(uint16_t *dst, int dst_stride, const uint16_t *src, int src_stride, int w, int h);
+uint16_t *bz_ui_content_buf(void);
+
+/* ---- performance ---- */
+typedef struct {
+    float fps;                 /* frames presented per second, smoothed */
+    float frame_ms, lvgl_ms, compose_ms, present_ms; /* this machine's, smoothed */
+    float model_ms;            /* the same frame's work costed for the ESP32-P4 (see bz_ui.c) */
+    uint32_t lvgl_px;          /* content + glass pixels LVGL drew last frame */
+    uint32_t frames;           /* frames presented since boot */
+    bz_comp_stats_t comp;      /* last frame */
+} bz_ui_perf_t;
+void bz_ui_perf(bz_ui_perf_t *out);
+
 /* Frame hooks, run every frame before LVGL renders. */
 typedef void (*bz_frame_fn)(double now_s, double dt, void *user);
 void bz_ui_on_frame(bz_frame_fn fn, void *user);
@@ -64,6 +93,8 @@ void bz_glass_set_strength(bz_glass_t *g, float s);      /* driven directly, e.g
 void bz_glass_set_tint(bz_glass_t *g, int tint, float amt); /* amt rides `effect` */
 void bz_glass_set_press_scale(bz_glass_t *g, float s);    /* 1.06 default, the dock 1.02 */
 void bz_glass_set_radius(bz_glass_t *g, float r);
+/* A glass that never melts with its group's others, however near (cards meant to stay apart). */
+void bz_glass_set_solo(bz_glass_t *g, bool solo);
 /* Rect override for shapes whose glass isn't the object's own box (the dock droplet). */
 void bz_glass_set_rect(bz_glass_t *g, bool use, float x, float y, float w, float h);
 float bz_glass_strength(const bz_glass_t *g);

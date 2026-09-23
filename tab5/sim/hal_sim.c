@@ -1,19 +1,28 @@
 /* hal_sim — the Tab5's hardware, imitated on a laptop.
  *
  * Frames stay in memory (the script's `shot` saves them), touches come from the script, and every
- * sensor produces something plausible so each tool has data: the IMU is tilted by `tilt`, the mics hear
- * a gearbox whining at a drifting frequency, the camera sees a test card, and the CAN tap hears a robot
- * bus of Talon FXs, a Pigeon 2, CANcoders, a PDH and the controller's heartbeat. */
+ * sensor produces something plausible so each tool has data: the IMU is tilted by `tilt`, the camera sees
+ * a test card, and the CAN tap hears a robot bus of Talon FXs, a Pigeon 2, CANcoders, a PDH and the
+ * controller's heartbeat.
+ *
+ * The panel is imitated as the tablet drives it — two frame buffers flipped every frame, the back one
+ * brought up to date with last frame's areas and then this frame's, each from its own source — so the
+ * screenshots show exactly what the tablet's present path would put on the glass. The compositor's
+ * two-core split runs on a real second thread. */
 #include "hal.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
 
-static uint16_t *g_content, *g_out;
+static uint16_t *g_content, *g_out, *g_fb[2];
+static int g_back;
+static bz_present_t g_prev[BZ_COMP_MAX_PRESENT];
+static int g_nprev;
 static uint32_t *g_ink;
 static bool g_pressed;
 static int g_tx, g_ty;
@@ -36,20 +45,88 @@ bool hal_init(void)
     g_content = aligned_alloc(64, HAL_W * HAL_H * 2);
     g_out = aligned_alloc(64, HAL_W * HAL_H * 2);
     g_ink = aligned_alloc(64, HAL_W * HAL_H * 4);
+    g_fb[0] = calloc(HAL_W * HAL_H, 2);
+    g_fb[1] = calloc(HAL_W * HAL_H, 2);
     mkdir("sim_sd", 0755);
-    return g_content && g_out && g_ink;
+    return g_content && g_out && g_ink && g_fb[0] && g_fb[1];
+}
+
+/* ---- the second core ---- */
+static struct {
+    pthread_mutex_t m;
+    pthread_cond_t go, done;
+    void (*job)(void *, int);
+    void *arg;
+    bool busy;
+} P = { PTHREAD_MUTEX_INITIALIZER, PTHREAD_COND_INITIALIZER, PTHREAD_COND_INITIALIZER, NULL, NULL, false };
+
+static void *worker(void *u)
+{
+    (void)u;
+    pthread_mutex_lock(&P.m);
+    for (;;) {
+        while (!P.busy) pthread_cond_wait(&P.go, &P.m);
+        pthread_mutex_unlock(&P.m);
+        P.job(P.arg, 1);
+        pthread_mutex_lock(&P.m);
+        P.busy = false;
+        pthread_cond_signal(&P.done);
+    }
+    return NULL;
+}
+
+static void parallel(void (*job)(void *, int), void *arg)
+{
+    pthread_mutex_lock(&P.m);
+    P.job = job;
+    P.arg = arg;
+    P.busy = true;
+    pthread_cond_signal(&P.go);
+    pthread_mutex_unlock(&P.m);
+    job(arg, 0);
+    pthread_mutex_lock(&P.m);
+    while (P.busy) pthread_cond_wait(&P.done, &P.m);
+    pthread_mutex_unlock(&P.m);
 }
 
 void hal_display(hal_display_t *out)
 {
+    static bz_gfx_ops_t ops = { .parallel = parallel };
+    if (getenv("SIM_ONE_CORE")) ops.parallel = NULL;
+    static bool started;
+    if (!started) {
+        pthread_t th;
+        pthread_create(&th, NULL, worker, NULL);
+        pthread_detach(th);
+        started = true;
+    }
     out->content = g_content;
     out->ink = g_ink;
     out->out = g_out;
-    out->ops = NULL;
+    out->ops = &ops;
 }
 
-uint16_t *sim_frame(void) { return g_out; }
-void hal_present(const bz_area_t *areas, int n, void *user) { (void)areas; (void)n; (void)user; }
+/* What's on the glass: the front buffer. */
+uint16_t *sim_frame(void) { return g_fb[g_back ^ 1]; }
+
+static void put(uint16_t *fb, const bz_present_t *p)
+{
+    int w = p->a.x2 - p->a.x1 + 1;
+    for (int y = p->a.y1; y <= p->a.y2; y++)
+        memcpy(fb + (size_t)y * HAL_W + p->a.x1, p->src + (size_t)(y - p->a.y1) * p->stride, (size_t)w * 2);
+}
+
+void hal_present(const bz_present_t *areas, int n, void *user)
+{
+    (void)user;
+    uint16_t *fb = g_fb[g_back];
+    /* the back buffer is a frame old: last frame's areas first, then this frame's over them */
+    for (int i = 0; i < g_nprev; i++) put(fb, &g_prev[i]);
+    for (int i = 0; i < n; i++) put(fb, &areas[i]);
+    memcpy(g_prev, areas, sizeof(bz_present_t) * (size_t)n);
+    g_nprev = n;
+    g_back ^= 1;
+}
 
 void sim_touch(bool pressed, int x, int y)
 {

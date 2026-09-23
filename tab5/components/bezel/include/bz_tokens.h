@@ -53,7 +53,9 @@ enum {
 #define BZ_GLASS_MERGE 22.6f
 #define BZ_GLASS_GLOW_RADIUS 65.0f
 #define BZ_GLASS_PRESS_SCALE 1.06f
-#define BZ_GLASS_DOCK_PRESS_SCALE 1.02f
+/* The dock is too big to re-shape every frame of a press on the P4 (its geometry table is ~90k px): it
+ * answers a press with the glow alone. Bezel scales it 1.02. */
+#define BZ_GLASS_DOCK_PRESS_SCALE 1.0f
 
 static inline uint8_t bz_r(uint32_t c) { return (uint8_t)(c >> 16); }
 static inline uint8_t bz_g(uint32_t c) { return (uint8_t)(c >> 8); }

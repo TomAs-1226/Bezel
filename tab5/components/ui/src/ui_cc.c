@@ -2,8 +2,11 @@
  *
  * The pull tracks the finger 1:1 (progress = dy / 380), rubber-bands past fully open, and on release
  * projects its velocity to decide open or closed. Modules cascade in by delay, each materializing by
- * strength, while the page behind frosts and dims. Its fills — the brightness and volume levels, a
- * toggle's "on" — are drawn crisp inside the glass, never frosted by it. */
+ * strength, while a frosted, dimmed picture of the page comes down behind them like a blind, its soft
+ * edge on the pull (the web specimen frosts the whole page by the pull's amount; on the P4 a
+ * cross-fade of every pixel each frame costs more memory traffic than a frame has, while the blind
+ * redraws only the rows its edge crosses — see docs/bezel-port.md). Its fills — the brightness and
+ * volume levels, a toggle's "on" — are drawn crisp inside the glass, never frosted by it. */
 #include "ui_internal.h"
 
 #include <math.h>
@@ -21,7 +24,8 @@ static struct {
     bool dragging;
     lv_obj_t *link_robot, *link_wifi, *link_batt, *bright, *vol;
     lv_obj_t *tog_fill[4], *tog_icon[4];
-    bool asleep;
+    int last_y[NMOD], last_opa[NMOD], last_tog;
+    bool asleep, shown, frozen;
 } C;
 
 static void cc_to(float target, float v)
@@ -72,6 +76,7 @@ static lv_obj_t *module(int i, int x, int y, int w, int h, float radius, float d
     lv_obj_set_style_pad_all(m, 22, 0);
     C.mods[i] = m;
     C.glass[i] = bz_glass_attach(m, 6, radius);
+    bz_glass_set_solo(C.glass[i], true); /* staggered, they pass near each other: they must not melt */
     bz_glass_set_strength(C.glass[i], 0);
     C.base_y[i] = y;
     C.delay[i] = delay;
@@ -120,23 +125,44 @@ static void cc_frame(double now, double dt, void *user)
     if (bz_motion_tick(&C.p) || C.dragging) bz_ui_keep_alive();
     float p = C.p.value < 0 ? 0 : C.p.value;
     bool shown = p > 0.002f || C.dragging;
-    bz_comp_set_backdrop(bz_ui_comp(), p > 1 ? 1 : p, 0.9f * (p > 1 ? 1 : p));
-    if (shown) lv_obj_remove_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+    bz_comp_set_backdrop(bz_ui_comp(), p > 1 ? 1 : p, 0.9f);
+    /* the page behind is frosted and dimmed out of sight: it stops redrawing (live numbers under the
+     * blind would only make every module re-frost) until the blind starts back up */
+    bool hold = (shown && C.p.target > 0) || C.dragging;
+    if (hold != C.frozen) {
+        C.frozen = hold;
+        bz_ui_freeze(hold);
+    }
+    if (shown != C.shown) {
+        C.shown = shown;
+        if (shown) lv_obj_remove_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+    }
     for (int i = 0; i < NMOD; i++) {
         float k = (p - C.delay[i]) / (1 - C.delay[i]);
         k = k < 0 ? 0 : k;
         float kc = k > 1 ? 1 : k;
         int y = C.base_y[i] - (int)(52 * (1 - kc)) + (int)((k > 1 ? k - 1 : 0) * 60);
         if (bz_ui_calm()) y = C.base_y[i];
-        lv_obj_set_y(C.mods[i], y);
         bz_glass_set_strength(C.glass[i], kc);
-        lv_obj_set_style_opa(C.mods[i], (lv_opa_t)(255 * (kc * 1.4f > 1 ? 1 : kc * 1.4f)), 0);
-        if (kc <= 0.002f) lv_obj_add_flag(C.mods[i], LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_remove_flag(C.mods[i], LV_OBJ_FLAG_HIDDEN);
+        /* only what changed: every style set redraws the module's ink */
+        int opa = (int)(255 * (kc * 1.4f > 1 ? 1 : kc * 1.4f));
+        if (y != C.last_y[i]) lv_obj_set_y(C.mods[i], y);
+        if (opa != C.last_opa[i]) {
+            lv_obj_set_style_opa(C.mods[i], (lv_opa_t)opa, 0);
+            if (kc <= 0.002f) lv_obj_add_flag(C.mods[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_remove_flag(C.mods[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        C.last_y[i] = y;
+        C.last_opa[i] = opa;
     }
-    if (!shown) return;
-    /* live state inside the modules */
+}
+
+/* Live state inside the modules, at the model's 10 Hz. */
+static void cc_refresh(void *user)
+{
+    (void)user;
+    if (!C.shown) return;
     const cat_robot_t *r = R;
     if (r->connected) ui_text(C.link_robot, "%s · %.0f ms", r->address, r->rtt_ms);
     else ui_text(C.link_robot, "looking for team %d", S.team);
@@ -146,6 +172,9 @@ static void cc_frame(double now, double dt, void *user)
     hal_battery_t b;
     if (hal_battery(&b)) ui_text(C.link_batt, "%d %% · %.2f v%s", b.percent, b.volts, b.charging ? " · charging" : "");
     bool on[4] = { !S.dark, S.calm, false, false };
+    int bits = on[0] | on[1] << 1 | 16;
+    if (bits == C.last_tog) return;
+    C.last_tog = bits;
     for (int i = 0; i < 4; i++) {
         lv_obj_set_style_bg_opa(C.tog_fill[i], on[i] ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
         bz_set_color(C.tog_icon[i], on[i] ? BZ_C_ON_ICE : BZ_C_INK);
@@ -165,7 +194,8 @@ void ui_cc_init(void)
     bz_drag_attach(C.scrim, &d);
 
     /* link */
-    lv_obj_t *m = module(0, 130, 70, 420, 176, 44, 0);
+    /* 26 px between modules, as Bezel's: apart by more than the merge distance, they never melt */
+    lv_obj_t *m = module(0, 130, 70, 414, 176, 44, 0);
     lv_obj_set_flex_flow(m, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(m, 8, 0);
     bz_label(m, "link", BZ_F_LABEL, BZ_C_DIM);
@@ -221,5 +251,7 @@ void ui_cc_init(void)
     bz_drag_attach(C.strip, &d);
 
     bz_motion_init(&C.p, 0, 0.001f);
+    for (int i = 0; i < NMOD; i++) C.last_y[i] = C.last_opa[i] = -1;
     bz_ui_on_frame(cc_frame, NULL);
+    ui_on_refresh(cc_refresh, NULL);
 }

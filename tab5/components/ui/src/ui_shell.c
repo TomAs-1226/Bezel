@@ -56,7 +56,26 @@ static struct {
     struct { const ui_app_t *app; lv_obj_t *inner; } built[16];
     int nbuilt;
     float drag_k0;
+    bool win_dragging;
 } U;
+
+/* Motion caches (bz_ui.h): while the pages swipe, they are one picture — all five side by side — that
+ * the compositor slides; while an app window grows out of its icon or shrinks back, the window is a
+ * picture over a picture of the page. LVGL draws nothing while they move; it redraws once when they
+ * land. The page pictures are refreshed a few times a second while nothing moves, so a swipe starts
+ * without waiting for one. */
+static struct {
+    uint16_t *strip;         /* (NPAGES + 1)·W wide: the pages, half a page of ground either side */
+    int stride;
+    bool ok[NPAGES];
+    double t[NPAGES];        /* when each was drawn */
+    bool pages;              /* the pager is showing the strip */
+    int track_page;          /* the page LVGL's track is placed at */
+    uint16_t *win;           /* the app window, full screen */
+    bool window;             /* the window is showing its picture */
+    bool dark;
+    double last_render;
+} MC;
 
 static double g_now;
 double ui_now(void) { return g_now; }
@@ -222,9 +241,20 @@ lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h)
 
 /* ------------------------------------------------------------------ pager */
 
+static uint16_t *strip_page(int i) { return MC.strip + W / 2 + (size_t)i * W; }
+
+static void strip_layer(float offset)
+{
+    float lo = -(float)(NPAGES - 1) * W - W / 2.0f, hi = W / 2.0f;
+    int off = (int)lroundf(offset < lo ? lo : offset > hi ? hi : offset);
+    bz_layer_t l = { { 0, 0, W - 1, H - 1 }, 0, MC.strip, off - W / 2, 0, MC.stride };
+    bz_comp_set_layer(bz_ui_comp(), 0, &l);
+}
+
 static void place_track(void)
 {
-    lv_obj_set_x(U.track, (int)lroundf(U.offset.value));
+    if (MC.pages) strip_layer(U.offset.value);
+    else lv_obj_set_x(U.track, (int)lroundf(U.offset.value));
 }
 
 void ui_go(int page)
@@ -513,13 +543,165 @@ static void win_layout(void)
     }
     lv_obj_set_pos(U.win, (int)x1, (int)y1);
     lv_obj_set_size(U.win, (int)(x2 - x1 + 1), (int)(y2 - y1 + 1));
-    lv_obj_set_style_radius(U.win, (int)(32 * (1 - (kc > 1 ? 1 : kc))), 0);
+    /* a style set redraws the whole window even when the value is the same */
+    int radius = (int)(32 * (1 - (kc > 1 ? 1 : kc)));
+    if (radius != lv_obj_get_style_radius(U.win, 0)) lv_obj_set_style_radius(U.win, radius, 0);
+    if (MC.window) {
+        bz_layer_t l = { { (int16_t)(x1 < 0 ? 0 : x1), (int16_t)(y1 < 0 ? 0 : y1), (int16_t)(x2 > W - 1 ? W - 1 : x2),
+                           (int16_t)(y2 > H - 1 ? H - 1 : y2) },
+                         /* in half pixels: a spring settling by hundredths shouldn't redraw the screen */
+                         roundf(64 * (1 - (kc > 1 ? 1 : kc))) / 2, MC.win, 0, 0, W };
+        if (k <= 0.01f && U.k.target == 0) bz_comp_set_layer(bz_ui_comp(), 1, NULL);
+        else bz_comp_set_layer(bz_ui_comp(), 1, &l);
+    }
     if (U.win_inner) lv_obj_set_pos(U.win_inner, -(int)x1, -(int)y1);
     if (k <= 0.01f && U.k.target == 0) {
         lv_obj_add_flag(U.win, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_remove_flag(U.win, LV_OBJ_FLAG_HIDDEN);
     }
+}
+
+/* ---- motion caches ---- */
+
+static void prep_page(bool before, void *u)
+{
+    static int x;
+    static bool win_hidden;
+    if (before) {
+        x = lv_obj_get_x(U.track);
+        win_hidden = lv_obj_has_flag(U.win, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_x(U.track, -(int)(intptr_t)u * W);
+        lv_obj_add_flag(U.win, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_set_x(U.track, x);
+        if (!win_hidden) lv_obj_remove_flag(U.win, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+/* The window as it is when fully open, whatever it looks like now. */
+static void prep_window(bool before, void *u)
+{
+    (void)u;
+    if (before) {
+        lv_obj_remove_flag(U.win, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_pos(U.win, 0, 0);
+        lv_obj_set_size(U.win, W, H);
+        lv_obj_set_style_radius(U.win, 0, 0);
+        if (U.win_inner) lv_obj_set_pos(U.win_inner, 0, 0);
+    } else {
+        win_layout();
+    }
+}
+
+static bool caches_ready(void)
+{
+    if (MC.strip) return true;
+    MC.stride = (NPAGES + 1) * W;
+    MC.strip = aligned_alloc(64, (size_t)MC.stride * H * 2);
+    MC.win = aligned_alloc(64, (size_t)W * H * 2);
+    if (!MC.strip || !MC.win) {
+        free(MC.strip);
+        free(MC.win);
+        MC.strip = MC.win = NULL;
+        return false;
+    }
+    MC.dark = !bz_ui_dark(); /* forces the ground in the margins to be painted */
+    return true;
+}
+
+static void render_page(int i)
+{
+    lv_area_t a = { 0, 0, W - 1, H - 1 };
+    bz_ui_render_offscreen(strip_page(i), MC.stride, &a, prep_page, (void *)(intptr_t)i);
+    MC.ok[i] = true;
+    MC.t[i] = g_now;
+    MC.last_render = g_now;
+}
+
+/* The page on screen, straight from the content buffer: it is exactly what LVGL has drawn. */
+static void grab_page(int i)
+{
+    bz_ui_copy(strip_page(i), MC.stride, bz_ui_content_buf(), W, W, H);
+    MC.ok[i] = true;
+    MC.t[i] = g_now;
+}
+
+static void pages_begin(void)
+{
+    if (MC.pages || MC.window || U.app || !caches_ready()) return;
+    grab_page(MC.track_page);
+    for (int i = 0; i < NPAGES; i++) if (!MC.ok[i]) render_page(i);
+    bz_ui_freeze(true);
+    MC.pages = true;
+    strip_layer(U.offset.value);
+}
+
+static void pages_end(void)
+{
+    if (!MC.pages) return;
+    MC.pages = false;
+    MC.track_page = U.page;
+    lv_obj_set_x(U.track, -U.page * W); /* frozen: no redraw for the move */
+    bz_comp_set_layer(bz_ui_comp(), 0, NULL);
+    bz_ui_freeze(false);                /* one redraw, of the page as it is now */
+}
+
+static void window_begin(bool opening)
+{
+    if (MC.window || MC.pages || !caches_ready()) return;
+    if (opening) {
+        /* the page as it is under the window, and the window as it will be when full */
+        grab_page(MC.track_page);
+        lv_area_t a = { 0, 0, W - 1, H - 1 };
+        bz_ui_render_offscreen(MC.win, W, &a, prep_window, NULL);
+    } else {
+        /* the window as it is on screen now; the page under it as last drawn */
+        bz_ui_copy(MC.win, W, bz_ui_content_buf(), W, W, H);
+        if (!MC.ok[MC.track_page]) render_page(MC.track_page);
+    }
+    bz_ui_freeze(true);
+    MC.window = true;
+    bz_layer_t page = { { 0, 0, W - 1, H - 1 }, 0, strip_page(MC.track_page), 0, 0, MC.stride };
+    bz_comp_set_layer(bz_ui_comp(), 0, &page);
+}
+
+static void window_end(void)
+{
+    if (!MC.window) return;
+    MC.window = false;
+    bz_comp_set_layer(bz_ui_comp(), 0, NULL);
+    bz_comp_set_layer(bz_ui_comp(), 1, NULL);
+    bz_ui_freeze(false);
+}
+
+/* While nothing moves, keep the pictures fresh: the pages beside this one within 2 s, the others
+ * within 10 s, and the one under an open app within 3 s. One drawing at a time, a few a second. */
+static void caches_idle(void)
+{
+    if (!MC.strip && !caches_ready()) return;
+    if (MC.dark != bz_ui_dark()) {
+        MC.dark = bz_ui_dark();
+        uint32_t c = bz_color(BZ_C_GROUND);
+        uint16_t g = (uint16_t)(((c >> 19) & 31) << 11 | ((c >> 10) & 63) << 5 | ((c >> 3) & 31));
+        for (int y = 0; y < H; y++) {
+            uint16_t *row = MC.strip + (size_t)y * MC.stride;
+            for (int x = 0; x < W / 2; x++) row[x] = row[MC.stride - 1 - x] = g;
+        }
+        for (int i = 0; i < NPAGES; i++) MC.ok[i] = false;
+    }
+    if (MC.pages || MC.window || bz_ui_idle_s() < 0.4 || g_now - MC.last_render < 0.3) return;
+    if (U.k.value != U.k.target || fabsf(U.offset.value - U.offset.target) > 0.5f) return;
+    int best = -1;
+    double worst = 0;
+    for (int i = 0; i < NPAGES; i++) {
+        bool here = i == MC.track_page;
+        if (here && !U.app) continue; /* on screen: grabbed, not drawn */
+        double limit = here ? 3 : abs(i - MC.track_page) == 1 ? 2 : 10;
+        double age = MC.ok[i] ? g_now - MC.t[i] : 1e9;
+        if (age > limit && age - limit > worst) { worst = age - limit; best = i; }
+    }
+    if (best >= 0) render_page(best);
 }
 
 void ui_app_open(const ui_app_t *app, lv_obj_t *from)
@@ -541,6 +723,7 @@ void ui_app_open(const ui_app_t *app, lv_obj_t *from)
         if (app->open) app->open();
         if (app->refresh) app->refresh();
     }
+    if (U.k.value < 0.02f) window_begin(true);
     /* grows out of the icon on the release spring; a closing window caught here reopens from where it is */
     bz_motion_to(&U.k, 1, BZ_RELEASE);
     ui_text(U.pill_label, "%s", app->name);
@@ -553,6 +736,7 @@ void ui_app_open(const ui_app_t *app, lv_obj_t *from)
 void ui_app_close(void)
 {
     if (!U.app) return;
+    if (U.k.value > 0.98f) window_begin(false);
     bz_motion_to(&U.k, 0, BZ_RELEASE);
     bz_glass_show(U.pill_glass, false);
 }
@@ -562,6 +746,8 @@ bool ui_app_is_open(const ui_app_t *app) { return U.app == app && U.k.target > 0
 static void wd_begin(lv_obj_t *o, lv_point_t p, void *u)
 {
     (void)o; (void)p; (void)u;
+    if (U.k.value > 0.98f) window_begin(false);
+    U.win_dragging = true;
     U.drag_k0 = U.k.value;
     bz_motion_set(&U.k, U.k.value, 0);
 }
@@ -579,6 +765,7 @@ static void wd_move(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
 static void wd_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
 {
     (void)o; (void)dx; (void)dy; (void)vx; (void)u;
+    U.win_dragging = false;
     float kv = -vy / 900.0f;
     float proj = U.k.value + bz_project(kv * 1000, BZ_RATE_FAST) / 1000;
     if (proj < 0.78f) ui_app_close();
@@ -614,8 +801,10 @@ static void build_windows(void)
 static void windows_frame(double now, double dt)
 {
     if (!U.app) return;
-    if (bz_motion_tick(&U.k)) bz_ui_keep_alive();
+    bool moving = bz_motion_tick(&U.k);
+    if (moving) bz_ui_keep_alive();
     win_layout();
+    if (MC.window && !moving && !U.win_dragging) window_end();
     if (U.app->frame && U.k.target > 0) U.app->frame(now, dt);
     if (U.k.target == 0 && U.k.value <= 0.01f) {
         if (U.app->close) U.app->close();
@@ -668,12 +857,16 @@ static void shell_frame(double now, double dt, void *user)
 {
     (void)user;
     g_now = now;
-    if (bz_motion_tick(&U.offset)) {
+    bool paging = bz_motion_tick(&U.offset);
+    if (paging || fabsf(U.offset.value + MC.track_page * W) > 0.5f) {
+        pages_begin();
         place_track();
         bz_ui_keep_alive();
         int p = (int)lroundf(-U.offset.value / W);
         if (p != U.page && U.offset.target == -(float)p * W) U.page = p;
     }
+    if (MC.pages && !paging && !bz_drag_active() && fabsf(U.offset.value + U.page * W) < 0.5f) pages_end();
+    caches_idle();
     dock_frame();
     windows_frame(now, dt);
 
@@ -733,4 +926,13 @@ void ui_init(const ui_config_t *cfg)
     ui_cc_init();
     bz_ui_on_frame(scroll_frame, NULL);
     bz_ui_on_frame(shell_frame, NULL);
+}
+
+/* For the simulator's `dump strip`: the page pictures as they are. */
+const uint16_t *ui_debug_strip(int *stride, int *w, int *h)
+{
+    *stride = MC.stride;
+    *w = MC.stride;
+    *h = H;
+    return MC.strip;
 }
