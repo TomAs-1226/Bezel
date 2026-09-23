@@ -549,7 +549,6 @@ static void sc_build_cameras(void)
         SC.cam[i].name = bz_label_line(c, "", BZ_F_BODY_S, BZ_C_INK, IN(COL3) - 20);
         SC.cam[i].val = bz_label_line(c, "", BZ_F_LABEL, BZ_C_INK, IN(COL3) - 20);
         SC.cam[i].sub = bz_label_line(c, "", BZ_F_CAPTION, BZ_C_DIM, IN(COL3) - 20);
-        (void)SC.cam[i].sub;
     }
     SC.cams_empty = bz_label(SC.t_cams, "", BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(SC.cams_empty, IN(COL3));
@@ -940,7 +939,7 @@ static void sc_network(const cat_agent_t *a, bool agent)
 
 static void sc_cameras(const cat_agent_t *a, bool agent)
 {
-    char b[32], s[96];
+    char s[96];
     int n = 0;
     if (agent && a->ncams) {
         for (int i = 0; i < a->ncams && n < SC_CAMS; i++, n++) {
@@ -978,7 +977,6 @@ static void sc_cameras(const cat_agent_t *a, bool agent)
     }
     for (int i = 0; i < SC_CAMS; i++) show(SC.cam[i].row, i < n);
     ui_text(SC.cams_empty, "%s", n ? "" : agent ? (a->cams_available ? "the os sees no limelight" : a->cams_reason) : "no cameras reported");
-    (void)b;
 }
 
 static void sc_log(const cat_agent_t *a)
@@ -1014,6 +1012,7 @@ static void sc_layout(bool agent)
 
 static void sc_refresh(void)
 {
+    if (!SC.a) return;
     cat_agent_want();
     cat_ag_status_t st;
     cat_agent_status(&st);
@@ -1226,7 +1225,7 @@ static void mh_boots_draw(lv_event_t *e)
 
 static void mh_detail(void)
 {
-    char b[64], c[64], d[64];
+    char b[64], c[64];
     bool have = MH.sel >= 0 && MH.sel < MH.n;
     show(MH.d_tile, have);
     if (!have) return;
@@ -1287,7 +1286,6 @@ static void mh_detail(void)
     lv_obj_invalidate(MH.d_boots);
     ui_text(MH.d_foot, "on record since %s%s%s", fmt_date(c, sizeof c, m->first_ms, trusted),
             m->sticky ? " " MID " sticky faults ever 0x" : "", m->sticky ? (snprintf(b, sizeof b, "%llx", (unsigned long long)m->sticky), b) : "");
-    (void)d;
 }
 
 static void mh_build(lv_obj_t *b)
@@ -1353,6 +1351,7 @@ static void mh_build(lv_obj_t *b)
 
 static void mh_refresh(void)
 {
+    if (!MH.m) return;
     cat_mh_want();
     int n = cat_mh_get(MH.m, CAT_MH_MAX, &MH.meta, &MH.rev);
     if (n >= 0) {
@@ -1632,9 +1631,7 @@ static void st_detail(void)
     if (sig != STS.d_sig) {
         STS.d_sig = sig;
         lv_obj_clean(STS.d_list);
-        struct tm wall;
         time_t tnow = time(NULL);
-        hal_rtc_get(&wall);
         for (int k = 0; k < l->count - 1 && k < 40; k++) {
             cat_st_edge_t to_e, from_e;
             cat_st_edge(l, k, &to_e);
@@ -1657,7 +1654,6 @@ static void st_detail(void)
             lv_obj_set_style_text_align(dl, LV_TEXT_ALIGN_RIGHT, 0);
         }
         if (l->count < 2) bz_label(STS.d_list, "no transitions yet", BZ_F_CAPTION, BZ_C_DIM);
-        (void)wall;
     }
     cat_states_unlock();
 }
@@ -2658,7 +2654,6 @@ static void rc_refresh(void)
         ui_island_say(RC.upload_result == 2 ? BZ_I_CLOUD_UPLOAD : BZ_I_CLOUD_OFF, msg);
         RC.upload_result = 0;
     }
-    (void)b;
 }
 
 static void rc_open(void)
