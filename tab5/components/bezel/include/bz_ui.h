@@ -133,7 +133,8 @@ int bz_ui_sheet_shown(void); /* the height on the panel now (-1: none yet) */
 bool bz_ui_sheeting(void);
 void bz_ui_sheet_end(void);
 double bz_ui_clock(void);    /* monotonic seconds, for timing */
-void bz_ui_hooks_report(void); /* logs each frame hook's time since the last call */
+void bz_ui_hooks_report(void);
+void bz_ui_trace_inv(int frames); /* log every invalidated area for this many frames */ /* logs each frame hook's time since the last call */
 /* Per-frame averages since the last call: frame hooks, lv_timer_handler, display refreshes, renders. */
 void bz_ui_split(float *hooks_ms, float *lvgl_ms, float *refr_ms, float *render_ms);
 

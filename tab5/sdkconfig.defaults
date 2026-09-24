@@ -47,9 +47,10 @@ CONFIG_LV_CONF_SKIP=n
 # LVGL's PPA draw unit checks the Kconfig value (lv_conf.h sets the one LVGL uses): the L2 cache line
 CONFIG_LV_DRAW_BUF_ALIGN=128
 
-# The Tab5 BSP: two DPI frame buffers so the renderer flips on vsync instead of tearing; the
-# renderer drives the panel itself, so the BSP's LVGL port stays unused
-CONFIG_BSP_LCD_DPI_BUFFER_NUMS=2
+# The Tab5 BSP: three DPI frame buffers: one on the glass, one waiting for vsync, one free, so a frame's
+# work never waits for the last one to be shown (hal_present); the renderer drives the panel itself, so
+# the BSP's LVGL port stays unused
+CONFIG_BSP_LCD_DPI_BUFFER_NUMS=3
 CONFIG_BSP_SD_FORMAT_ON_MOUNT_FAIL=n
 
 # The ESP32-C6 over SDIO (esp_hosted host, matching the C6's stock esp-hosted 1.4.x slave)

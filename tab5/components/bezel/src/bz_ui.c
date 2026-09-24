@@ -129,9 +129,16 @@ static void prof_event(lv_event_t *e)
 /* Who asks for (nearly) the whole screen to be redrawn: a backtrace at most every 3 s, decoded with
  * addr2line against the ELF. */
 static double s_hook_ms[16];
+static int s_trace_inv; /* frames left to log every invalidated area (the dev console's "inv") */
+void bz_ui_trace_inv(int frames) { s_trace_inv = frames; }
+
 static void big_inv(lv_event_t *e)
 {
     const lv_area_t *a = lv_event_get_param(e);
+#ifdef ESP_PLATFORM
+    if (s_trace_inv > 0 && a)
+        ESP_LOGI("bz_ui", "inv %d,%d-%d,%d (%d px)", (int)a->x1, (int)a->y1, (int)a->x2, (int)a->y2, (int)lv_area_get_size(a));
+#endif
     static double last;
     if (!a || lv_area_get_size(a) < 300000 || U.offscreen) return;
     double t = prof_wall();
@@ -751,6 +758,11 @@ bool bz_ui_frame(double now_s)
     double t1 = wall();
     lv_timer_handler();
     double t2 = wall();
+    if (s_trace_inv > 0 && --s_trace_inv == 0) {
+#ifdef ESP_PLATFORM
+        ESP_LOGI("bz_ui", "inv trace done");
+#endif
+    }
     prof_handler += t2 - t1;
     SP.hooks += t1 - t0;
     SP.lvgl += t2 - t1;
@@ -1349,10 +1361,14 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
         m.y2 += dy;
         if (lv_area_intersect(&m, &m, &a)) lv_inv_area(d, &m);
     }
-    /* LVGL draws only the strip that scrolled into view */
+    /* LVGL draws only the strip that scrolled into view, at least 16 rows of it: a thinner one is turned
+     * by the CPU, whose cache has to be swept over every row of the panel it crosses (most of a frame) */
     lv_area_t band = a;
-    if (dy < 0) band.y1 = a.y2 + dy + 1;
-    else band.y2 = a.y1 + dy - 1;
+    int rows = abs(dy) < 16 ? 16 : abs(dy);
+    if (dy < 0) band.y1 = a.y2 - rows + 1;
+    else band.y2 = a.y1 + rows - 1;
+    if (band.y1 < a.y1) band.y1 = a.y1;
+    if (band.y2 > a.y2) band.y2 = a.y2;
     lv_inv_area(d, &band);
     return true;
 }

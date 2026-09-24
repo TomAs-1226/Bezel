@@ -95,8 +95,8 @@ static struct {
     i2c_master_bus_handle_t i2c;
     i2c_master_dev_handle_t ina, rtc, e2;
     bsp_lcd_handles_t lcd;
-    void *fb[2];
-    int back;
+    void *fb[3];
+    int back;  /* the asynchronous present's own (CATALYST_ASYNC_PRESENT) */
     SemaphoreHandle_t vsync;
     uint32_t lane_mbps;   /* MIPI lane rate: 1000, or 965 on the ST7121 */
     volatile uint32_t vsyncs; /* frames the panel has scanned out, for the measured refresh rate */
@@ -307,6 +307,26 @@ static void rtc_init(void)
 
 /* ------------------------------------------------------------------ IMU */
 
+static struct {
+    hal_imu_t v;
+    volatile uint32_t seq; /* odd while being written */
+} IMU;
+static bool imu_read(hal_imu_t *o);
+
+static void imu_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        hal_imu_t m;
+        bool ok = imu_read(&m);
+        m.ok = ok;
+        IMU.seq++;
+        IMU.v = m;
+        IMU.seq++;
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+}
+
 static void imu_init(void)
 {
     bmi270_driver_config_t cfg = { .addr = BMI270_I2C_ADDRESS_L, .interface = BMI270_USE_I2C, .i2c_bus = T.i2c };
@@ -318,9 +338,25 @@ static void imu_init(void)
     bmi270_config_t run = { .acce_odr = BMI270_ACC_ODR_100_HZ, .acce_range = BMI270_ACC_RANGE_2_G,
                             .gyro_odr = BMI270_GYR_ODR_100_HZ, .gyro_range = BMI270_GYR_RANGE_500_DPS };
     bmi270_start(T.imu, &run);
+    /* read on core 0 at 50 Hz: an I2C read takes a few ms, and on the UI's core (auto-rotate, the level,
+     * the companion's eyes) it came out of every frame's budget */
+    xTaskCreatePinnedToCore(imu_task, "imu", 3072, NULL, 3, NULL, 0);
 }
 
 bool hal_imu(hal_imu_t *o)
+{
+    /* the last reading, a copy taken with the sequence number unchanged across it */
+    for (int tries = 0; tries < 4; tries++) {
+        uint32_t s0 = IMU.seq;
+        if (s0 & 1) continue;
+        *o = IMU.v;
+        if (IMU.seq == s0) return o->ok;
+    }
+    memset(o, 0, sizeof *o);
+    return false;
+}
+
+static bool imu_read(hal_imu_t *o)
 {
     memset(o, 0, sizeof *o);
     float x, y, z, gx, gy, gz;
@@ -637,16 +673,26 @@ static void present_init(void)
 }
 
 #else
-/* The default. Each area (and whatever of the last frame's the back buffer is missing) is turned into
- * the back buffer with blocking PPA calls — so the source buffer is free again when this returns — and
- * the buffer is handed to the DPI controller. The switch to it happens at the panel's next vsync, and
- * this doesn't wait for it: the UI draws its next frame meanwhile, and only the next present waits (for
- * the other buffer to leave the glass) before writing into it. A frame no longer rounds up to the next
- * vsync, so work up to 16.5 ms per frame holds 60 Hz. */
-static bool s_flip_pending; /* a buffer was handed over and the panel hasn't switched to it yet */
+/* The default: three frame buffers. The panel scans one; one may be handed over and waiting for the next
+ * vsync; the third is always free, so a frame's work (DMA copies, rotations) starts at once and overlaps
+ * the wait for the last one to reach the glass. With two buffers every moving frame had to wait for the
+ * vsync before its work began, and so missed the next one: 30 fps at best.
+ *
+ * A buffer taken up again is brought up to date first: whatever changed in the frames since it last held
+ * the picture is copied from the newest buffer by DMA2D (67 Mpx/s), not turned again by the PPA; a thin
+ * sliver is turned from LVGL's buffer by the CPU instead (rotate_area). */
+#define HIST 4
+typedef struct {
+    bz_present_t a[PRESENT_MAX + 4];
+    int n;
+    bool full; /* the whole screen: anything older is irrelevant */
+} hist_t;
+static hist_t s_hist[HIST];
+static int s_nfb = 2, s_scan, s_pend = -1;  /* scanned now; handed over and not switched to yet (-1 none) */
+static uint32_t s_frame, s_buf_frame[3];     /* frames handed over; the frame each buffer holds */
 
 /* Lists scrolled since the last present (see scroll_apply): their pixels move in the panel's buffers by
- * DMA2D, from the picture on the glass; LVGL draws only the strip that came into view. */
+ * DMA2D, from the newest picture; LVGL draws only the strip that came into view. */
 #define SCROLL_MAX 4
 static struct {
     bz_area_t a;
@@ -654,61 +700,151 @@ static struct {
 } s_scroll[SCROLL_MAX];
 static int s_nscroll;
 static bool scroll_apply(void *fb);
-static void front_copy(void *fb, const bz_area_t *a);
+static void blk_copy(uint16_t *dst, int dx, int dy, const uint16_t *src, int sx, int sy, int w, int h);
+static void portrait_rect(const bz_area_t *a, int *x, int *y, int *w, int *h);
 
-void hal_present(const bz_present_t *areas, int n, void *user)
+static int fb_latest(void) { return s_pend >= 0 ? s_pend : s_scan; }
+
+/* a vsync since the hand-over: the panel is on the handed buffer now */
+static void fb_seen(bool wait)
 {
-    (void)user;
-    if (s_flip_pending) {
-        if (xSemaphoreTake(T.vsync, pdMS_TO_TICKS(100)) != pdTRUE && !P.late++) ESP_LOGW(TAG, "present: no vsync");
-        s_flip_pending = false;
+    if (s_pend < 0) return;
+    if (xSemaphoreTake(T.vsync, wait ? pdMS_TO_TICKS(100) : 0) == pdTRUE) {
+        s_scan = s_pend;
+        s_pend = -1;
+    } else if (wait) {
+        if (!P.late++) ESP_LOGW(TAG, "present: no vsync");
+        s_scan = s_pend; /* carry on rather than stall */
+        s_pend = -1;
     }
-    void *fb = T.fb[T.back];
-    int y0 = PANEL_H, y1 = -1;
-    /* areas that tile the whole screen leave nothing of the last frame to catch up (a slide, a full
-     * redraw): skip re-turning it, which was half of every slide frame's work */
-    uint32_t cover = 0;
-    for (int i = 0; i < n; i++)
-        cover += (uint32_t)(areas[i].a.x2 - areas[i].a.x1 + 1) * (uint32_t)(areas[i].a.y2 - areas[i].a.y1 + 1);
-    if (cover >= (uint32_t)HAL_W * HAL_H) P.nprev = 0;
-    for (int i = 0; i < P.nprev; i++) {
-        bool covered = false;
-        for (int j = 0; j < n && !covered; j++) covered = covers(&areas[j].a, &P.prev[i].a);
-        /* a list that scrolls again this frame is copied from the glass below anyway */
-        for (int j = 0; j < s_nscroll && !covered && !P.prev[i].src; j++) covered = covers(&s_scroll[j].a, &P.prev[i].a);
-        if (covered) continue;
-        if (P.prev[i].src) rotate_area(&P.prev[i], fb, false);
-        else front_copy(fb, &P.prev[i].a); /* the last frame scrolled this: the glass has it right */
-        rows_of(&P.prev[i].a, &y0, &y1);
+}
+
+/* a buffer neither on the glass nor waiting to be */
+static int fb_pick(void)
+{
+    fb_seen(false);
+    for (int i = 0; i < s_nfb; i++)
+        if (i != s_scan && i != s_pend) return i;
+    fb_seen(true); /* two buffers and one pending: wait for it */
+    for (int i = 0; i < s_nfb; i++)
+        if (i != s_scan && i != s_pend) return i;
+    return s_scan ^ 1;
+}
+
+static void fb_copy_rect(int dst, int src, const bz_area_t *a)
+{
+    int x, y, w, h;
+    portrait_rect(a, &x, &y, &w, &h);
+    blk_copy(T.fb[dst], x, y, T.fb[src], x, y, w, h);
+}
+
+static bool covered_by(const bz_area_t *r, const bz_present_t *areas, int n)
+{
+    for (int j = 0; j < n; j++)
+        if (covers(&areas[j].a, r)) return true;
+    for (int j = 0; j < s_nscroll; j++)
+        if (covers(&s_scroll[j].a, r)) return true;
+    return false;
+}
+
+/* buffer b made the newest picture, except where this frame writes anyway */
+static void fb_catch_up(int b, const bz_present_t *areas, int n, bool cover_full)
+{
+    uint32_t from = s_buf_frame[b];
+    if (cover_full || from >= s_frame) return;
+    int latest = fb_latest();
+    bool full = s_frame - from >= HIST;
+    for (uint32_t f = from + 1; f <= s_frame && !full; f++) full = s_hist[f % HIST].full;
+    if (full) {
+        blk_copy(T.fb[b], 0, 0, T.fb[latest], 0, 0, PANEL_W, PANEL_H);
+        return;
     }
-    /* scrolled lists before anything drawn over them */
-    int nscroll = s_nscroll;
-    bz_area_t scrolled[SCROLL_MAX];
-    for (int i = 0; i < nscroll; i++) {
-        scrolled[i] = s_scroll[i].a;
-        rows_of(&scrolled[i], &y0, &y1);
+    for (uint32_t f = from + 1; f <= s_frame; f++) {
+        const hist_t *h = &s_hist[f % HIST];
+        for (int i = 0; i < h->n; i++) {
+            const bz_present_t *e = &h->a[i];
+            if (covered_by(&e->a, areas, n)) continue;
+            int w = e->a.x2 - e->a.x1 + 1, hh = e->a.y2 - e->a.y1 + 1;
+            /* a sliver the DMA would move as a block a few pixels wide: turned again from LVGL's buffer */
+            if (e->src && (w < 16 || hh < 16)) rotate_area(e, T.fb[b], false);
+            else fb_copy_rect(b, latest, &e->a);
+        }
     }
-    scroll_apply(fb);
-    for (int i = 0; i < n; i++) {
-        rotate_area(&areas[i], fb, false);
-        rows_of(&areas[i].a, &y0, &y1);
-    }
-    int keep = n < PRESENT_MAX - nscroll ? n : PRESENT_MAX - nscroll;
-    if (keep < n && !P.overflow++) ESP_LOGW(TAG, "present: %d areas, catch-up keeps %d", n, PRESENT_MAX);
-    memcpy(P.prev, areas, sizeof *areas * (size_t)keep);
-    /* and the scrolled lists, for the other buffer: copied from the glass, not turned again */
-    for (int i = 0; i < nscroll; i++) P.prev[keep++] = (bz_present_t){ scrolled[i], NULL, 0 };
-    P.nprev = keep;
-    if (y1 < y0) { y0 = 0; y1 = PANEL_H - 1; }
+}
+
+/* b holds this frame now: handed to the panel, which switches to it at the next vsync */
+static void fb_handover(int b, const bz_present_t *areas, int n, bool full, int y0, int y1)
+{
+    fb_seen(true); /* one frame waiting at a time: none is ever dropped */
     xSemaphoreTake(T.vsync, 0);
-    /* only the rows that changed: draw_bitmap writes back the cache over exactly these, not 1.8 MB */
-    esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, y0, PANEL_W, y1 + 1, fb);
-    s_flip_pending = true;
-    T.back ^= 1;
+    esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, y0, PANEL_W, y1 + 1, T.fb[b]);
+    s_pend = b;
+    s_frame++;
+    s_buf_frame[b] = s_frame;
+    hist_t *h = &s_hist[s_frame % HIST];
+    h->full = full;
+    h->n = 0;
+    for (int i = 0; i < n && h->n < PRESENT_MAX + 4; i++) h->a[h->n++] = areas[i];
     if (!T.lit) {
         T.lit = true;
         bsp_display_brightness_set(70);
     }
+}
+
+/* PROFILING: seconds per stage of hal_present since the last hal_present_prof() */
+static double s_pp[5];
+static int s_ppn;
+void hal_present_prof(double out[6])
+{
+    for (int i = 0; i < 5; i++) {
+        out[i] = s_pp[i];
+        s_pp[i] = 0;
+    }
+    out[5] = s_ppn;
+    s_ppn = 0;
+}
+
+void hal_present(const bz_present_t *areas, int n, void *user)
+{
+    (void)user;
+    double t0 = hal_seconds();
+    int b = fb_pick();
+    void *fb = T.fb[b];
+    int y0 = PANEL_H, y1 = -1;
+    /* areas that tile the whole screen leave nothing to catch up (a full redraw) */
+    uint32_t cover = 0;
+    for (int i = 0; i < n; i++)
+        cover += (uint32_t)(areas[i].a.x2 - areas[i].a.x1 + 1) * (uint32_t)(areas[i].a.y2 - areas[i].a.y1 + 1);
+    bool full = cover >= (uint32_t)HAL_W * HAL_H;
+    double t1 = hal_seconds();
+    fb_catch_up(b, areas, n, full);
+    double t2 = hal_seconds();
+    /* scrolled lists before anything drawn over them; remembered as copies from the newest picture */
+    bz_present_t rec[PRESENT_MAX + SCROLL_MAX];
+    int nrec = 0;
+    for (int i = 0; i < s_nscroll; i++) {
+        rec[nrec++] = (bz_present_t){ s_scroll[i].a, NULL, 0 };
+        rows_of(&s_scroll[i].a, &y0, &y1);
+    }
+    scroll_apply(fb);
+    double t3 = hal_seconds();
+    for (int i = 0; i < n; i++) {
+        rotate_area(&areas[i], fb, false);
+        rows_of(&areas[i].a, &y0, &y1);
+        if (nrec < PRESENT_MAX + SCROLL_MAX) rec[nrec++] = areas[i];
+        else if (!P.overflow++) ESP_LOGW(TAG, "present: %d areas, the catch-up keeps %d", n, PRESENT_MAX);
+    }
+    if (y1 < y0) { y0 = 0; y1 = 0; }
+    /* only the rows the CPU may have touched: draw_bitmap writes back the cache over exactly these */
+    double t4 = hal_seconds();
+    fb_handover(b, rec, nrec, full, y0, y1);
+    double t5 = hal_seconds();
+    s_pp[0] += t1 - t0; /* pick (a wait only with two buffers) */
+    s_pp[1] += t2 - t1; /* catch-up */
+    s_pp[2] += t3 - t2; /* scroll copies */
+    s_pp[3] += t4 - t3; /* rotations */
+    s_pp[4] += t5 - t4; /* hand-over (the wait for the last frame's vsync) */
+    s_ppn++;
 }
 
 static void present_init(void) {}
@@ -728,21 +864,9 @@ static struct {
     ppa_client_handle_t fill;
 } SLD;
 
-static void present_wait(void)
-{
-    if (s_flip_pending) {
-        if (xSemaphoreTake(T.vsync, pdMS_TO_TICKS(100)) != pdTRUE && !P.late++) ESP_LOGW(TAG, "present: no vsync");
-        s_flip_pending = false;
-    }
-}
-
-static void present_flip(void *fb, int y0, int y1)
-{
-    xSemaphoreTake(T.vsync, 0);
-    esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, y0, PANEL_W, y1 + 1, fb);
-    s_flip_pending = true;
-    T.back ^= 1;
-}
+/* a whole frame composed by DMA (a slide, a sheet): a free buffer, then handed over as the full screen */
+static int present_begin(void) { return fb_pick(); }
+static void present_end(int b) { fb_handover(b, NULL, 0, true, 0, 0); }
 
 /* Block copies between portrait buffers on the DMA2D, the P4's 2D copy engine (esp_lcd's frame-buffer
  * copier, the same the DPI driver uses). Not the PPA: its scale-rotate-mirror engine moves ~20 Mpx/s
@@ -836,7 +960,7 @@ static bool slide_begin(uint32_t ground_rgb, const bz_area_t *chrome, int nchrom
     SLD.ground = (uint16_t)(((ground_rgb >> 19) & 31) << 11 | ((ground_rgb >> 10) & 63) << 5 | ((ground_rgb >> 3) & 31));
     /* the latest picture handed to the panel — final in memory even if the panel switches to it only at
      * the next vsync, so no waiting for it: the page with its chrome */
-    const uint16_t *front = T.fb[T.back ^ 1];
+    const uint16_t *front = T.fb[fb_latest()];
     fbcpy_wait();
     /* the chrome's own pixels (small), then the page (big) left copying while the renderer draws the
      * chrome-free patches; the first patch waits for it */
@@ -861,9 +985,9 @@ static void slide_patch(const bz_present_t *p, bool neighbour)
 static void slide_frame(int dx, int side, const bz_area_t *chrome, int nchrome)
 {
     if (!SLD.active) return;
-    present_wait();
+    int b = present_begin();
     double tf0 = hal_seconds();
-    uint16_t *fb = T.fb[T.back];
+    uint16_t *fb = T.fb[b];
     int W = HAL_W; /* portrait rows */
     if (dx > W) dx = W;
     if (dx < -W) dx = -W;
@@ -887,9 +1011,8 @@ static void slide_frame(int dx, int side, const bz_area_t *chrome, int nchrome)
         portrait_rect(&chrome[i], &x, &y, &w, &h);
         rect_copy(fb, SLD.chrome, x, y, w, h);
     }
-    P.nprev = 0; /* the whole buffer was written: nothing of the last frame to catch up */
     (void)tf0;
-    present_flip(fb, 0, PANEL_H - 1);
+    present_end(b);
 }
 
 /* At start-up, while internal RAM has room: the DMA2D's descriptors must be in internal, DMA-capable
@@ -940,8 +1063,8 @@ static void sheet_frame(int h, int sh, bool swapped, bool bottom)
     if (h > sh - 8) h = sh;
     /* the sheet's picture, and the page's rows it has uncovered; past the sheet, the glass as it was */
     const uint16_t *sheet = swapped ? SLD.snap : SLD.nb, *under = swapped ? SLD.nb : SLD.snap;
-    present_wait();
-    uint16_t *fb = T.fb[T.back];
+    int b = present_begin();
+    uint16_t *fb = T.fb[b];
     fbcpy_wait();
     if (!bottom) {
         lrows_copy(fb, 0, sheet, sh - h, h);
@@ -952,8 +1075,7 @@ static void sheet_frame(int h, int sh, bool swapped, bool bottom)
         lrows_copy(fb, H - h, sheet, 0, h);
     }
     fbcpy_wait();
-    P.nprev = 0;
-    present_flip(fb, 0, PANEL_H - 1);
+    present_end(b);
 }
 
 static void slide_scroll(const bz_area_t *a, int dy)
@@ -967,20 +1089,12 @@ static void slide_scroll(const bz_area_t *a, int dy)
     if (s_nscroll < SCROLL_MAX) s_scroll[s_nscroll++] = (typeof(s_scroll[0])){ *a, dy };
 }
 
-/* A landscape rect of the picture on the glass into the back buffer, where it is. */
-static void front_copy(void *fb, const bz_area_t *a)
-{
-    int x, y, w, h;
-    portrait_rect(a, &x, &y, &w, &h);
-    blk_copy(fb, x, y, T.fb[T.back ^ 1], x, y, w, h);
-}
-
 /* Each scrolled rect: the rows that stay in view, from the glass, dy rows further on. In the portrait
  * buffer a landscape row is a column, so it's one DMA2D rectangle. */
 static bool scroll_apply(void *fb)
 {
     if (!s_nscroll) return false;
-    const uint16_t *front = T.fb[T.back ^ 1];
+    const uint16_t *front = T.fb[fb_latest()];
     for (int i = 0; i < s_nscroll; i++) {
         const bz_area_t *a = &s_scroll[i].a;
         int dy = s_scroll[i].dy, d0 = a->y1 > a->y1 + dy ? a->y1 : a->y1 + dy, d1 = a->y2 < a->y2 + dy ? a->y2 : a->y2 + dy;
@@ -999,9 +1113,7 @@ static bool scroll_apply(void *fb)
 static void slide_settle(void)
 {
     /* the glass's buffer copied into the other one: the next present, a few areas, lands on the same picture */
-    present_wait();
-    blk_copy(T.fb[T.back], 0, 0, T.fb[T.back ^ 1], 0, 0, PANEL_W, PANEL_H);
-    P.nprev = 0;
+    /* nothing to do: a buffer taken up again is brought up to date from the newest (fb_catch_up) */
 }
 
 static const bz_slide_ops_t SLIDE_OPS = { .begin = slide_begin, .patch = slide_patch, .frame = slide_frame, .end = slide_end,
@@ -1013,7 +1125,13 @@ static void display_init(void)
     bsp_display_config_t cfg = { .dsi_bus = { .phy_clk_src = 0, .lane_bit_rate_mbps = lane_rate() } };
     ESP_ERROR_CHECK(bsp_display_new_with_handles(&cfg, &T.lcd));
     esp_lcd_panel_disp_on_off(T.lcd.panel, true);
+#if CONFIG_BSP_LCD_DPI_BUFFER_NUMS >= 3
+    ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(T.lcd.panel, 3, &T.fb[0], &T.fb[1], &T.fb[2]));
+    s_nfb = 3;
+#else
     ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(T.lcd.panel, 2, &T.fb[0], &T.fb[1]));
+#endif
+    s_scan = 0; /* the panel starts on the first */
     T.vsync = xSemaphoreCreateBinary();
     esp_lcd_dpi_panel_event_callbacks_t cbs = { .on_refresh_done = on_refresh_done };
     esp_lcd_dpi_panel_register_event_callbacks(T.lcd.panel, &cbs, NULL);
@@ -1059,7 +1177,7 @@ bool hal_touch(int *x, int *y, void *user)
 }
 
 /* The buffer on the glass now (the one handed over last), portrait 720x1280: what the panel shows. */
-const uint16_t *hal_front_fb(void) { return T.fb[T.back ^ 1]; }
+const uint16_t *hal_front_fb(void) { return T.fb[fb_latest()]; }
 
 void hal_set_flip(bool flip)
 {

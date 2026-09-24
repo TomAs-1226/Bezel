@@ -569,11 +569,20 @@ static void build_dock(void)
 
 static void dock_frame(void)
 {
+    /* Every LVGL set restyles and redraws (9.5), even to the same value: each is made only on a change.
+     * This ran every frame and redrew the dock under every scrolling list. */
     float pos = -U.offset.value / W;
-    dock_style_items(pos);
+    static int styled = -1, platter_x = -99999, dock_y = -99999;
+    if ((int)lroundf(pos) != styled) {
+        styled = (int)lroundf(pos);
+        dock_style_items(pos);
+    }
     /* the platter follows the pager continuously */
-    float px = DOCK_PAD + pos * (DOCK_ITEM_W + DOCK_GAP);
-    lv_obj_set_pos(U.platter, (int)lroundf(px), DOCK_PAD);
+    int px = (int)lroundf(DOCK_PAD + pos * (DOCK_ITEM_W + DOCK_GAP));
+    if (px != platter_x) {
+        platter_x = px;
+        lv_obj_set_pos(U.platter, px, DOCK_PAD);
+    }
 
     bool a = bz_motion_tick(&U.drop_x), b = bz_motion_tick(&U.drop_lift);
     if (a || b || U.drop_dragging) bz_ui_keep_alive();
@@ -589,7 +598,7 @@ static void dock_frame(void)
         lv_obj_set_style_bg_opa(U.platter, (lv_opa_t)(19 * (1 - lift)), 0);
     } else if (bz_glass_strength(U.droplet_glass) > 0.5f && !U.drop_dragging) {
         bz_glass_show(U.droplet_glass, false);
-        lv_obj_set_style_bg_opa(U.platter, 19, 0);
+        if (lv_obj_get_style_bg_opa(U.platter, 0) != 19) lv_obj_set_style_bg_opa(U.platter, 19, 0);
     }
 
     /* the dock tucks away while an app is open, and after 4 s idle on a page (panel.js:34,166) */
@@ -602,9 +611,16 @@ static void dock_frame(void)
         bz_motion_to(&U.dock_tuck, target, tuck ? BZ_SMOOTH : BZ_RELEASE);
         bz_glass_show(U.dock_glass, !tuck);
     }
-    lv_obj_set_y(U.dock, (int)(-DOCK_BOTTOM + 46 * U.dock_tuck.value));
-    if (U.dock_tuck.value > 0.98f) lv_obj_add_flag(U.dock, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_remove_flag(U.dock, LV_OBJ_FLAG_HIDDEN);
+    int dy = (int)(-DOCK_BOTTOM + 46 * U.dock_tuck.value);
+    if (dy != dock_y) {
+        dock_y = dy;
+        lv_obj_set_y(U.dock, dy);
+    }
+    bool gone = U.dock_tuck.value > 0.98f;
+    if (gone != lv_obj_has_flag(U.dock, LV_OBJ_FLAG_HIDDEN)) {
+        if (gone) lv_obj_add_flag(U.dock, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(U.dock, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 /* ------------------------------------------------------------------ island */
@@ -621,12 +637,17 @@ static volatile bool s_dev_pending;
 
 static bool dev_handler(const char *line)
 {
-    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf")) return false;
+    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw")) return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
     s_dev_pending = true;
     return true;
 }
+
+/* PROFILING: seconds spent in each part of shell_frame since the last "perf" */
+static double s_prof[12];
+static const char *const s_prof_name[12] = { "slide", "caches", "dock", "orient", "windows", "perf", "model",
+                                             "assist", "island", "pages", "app", "rest" };
 
 static void dev_run(void)
 {
@@ -639,6 +660,12 @@ static void dev_run(void)
         ui_go(atoi(s_dev_cmd + 5));
     } else if (!strcmp(s_dev_cmd, "close")) {
         ui_app_close();
+    } else if (!strcmp(s_dev_cmd, "inv")) {
+        bz_ui_trace_inv(20);
+    } else if (!strcmp(s_dev_cmd, "redraw")) {
+        /* the whole screen drawn again: a panel shot before and after shows what a present left stale */
+        lv_obj_invalidate(lv_screen_active());
+        lv_obj_invalidate(lv_layer_top());
     } else if (!strcmp(s_dev_cmd, "perf")) {
         /* where a frame's time has gone since the last "perf": the frame hooks, LVGL's handler, its
          * refresh (layout + render) and the render alone, per frame; and the presents */
@@ -649,6 +676,16 @@ static void dev_run(void)
         printf("perf: hooks %.1f lvgl %.1f refresh %.1f render %.1f ms/frame; present %.1f ms, %.0f fps\n", hk, lv, rf, rd,
                pf.present_ms, pf.fps);
         bz_ui_hooks_report();
+        for (int i = 0; i < 12; i++) {
+            printf("  shell %s %.0f ms\n", s_prof_name[i], s_prof[i] * 1000);
+            s_prof[i] = 0;
+        }
+        double pp[6];
+        hal_present_prof(pp);
+        if (pp[5] > 0)
+            printf("  present x%.0f: pick %.1f catch-up %.1f scroll %.1f rotate %.1f hand-over %.1f ms each\n", pp[5],
+                   pp[0] * 1000 / pp[5], pp[1] * 1000 / pp[5], pp[2] * 1000 / pp[5], pp[3] * 1000 / pp[5],
+                   pp[4] * 1000 / pp[5]);
     }
     s_dev_pending = false;
 }
@@ -1421,10 +1458,13 @@ static void perf_frame(double now)
 
 /* ------------------------------------------------------------------ frame */
 
+#define PROF_MARK(i) do { double t_ = bz_ui_clock(); s_prof[i] += t_ - p_; p_ = t_; } while (0)
+
 static void shell_frame(double now, double dt, void *user)
 {
     (void)user;
     g_now = now;
+    double p_ = bz_ui_clock();
     dev_run();
 #if BZ_LEAN
     slide_frame();
@@ -1434,6 +1474,7 @@ static void shell_frame(double now, double dt, void *user)
         place_track();
     }
 #endif
+    PROF_MARK(0);
     bool paging = bz_motion_tick(&U.offset);
     if (!BZ_LEAN && (paging || fabsf(U.offset.value + MC.track_page * W) > 0.5f)) {
         pages_begin();
@@ -1445,21 +1486,31 @@ static void shell_frame(double now, double dt, void *user)
     if (MC.pages && !paging && !bz_drag_active() && fabsf(U.offset.value + U.page * W) < 0.5f) pages_end();
     if (!bz_ui_thawing()) thaw_layers_drop();
     caches_idle();
+    PROF_MARK(1);
     dock_frame();
+    PROF_MARK(2);
     orient_frame(now);
+    PROF_MARK(3);
     windows_frame(now, dt);
+    PROF_MARK(4);
     perf_frame(now);
+    PROF_MARK(5);
 
     if (now - U.last_refresh >= 0.1) {
         U.last_refresh = now;
         cat_model_update(R);
+        PROF_MARK(6);
         assist_feed(R);
+        PROF_MARK(7);
         island_refresh();
+        PROF_MARK(8);
         /* a page's refresh only while it's on screen and nothing covers it */
         bool covered = U.app && U.k.target > 0;
         for (int i = 0; i < U.nrefresh; i++)
             if (U.refresh[i].page < 0 || (U.refresh[i].page == U.page && !covered)) U.refresh[i].fn(U.refresh[i].user);
+        PROF_MARK(9);
         if (U.app && U.app->refresh && U.k.target > 0) U.app->refresh();
+        PROF_MARK(10);
     }
     /* the interface fades in with the backlight after the boot card faded out with it */
     static double shown_at;
@@ -1511,6 +1562,7 @@ static void shell_frame(double now, double dt, void *user)
             bz_ui_lean_light(qx, qy);
         }
     }
+    PROF_MARK(11);
 }
 
 void ui_init(const ui_config_t *cfg)

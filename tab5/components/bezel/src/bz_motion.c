@@ -168,10 +168,12 @@ void bz_velocity_reset(bz_velocity_t *v) { v->n = v->head = 0; }
 
 void bz_velocity_add(bz_velocity_t *v, double t, float x)
 {
-    /* A gap longer than 40 ms breaks the window: the finger paused, old motion is not this motion. */
+    /* A gap longer than 150 ms breaks the window. Samples come once per UI frame, and a pause shows as
+     * samples that don't move (the fit gives ~0); at 40 ms any slow frame (a band drawn, a sheet coming
+     * to rest) threw the flick away and the list stopped dead on release. */
     if (v->n) {
         int last = (v->head + 19) % 20;
-        if (t - v->t[last] > 0.040) v->n = 0;
+        if (t - v->t[last] > 0.150) v->n = 0;
     }
     v->t[v->head] = t;
     v->x[v->head] = x;
@@ -184,7 +186,7 @@ float bz_velocity_get(const bz_velocity_t *v, double now)
     if (v->n < 2) return 0;
     int last = (v->head + 19) % 20;
     double tn = v->t[last];
-    if (now - tn > 0.040) return 0;
+    if (now - tn > 0.150) return 0;
     /* Least-squares quadratic x = a + b·dt + c·dt² over the last 100 ms, dt relative to the newest
      * sample, so the slope at the newest sample is simply b. */
     double s0 = 0, s1 = 0, s2 = 0, s3 = 0, s4 = 0, y0 = 0, y1 = 0, y2 = 0;
