@@ -6,3 +6,6 @@ idf_component_register(SRCS "src/hal_tab5.c" "src/hal_tab5_net.c" "src/hal_tab5_
                                      mbedtls)
 # esp_lcd's DMA2D frame-buffer copier (esp_async_fbcpy.h) is private to it: the page slide uses it directly
 target_include_directories(${COMPONENT_LIB} PRIVATE "${IDF_PATH}/components/esp_lcd/priv_include")
+# Core 1 draws: an unpinned task above priority 9 (esp-hosted's SDIO tasks at 23, lwIP at 18) is kept on
+# core 0 (__wrap_xTaskCreatePinnedToCore in hal_tab5.c), where it can't stall a frame
+target_link_libraries(${COMPONENT_LIB} INTERFACE "-Wl,--wrap=xTaskCreatePinnedToCore")

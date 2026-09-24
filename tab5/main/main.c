@@ -104,14 +104,21 @@ static void boot_task(void *arg)
         if (now - last > worst) worst = now - last;
         last = now;
         frames++;
-        if (a.x2 >= a.x1 && a.y2 >= a.y1) {
-            bz_present_t p = { a, buf + (size_t)a.y1 * HAL_W + a.x1, HAL_W };
-            hal_present(&p, 1, NULL);
+        /* the boxes that changed, not their span: the span is most of the screen and most of it is still */
+        bz_area_t box[16];
+        int nb = a.x2 >= a.x1 && a.y2 >= a.y1 ? ui_boot_damage(s_boot, box, 16) : 0;
+        if (nb) {
+            bz_present_t p[16];
+            for (int i = 0; i < nb; i++) {
+                p[i] = (bz_present_t){ box[i], buf + (size_t)box[i].y1 * HAL_W + box[i].x1, HAL_W };
+                px += (uint32_t)(box[i].x2 - box[i].x1 + 1) * (uint32_t)(box[i].y2 - box[i].y1 + 1);
+            }
+            hal_present(p, nb, NULL);
             pres += hal_seconds() - now;
-            px += (uint32_t)(a.x2 - a.x1 + 1) * (uint32_t)(a.y2 - a.y1 + 1);
         }
         if (!more) break;
-        vTaskDelay(1);
+        /* a frame with nothing to present (the outro dims the backlight) waits about as long as one that has */
+        vTaskDelay(nb ? 1 : pdMS_TO_TICKS(12));
     }
     ESP_LOGI(TAG, "boot: %d frames in %.2f s, %.1f fps, worst gap %.0f ms; per frame draw %.1f ms, present %.1f ms, %u px",
              frames, hal_seconds() - t0, frames / (hal_seconds() - t0), worst * 1000, draw * 1000 / frames,

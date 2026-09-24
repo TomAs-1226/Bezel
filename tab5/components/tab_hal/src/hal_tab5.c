@@ -1089,6 +1089,18 @@ static void par_run(void (*job)(void *arg, int part), void *arg)
     xSemaphoreTake(W.done, portMAX_DELAY);
 }
 
+/* Core 1 is the renderer's. esp-hosted and lwIP create their tasks unpinned at priorities 18–23, and
+ * the scheduler put them on core 1 as often as not: the boot card's frames went from 10 ms to 100 while
+ * the C6 came up. Every unpinned task above 9 goes to core 0 (see CMakeLists.txt for the wrap). */
+BaseType_t __real_xTaskCreatePinnedToCore(TaskFunction_t fn, const char *const name, const uint32_t stack, void *const arg,
+                                          UBaseType_t prio, TaskHandle_t *const handle, const BaseType_t core);
+BaseType_t __wrap_xTaskCreatePinnedToCore(TaskFunction_t fn, const char *const name, const uint32_t stack, void *const arg,
+                                          UBaseType_t prio, TaskHandle_t *const handle, const BaseType_t core)
+{
+    return __real_xTaskCreatePinnedToCore(fn, name, stack, arg, prio, handle,
+                                          core == tskNO_AFFINITY && prio > 9 ? 0 : core);
+}
+
 static void par_init(void)
 {
     W.go = xSemaphoreCreateBinary();

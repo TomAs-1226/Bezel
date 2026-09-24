@@ -33,4 +33,7 @@ void ui_boot_finish(ui_boot_t *b);
 /* Draws the frame at `t` seconds since the start into the buffer; `damage` is where it drew. false once
  * the outro has finished and the buffer is plain ground (that last frame is still drawn and damaged). */
 bool ui_boot_frame(ui_boot_t *b, double t, bz_area_t *damage);
+/* The same frame's damage as separate boxes, up to `max` of them, for a presenter that takes a list:
+ * `damage` above spans all of them, and most of that span didn't change. */
+int ui_boot_damage(const ui_boot_t *b, bz_area_t *out, int max);
 void ui_boot_destroy(ui_boot_t *b);
