@@ -772,12 +772,29 @@ static void fb_catch_up(int b, const bz_present_t *areas, int n, bool cover_full
     }
 }
 
+/* PROFILING: gaps between consecutive hand-overs while something moves (under 200 ms), bucketed by how
+ * many vsyncs they span: 1, 2, 3, more */
+static int s_gap[4];
+void hal_frame_gaps(int out[4])
+{
+    for (int i = 0; i < 4; i++) {
+        out[i] = s_gap[i];
+        s_gap[i] = 0;
+    }
+}
+
 /* b holds this frame now: handed to the panel, which switches to it at the next vsync */
 static void fb_handover(int b, const bz_present_t *areas, int n, bool full, int y0, int y1)
 {
     fb_seen(true); /* one frame waiting at a time: none is ever dropped */
     xSemaphoreTake(T.vsync, 0);
     esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, y0, PANEL_W, y1 + 1, T.fb[b]);
+    {
+        static double last;
+        double now = hal_seconds(), g = now - last;
+        if (last > 0 && g < 0.2) s_gap[g < 0.022 ? 0 : g < 0.039 ? 1 : g < 0.056 ? 2 : 3]++;
+        last = now;
+    }
     s_pend = b;
     s_frame++;
     s_buf_frame[b] = s_frame;

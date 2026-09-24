@@ -680,6 +680,9 @@ static void dev_run(void)
             printf("  shell %s %.0f ms\n", s_prof_name[i], s_prof[i] * 1000);
             s_prof[i] = 0;
         }
+        int gp[4];
+        hal_frame_gaps(gp);
+        printf("  frames: %d at 60, %d at 30, %d at 20, %d slower\n", gp[0], gp[1], gp[2], gp[3]);
         double pp[6];
         hal_present_prof(pp);
         if (pp[5] > 0)
