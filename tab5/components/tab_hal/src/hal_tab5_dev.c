@@ -64,27 +64,40 @@ static void shot(bool panel)
     int w = panel ? HAL_H : HAL_W, h = panel ? HAL_W : HAL_H;
     size_t n = (size_t)HAL_W * HAL_H;
     if (panel) esp_cache_msync((void *)px, n * 2, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-    /* worst case every pixel its own run: 4 bytes a pixel */
-    uint16_t *rle = heap_caps_malloc(n * 4, MALLOC_CAP_SPIRAM);
-    if (!rle) {
-        say("ERR no memory\n");
-        return;
-    }
+    /* run-length coded in two passes, so nothing the size of the picture is allocated: the first counts
+     * the runs (the header carries the length), the second sends them 32 KB at a time */
     size_t k = 0;
     for (size_t i = 0; i < n;) {
         uint16_t v = px[i];
         size_t run = 1;
         while (i + run < n && run < 65535 && px[i + run] == v) run++;
-        rle[k++] = (uint16_t)run;
-        rle[k++] = v;
+        k += 2;
         i += run;
+    }
+    uint16_t *rle = heap_caps_malloc(32768, MALLOC_CAP_SPIRAM);
+    if (!rle) {
+        say("ERR no memory\n");
+        return;
     }
     esp_log_level_t was = esp_log_level_get("*");
     esp_log_level_set("*", ESP_LOG_NONE);
     char head[48];
     snprintf(head, sizeof head, "SHOT %d %d %u\n", w, h, (unsigned)(k * 2));
     say(head);
-    put(rle, k * 2);
+    size_t m = 0;
+    for (size_t i = 0; i < n;) {
+        uint16_t v = px[i];
+        size_t run = 1;
+        while (i + run < n && run < 65535 && px[i + run] == v) run++;
+        rle[m++] = (uint16_t)run;
+        rle[m++] = v;
+        i += run;
+        if (m == 16384) {
+            put(rle, m * 2);
+            m = 0;
+        }
+    }
+    if (m) put(rle, m * 2);
     say("OK\n");
     usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(2000));
     esp_log_level_set("*", was);

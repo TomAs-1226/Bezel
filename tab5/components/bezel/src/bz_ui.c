@@ -126,7 +126,6 @@ static void big_inv(lv_event_t *e)
     last = t;
 #ifdef ESP_PLATFORM
     ESP_LOGW("bz_ui", "full-screen invalidate %d,%d-%d,%d", (int)a->x1, (int)a->y1, (int)a->x2, (int)a->y2);
-    esp_backtrace_print(14);
 #endif
 }
 
@@ -355,8 +354,10 @@ void bz_ui_init(const bz_ui_config_t *cfg)
         U.bufpx[0] = cfg->content;
         U.bufs[1] = spare ? &U.spare_db : NULL;
         U.bufpx[1] = spare;
-        U.snap = aligned_alloc(128, px);
-        U.ground = aligned_alloc(128, px);
+        /* with the platform's slide (cfg->slide) the snapshot is the swapped buffer and the gap and chrome
+         * come from the panel's side: only the neighbour's landscape band target is needed here */
+        U.snap = cfg->slide ? NULL : aligned_alloc(128, px);
+        U.ground = cfg->slide ? NULL : aligned_alloc(128, px);
         if (U.ground) {
             /* the gap a slide opens, in the dark ground (re-filled if the tone changes) */
             uint32_t g = bz_color(BZ_C_GROUND);
@@ -364,7 +365,7 @@ void bz_ui_init(const bz_ui_config_t *cfg)
             for (size_t i = 0; i < px / 2; i++) U.ground[i] = c;
             U.ground_color = g;
         }
-        U.chrome_src = aligned_alloc(128, px);
+        U.chrome_src = cfg->slide ? NULL : aligned_alloc(128, px);
         U.nb = aligned_alloc(128, px);
     }
     bz_motion_init(&U.lx, -0.42f, 0.002f);
@@ -708,7 +709,13 @@ bool bz_ui_frame(double now_s)
     moving |= update_glass();
 
 #if BZ_LEAN
-    if (U.sliding) {
+    if (U.sliding && U.cfg.slide) {
+        U.nlean = 0;
+        if (U.slide_dx != U.slide_shown) {
+            U.slide_shown = U.slide_dx;
+            U.cfg.slide->frame(U.slide_dx, U.nb_side, U.chrome, U.nchrome);
+        }
+    } else if (U.sliding) {
         /* LVGL's drawing waits: what it drew goes on screen, whole, when the slide ends */
         U.nlean = 0;
         if (U.slide_dx != U.slide_shown) {
@@ -800,12 +807,14 @@ void bz_ui_slide_begin(void)
 #if BZ_LEAN
     double tb = wall();
     size_t px = (size_t)U.cfg.w * U.cfg.h;
-    if (!U.snap) U.snap = aligned_alloc(128, px * 2);
-    if (!U.ground) U.ground = aligned_alloc(128, px * 2);
-    if (!U.chrome_src) U.chrome_src = aligned_alloc(128, px * 2);
-    if (!U.snap || !U.ground || !U.chrome_src) return;
+    if (!U.cfg.slide) {
+        if (!U.snap) U.snap = aligned_alloc(128, px * 2);
+        if (!U.ground) U.ground = aligned_alloc(128, px * 2);
+        if (!U.chrome_src) U.chrome_src = aligned_alloc(128, px * 2);
+        if (!U.snap || !U.ground || !U.chrome_src) return;
+    }
     uint32_t g = bz_color(BZ_C_GROUND);
-    if (g != U.ground_color || !U.sliding) {
+    if (U.ground && (g != U.ground_color || !U.sliding)) {
         uint16_t c = (uint16_t)(((g >> 19) & 31) << 11 | ((g >> 10) & 63) << 5 | ((g >> 3) & 31));
         if (g != U.ground_color) for (size_t i = 0; i < px; i++) U.ground[i] = c;
         U.ground_color = g;
@@ -813,6 +822,16 @@ void bz_ui_slide_begin(void)
     /* what's on screen now: LVGL's buffer, complete once it has drawn what's pending */
     double tg = wall();
     lv_refr_now(U.disp_content);
+    if (U.cfg.slide) {
+        /* what LVGL just drew goes to the glass first: the platform's slide starts from the glass */
+        for (int i = 0; i < U.nlean; i++) {
+            bz_area_t *a = &U.lean[i].a;
+            U.lean[i].src = U.cfg.content + (size_t)a->y1 * U.cfg.w + a->x1;
+            U.lean[i].stride = U.cfg.w;
+        }
+        if (U.nlean && U.cfg.present) U.cfg.present(U.lean, U.nlean, U.cfg.user);
+        U.nlean = 0;
+    }
     double tr = wall();
     /* the picture LVGL just finished becomes the slide's snapshot; LVGL carries on in the other buffer
      * (it redraws everything when the slide ends, so what that buffer holds doesn't matter) */
@@ -847,8 +866,15 @@ void bz_ui_slide_begin(void)
     }
     /* the snapshot is the page alone: under each piece of chrome, the page is drawn again without it (small
      * areas, a few ms), so the page slides clean under the chrome that stays put */
+    /* the platform captures the glass (the page and its chrome) now that it knows where the chrome is */
+    if (U.cfg.slide && !U.cfg.slide->begin(bz_color(BZ_C_GROUND), U.chrome, U.nchrome)) {
+        /* no slide after all: LVGL is on the other buffer now, so everything is drawn again */
+        lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
+        lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
+        return;
+    }
     /* the chrome as it is, from the snapshot, before the page under it is drawn in there */
-    for (int i = 0; i < U.nchrome; i++) {
+    for (int i = 0; i < U.nchrome && U.chrome_src; i++) {
         bz_area_t c = U.chrome[i];
         size_t n = (size_t)(c.x2 - c.x1 + 1) * 2;
         for (int y = c.y1; y <= c.y2; y++)
@@ -880,10 +906,28 @@ void bz_ui_slide_begin(void)
         chrome_hide(false, NULL);
         lv_obj_update_layout(scr);
         lv_display_enable_invalidation(d, true);
+        /* the page without its chrome, under the chrome, into the platform's picture of it */
+        if (U.cfg.slide)
+            for (int i = 0; i < U.nchrome; i++) {
+                bz_area_t c = U.chrome[i];
+                bz_present_t p = { c, U.snap + (size_t)c.y1 * U.cfg.w + c.x1, U.cfg.w };
+                U.cfg.slide->patch(&p, false);
+            }
     }
     U.sliding = true;
-    printf("slide begin: %.1f ms (ground %.1f, pending %.1f, copies %.1f, chrome %.1f), %d pieces\n",
-           (wall() - tb) * 1000, (tg - tb) * 1000, (tr - tg) * 1000, (tc - tr) * 1000, (wall() - tc) * 1000, U.nchrome);
+    (void)tb; (void)tg; (void)tr; (void)tc;
+#endif
+}
+
+void bz_ui_slide_nb_patch(const lv_area_t *a)
+{
+#if BZ_LEAN
+    if (!U.cfg.slide || !U.nb) return;
+    bz_present_t p = { { (int16_t)a->x1, (int16_t)a->y1, (int16_t)a->x2, (int16_t)a->y2 },
+                       U.nb + (size_t)a->y1 * U.cfg.w + a->x1, U.cfg.w };
+    U.cfg.slide->patch(&p, true);
+#else
+    (void)a;
 #endif
 }
 
@@ -922,6 +966,7 @@ void bz_ui_slide_end(void)
 #if BZ_LEAN
     if (!U.sliding) return;
     U.sliding = false;
+    if (U.cfg.slide) U.cfg.slide->end();
     lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
     lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
 #endif

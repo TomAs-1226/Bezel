@@ -54,37 +54,16 @@ static void ui_task(void *arg)
             ESP_LOGI(TAG, "ui: first frame after %.2f s", up);
         }
         frames++;
-        if (hal_seconds() - beat >= 2) {
+        /* a heartbeat every 10 s: frame rate and cost, and internal RAM (the scarce memory here) */
+        if (hal_seconds() - beat >= 10) {
             bz_ui_perf_t pf;
             bz_ui_perf(&pf);
-            ESP_LOGI(TAG, "ui: %u loops in %.1f s, %.1f fps; ms lvgl %.1f compose %.1f present %.1f; px lvgl %u",
-                     frames, hal_seconds() - beat, pf.fps, pf.lvgl_ms, pf.compose_ms, pf.present_ms,
-                     (unsigned)pf.lvgl_px);
-            if (s_prev.failed && up < 30)
+            ESP_LOGI(TAG, "ui: %.0f loops/s, %.0f fps drawing; ms lvgl %.1f present %.1f; internal ram %u kb free",
+                     frames / (hal_seconds() - beat), pf.fps, pf.lvgl_ms, pf.present_ms,
+                     (unsigned)(heap_caps_get_free_size(MALLOC_CAP_INTERNAL) / 1024));
+            if (s_prev.failed && up < 60)
                 ESP_LOGW(TAG, "last start ended: %s at \"%s\" (%d in a row) %s", s_prev.reason, s_prev.stage,
                          s_prev.fails, s_prev.detail);
-            float pr[8];
-            bz_ui_prof_take(pr);
-            ESP_LOGI(TAG, "lvgl ms/2s: content layout %.0f render %.0f flush %.0f | glass layout %.0f render %.0f "
-                     "flush %.0f | handler %.0f", pr[0], pr[1], pr[2], pr[3], pr[4], pr[5], pr[6]);
-            bz_ui_hooks_report();
-            float sh, sl, sr, sn;
-            bz_ui_split(&sh, &sl, &sr, &sn);
-            ESP_LOGI(TAG, "ui split per loop: hooks %.1f, lv_timer_handler %.1f = refresh %.1f (render %.1f) + timers %.1f ms",
-                     sh, sl, sr, sn, sl - sr);
-            static int beats;
-            if (++beats % 5 == 1) {
-                hal_boot_t pb;
-                hal_boot_prev(&pb);
-                ESP_LOGI(TAG, "last start: %s at \"%s\", %d failed in a row %s", pb.reason, pb.stage, pb.fails, pb.detail);
-                /* in PSRAM: internal RAM has no 2 KB to spare (the DMA reserve at start-up fails without it) */
-                char *stats = heap_caps_malloc(2048, MALLOC_CAP_SPIRAM);
-                if (stats) {
-                    vTaskGetRunTimeStats(stats);
-                    ESP_LOGI(TAG, "cpu per task since boot:\n%s", stats);
-                    free(stats);
-                }
-            }
             frames = 0;
             beat = hal_seconds();
         }
@@ -184,6 +163,7 @@ void app_main(void)
     bz_ui_config_t cfg = {
         .w = HAL_W, .h = HAL_H, .content = d.content, .ink = d.ink, .out = d.out,
         .present = hal_present, .read_touch = hal_touch, .ops = d.ops, .async_present = d.async_present,
+        .slide = d.slide,
     };
     bz_ui_init(&cfg);
     bz_theme_init();

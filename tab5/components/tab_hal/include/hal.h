@@ -26,6 +26,7 @@ typedef struct {
     const bz_gfx_ops_t *ops;
     bool async_present;  /* hal_present returns before the panel has read the frame: compose alternately
                             into two buffers (bz_ui_config_t.async_present) */
+    const bz_slide_ops_t *slide; /* page slides as row shifts in the portrait buffer */
 } hal_display_t;
 
 /* Start-up comes in three steps, so the boot animation is on screen for all but the first:

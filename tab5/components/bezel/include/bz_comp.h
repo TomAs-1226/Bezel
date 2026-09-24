@@ -45,6 +45,17 @@ typedef struct {
     int stride;             /* the source's row pitch, in pixels */
 } bz_present_t;
 
+/* A page slide done by the platform in its panel's own orientation (the Tab5: rows of the portrait
+ * buffer, no rotation per frame). begin captures what's on the glass; patch turns a landscape area into
+ * the page's picture (neighbour false: the page without its chrome) or the neighbour's; frame shows the
+ * page moved by dx with the neighbour (side -1 left, +1 right, 0 none) in the gap and the chrome fixed. */
+typedef struct bz_slide_ops {
+    bool (*begin)(uint32_t ground_rgb, const bz_area_t *chrome, int nchrome);
+    void (*patch)(const bz_present_t *area, bool neighbour);
+    void (*frame)(int dx, int side, const bz_area_t *chrome, int nchrome);
+    void (*end)(void);
+} bz_slide_ops_t;
+
 typedef struct {
     float x, y, w, h;      /* rest rect in screen px */
     float radius;

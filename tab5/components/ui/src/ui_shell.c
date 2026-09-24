@@ -857,6 +857,7 @@ static void slide_band(int page, int band)
     if (band == 0) page_refresh_now(page); /* its numbers as of now, not as of when it was last shown */
     lv_area_t a = { 0, band * H / SL_BANDS, W - 1, (band + 1) * H / SL_BANDS - 1 };
     bz_ui_render_offscreen(nb + (size_t)a.y1 * W, W, &a, slide_prep, (void *)(intptr_t)page);
+    bz_ui_slide_nb_patch(&a); /* into the panel's orientation, a band at a time (the Tab5's slide) */
 }
 
 /* Each frame of a slide: the next band of the neighbour, or the settle spring. */
@@ -1371,28 +1372,14 @@ static void shell_frame(double now, double dt, void *user)
 
     if (now - U.last_refresh >= 0.1) {
         U.last_refresh = now;
-        double r0 = bz_ui_clock();
         cat_model_update(R);
-        double r1 = bz_ui_clock();
         assist_feed(R);
         island_refresh();
-        double r2 = bz_ui_clock();
         /* a page's refresh only while it's on screen and nothing covers it */
         bool covered = U.app && U.k.target > 0;
         for (int i = 0; i < U.nrefresh; i++)
             if (U.refresh[i].page < 0 || (U.refresh[i].page == U.page && !covered)) U.refresh[i].fn(U.refresh[i].user);
-        double r3 = bz_ui_clock();
         if (U.app && U.app->refresh && U.k.target > 0) U.app->refresh();
-        double r4 = bz_ui_clock();
-        static double tm[4];
-        static int nref;
-        tm[0] += r1 - r0; tm[1] += r2 - r1; tm[2] += r3 - r2; tm[3] += r4 - r3;
-        if (++nref == 20) {
-            printf("refresh ms/20: model %.0f assist+island %.0f pages %.0f app %.0f\n", tm[0] * 1e3, tm[1] * 1e3,
-                   tm[2] * 1e3, tm[3] * 1e3);
-            tm[0] = tm[1] = tm[2] = tm[3] = 0;
-            nref = 0;
-        }
     }
     /* the interface fades in with the backlight after the boot card faded out with it */
     static double shown_at;

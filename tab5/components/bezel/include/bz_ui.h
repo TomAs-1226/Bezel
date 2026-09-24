@@ -38,6 +38,7 @@ typedef struct {
     const bz_gfx_ops_t *ops; /* accelerated copy/blend, or NULL for the CPU versions */
     bool async_present;      /* present returns before the panel has the frame: composite alternately
                                 into a second buffer (allocated here) so the last one stays readable */
+    const bz_slide_ops_t *slide; /* optional: page slides in the panel's own orientation */
 } bz_ui_config_t;
 
 void bz_ui_init(const bz_ui_config_t *cfg);
@@ -109,6 +110,8 @@ void bz_ui_slide_end(void);
  * which side it shows on once drawn — +1 to the right (the next page), -1 left, 0 none: ground. */
 uint16_t *bz_ui_slide_nb_buf(void);
 void bz_ui_slide_nb(int side);
+/* A band of the neighbour has been drawn into the buffer: the platform's slide takes it from there. */
+void bz_ui_slide_nb_patch(const lv_area_t *a);
 double bz_ui_clock(void);    /* monotonic seconds, for timing */
 void bz_ui_hooks_report(void); /* logs each frame hook's time since the last call */
 /* Per-frame averages since the last call: frame hooks, lv_timer_handler, display refreshes, renders. */

@@ -13,6 +13,7 @@
  * Verified by compiling only: this file has not yet run on a Tab5. Items marked UNVERIFIED are the
  * ones most likely to need a correction on first boot. */
 #include "hal.h"
+#include "bz_ui.h" /* BZ_LEAN */
 #include "hal_tab5_priv.h"
 
 #include <dirent.h>
@@ -37,6 +38,8 @@
 #include "driver/temperature_sensor.h"
 #include "driver/twai.h"
 #include "esp_cache.h"
+#include "esp_async_fbcpy.h" /* esp_lcd's private DMA2D copier (priv_include added in CMakeLists) */
+#include "hal/color_types.h"
 #include "esp_codec_dev.h"
 #include "esp_core_dump.h"
 #include "esp_h264_alloc.h"
@@ -321,11 +324,12 @@ bool hal_imu(hal_imu_t *o)
      * tool reads mirrored, flip the signs here. */
     float px = x, py = -y;
     float lx = s_flip ? py : -py, ly = s_flip ? -px : px;
-    /* measured on a unit: the turned axes already point along gravity in the picture's frame (the
-     * negation this comment used to ask for made auto-rotate pick the wrong way up every time) */
-    o->ax = lx;
+    /* Measured on a unit: the BMI270 sits turned about its y axis, so its x and z read opposite to the
+     * panel's. Landscape y comes from raw x and z is raw z: those two take the other sign (auto-rotate
+     * picked the wrong way up, and Level read ~180° lying flat); landscape x, from raw y, doesn't. */
+    o->ax = -lx;
     o->ay = ly;
-    o->az = -z;
+    o->az = z;
     o->gx = gx;
     o->gy = gy;
     o->gz = gz;
@@ -589,6 +593,214 @@ void hal_present(const bz_present_t *areas, int n, void *user)
 }
 
 static void present_init(void) {}
+
+/* ---- a page slide in the panel's own orientation ----
+ *
+ * A horizontal slide in the landscape picture is, in the portrait frame buffer, a shift of whole rows (a
+ * landscape column is a portrait row), and a block of rows is contiguous memory. So a slide never
+ * rotates anything per frame: the page as it is on the glass is copied once (it is already portrait),
+ * the page beside it is turned in band by band while the finger moves (patch), and each frame is a
+ * straight copy of two row ranges plus the fixed chrome — no 90° turn, which the PPA does at ~15 Mpx/s
+ * (a full landscape frame: ~60 ms). */
+static struct {
+    uint16_t *snap, *nb, *chrome; /* portrait: the page, the page beside it, the glass as it was */
+    uint16_t ground;              /* RGB565 of the gap a slide opens where no neighbour is drawn */
+    bool active;
+    ppa_client_handle_t fill;
+} SLD;
+
+static void present_wait(void)
+{
+    if (s_flip_pending) {
+        if (xSemaphoreTake(T.vsync, pdMS_TO_TICKS(100)) != pdTRUE && !P.late++) ESP_LOGW(TAG, "present: no vsync");
+        s_flip_pending = false;
+    }
+}
+
+static void present_flip(void *fb, int y0, int y1)
+{
+    xSemaphoreTake(T.vsync, 0);
+    esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, y0, PANEL_W, y1 + 1, fb);
+    s_flip_pending = true;
+    T.back ^= 1;
+}
+
+/* Block copies between portrait buffers on the DMA2D, the P4's 2D copy engine (esp_lcd's frame-buffer
+ * copier, the same the DPI driver uses). Not the PPA: its scale-rotate-mirror engine moves ~20 Mpx/s
+ * whatever the angle (a full frame, 45 ms); nor the CPU: a memcpy through the cache from PSRAM, ~36 MB/s.
+ * Nothing here is ever written by the CPU, so no dirty cache line can land on what the DMA wrote. */
+static esp_async_fbcpy_handle_t s_fbcpy;
+static SemaphoreHandle_t s_fbcpy_done;
+
+static bool fbcpy_done(esp_async_fbcpy_handle_t h, esp_async_fbcpy_event_data_t *e, void *arg)
+{
+    (void)h; (void)e; (void)arg;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_fbcpy_done, &woken);
+    return woken == pdTRUE;
+}
+
+static bool s_fbcpy_pending;
+
+static void fbcpy_wait(void)
+{
+    if (!s_fbcpy_pending) return;
+    xSemaphoreTake(s_fbcpy_done, pdMS_TO_TICKS(100));
+    s_fbcpy_pending = false;
+}
+
+/* a block copy started and left running (fbcpy_wait before touching dst, or before the next copy) */
+static void blk_copy_async(uint16_t *dst, int dx, int dy, const uint16_t *src, int sx, int sy, int w, int h)
+{
+    fbcpy_wait();
+    if (w <= 0 || h <= 0) return;
+    esp_async_fbcpy_trans_desc_t t = {
+        .src_buffer = src, .dst_buffer = dst,
+        .src_buffer_size_x = PANEL_W, .src_buffer_size_y = PANEL_H,
+        .dst_buffer_size_x = PANEL_W, .dst_buffer_size_y = PANEL_H,
+        .src_offset_x = (size_t)sx, .src_offset_y = (size_t)sy,
+        .dst_offset_x = (size_t)dx, .dst_offset_y = (size_t)dy,
+        .copy_size_x = (size_t)w, .copy_size_y = (size_t)h,
+        .pixel_format_unique_id = { .color_type_id = COLOR_TYPE_ID(COLOR_SPACE_RGB, COLOR_PIXEL_RGB565) },
+    };
+    if (esp_async_fbcpy(s_fbcpy, &t, fbcpy_done, NULL) == ESP_OK) s_fbcpy_pending = true;
+}
+
+static void blk_copy(uint16_t *dst, int dx, int dy, const uint16_t *src, int sx, int sy, int w, int h)
+{
+    blk_copy_async(dst, dx, dy, src, sx, sy, w, h);
+    fbcpy_wait();
+}
+
+static void rows_copy(uint16_t *dst, int dy, const uint16_t *src, int sy, int n)
+{
+    blk_copy(dst, 0, dy, src, 0, sy, PANEL_W, n);
+}
+
+static void rect_copy(uint16_t *dst, const uint16_t *src, int x, int y, int w, int h)
+{
+    blk_copy(dst, x, y, src, x, y, w, h);
+}
+
+/* the gap a slide opens where no neighbour is drawn: copied from a buffer of ground, also by DMA */
+static uint16_t *s_ground;
+static uint16_t s_ground_c;
+
+static void rows_fill(uint16_t *dst, int dy, int n, uint16_t c)
+{
+    if (n <= 0 || !s_ground) return;
+    if (c != s_ground_c) {
+        for (size_t i = 0; i < (size_t)PANEL_W * PANEL_H; i++) s_ground[i] = c;
+        esp_cache_msync(s_ground, (size_t)PANEL_W * PANEL_H * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        s_ground_c = c;
+    }
+    rows_copy(dst, dy, s_ground, dy, n);
+}
+
+/* where a landscape rectangle lands in the portrait buffer */
+static void portrait_rect(const bz_area_t *a, int *x, int *y, int *w, int *h)
+{
+    if (!s_flip) {
+        *x = a->y1;
+        *y = HAL_W - 1 - a->x2;
+    } else {
+        *x = HAL_H - 1 - a->y2;
+        *y = a->x1;
+    }
+    *w = a->y2 - a->y1 + 1;
+    *h = a->x2 - a->x1 + 1;
+}
+
+static bool slide_begin(uint32_t ground_rgb, const bz_area_t *chrome, int nchrome)
+{
+    if (!SLD.snap || !SLD.nb || !SLD.chrome || !s_fbcpy || !s_ground) return false;
+    SLD.ground = (uint16_t)(((ground_rgb >> 19) & 31) << 11 | ((ground_rgb >> 10) & 63) << 5 | ((ground_rgb >> 3) & 31));
+    /* the latest picture handed to the panel — final in memory even if the panel switches to it only at
+     * the next vsync, so no waiting for it: the page with its chrome */
+    const uint16_t *front = T.fb[T.back ^ 1];
+    fbcpy_wait();
+    /* the chrome's own pixels (small), then the page (big) left copying while the renderer draws the
+     * chrome-free patches; the first patch waits for it */
+    for (int i = 0; i < nchrome; i++) {
+        int x, y, w, h;
+        portrait_rect(&chrome[i], &x, &y, &w, &h);
+        rect_copy(SLD.chrome, front, x, y, w, h);
+    }
+    blk_copy_async(SLD.snap, 0, 0, front, 0, 0, PANEL_W, PANEL_H);
+    SLD.active = true;
+    return true;
+}
+
+/* a landscape area turned into the snapshot (the page without its chrome) or the neighbour */
+static void slide_patch(const bz_present_t *p, bool neighbour)
+{
+    if (!SLD.active) return;
+    fbcpy_wait(); /* the capture may still be copying into the snapshot */
+    rotate_area(p, neighbour ? SLD.nb : SLD.snap, false);
+}
+
+static void slide_frame(int dx, int side, const bz_area_t *chrome, int nchrome)
+{
+    if (!SLD.active) return;
+    present_wait();
+    double tf0 = hal_seconds();
+    uint16_t *fb = T.fb[T.back];
+    int W = HAL_W; /* portrait rows */
+    if (dx > W) dx = W;
+    if (dx < -W) dx = -W;
+    /* back row r shows landscape x; the page's pixel came from x - dx, which is row r + s·dx */
+    int s = s_flip ? -1 : 1, sd = s * dx;
+    int r0 = sd < 0 ? -sd : 0, r1 = sd > 0 ? W - sd : W;
+    rows_copy(fb, r0, SLD.snap, r0 + sd, r1 - r0);
+    /* the gap: the neighbour where it's drawn and on that side, else ground. dx > 0 opens the left
+     * (the previous page), dx < 0 the right (the next) */
+    int need = dx > 0 ? -1 : 1;
+    if (sd > 0) {
+        if (side == need) rows_copy(fb, W - sd, SLD.nb, 0, sd);
+        else rows_fill(fb, W - sd, sd, SLD.ground);
+    } else if (sd < 0) {
+        if (side == need) rows_copy(fb, 0, SLD.nb, W + sd, -sd);
+        else rows_fill(fb, 0, -sd, SLD.ground);
+    }
+    /* the chrome stays where it is: straight from the glass as it was */
+    for (int i = 0; i < nchrome; i++) {
+        int x, y, w, h;
+        portrait_rect(&chrome[i], &x, &y, &w, &h);
+        rect_copy(fb, SLD.chrome, x, y, w, h);
+    }
+    P.nprev = 0; /* the whole buffer was written: nothing of the last frame to catch up */
+    (void)tf0;
+    present_flip(fb, 0, PANEL_H - 1);
+}
+
+/* At start-up, while internal RAM has room: the DMA2D's descriptors must be in internal, DMA-capable
+ * memory, and by the first swipe there is none left (the install failed, the slide never started). */
+static void slide_init(void)
+{
+    esp_async_fbcpy_config_t cfg = {};
+    if (esp_async_fbcpy_install(&cfg, &s_fbcpy) != ESP_OK) {
+        s_fbcpy = NULL;
+        ESP_LOGW(TAG, "no DMA2D copier: page slides fall back to the landscape path");
+    }
+    s_fbcpy_done = xSemaphoreCreateBinary();
+    /* the slide's portrait pictures, up front and not zeroed (nothing reads them before they're written;
+     * never written by the CPU, so no dirty cache line can land on the DMA's data) */
+    size_t n = (size_t)PANEL_W * PANEL_H * 2;
+    SLD.snap = heap_caps_aligned_alloc(128, n, MALLOC_CAP_SPIRAM);
+    SLD.nb = heap_caps_aligned_alloc(128, n, MALLOC_CAP_SPIRAM);
+    SLD.chrome = heap_caps_aligned_alloc(128, n, MALLOC_CAP_SPIRAM);
+    s_ground = heap_caps_aligned_alloc(128, n, MALLOC_CAP_SPIRAM);
+    s_ground_c = 1; /* differs from any real ground: filled on first use */
+    if (!SLD.snap || !SLD.nb || !SLD.chrome || !s_ground) ESP_LOGW(TAG, "no memory for the page slide's pictures");
+}
+
+static void slide_end(void)
+{
+    SLD.active = false;
+    P.nprev = 0;
+}
+
+static const bz_slide_ops_t SLIDE_OPS = { .begin = slide_begin, .patch = slide_patch, .frame = slide_frame, .end = slide_end };
 #endif
 
 static void display_init(void)
@@ -602,6 +814,9 @@ static void display_init(void)
     esp_lcd_dpi_panel_register_event_callbacks(T.lcd.panel, &cbs, NULL);
     T.back = 1;
     present_init();
+#ifndef CATALYST_ASYNC_PRESENT
+    slide_init();
+#endif
     T.display_t0 = hal_seconds();
     /* the backlight stays off until hal_present() has put a real frame up: never the panel's power-on
      * noise, and one less load switching on with everything else */
@@ -890,6 +1105,7 @@ void hal_display(hal_display_t *o)
     o->async_present = true;
 #else
     o->async_present = false;
+    o->slide = s_fbcpy ? &SLIDE_OPS : NULL; /* without the DMA2D copier the renderer slides by itself */
 #endif
 }
 
@@ -1575,18 +1791,20 @@ bool hal_init(void)
     /* the three full-frame buffers the renderer works in, in PSRAM */
     hal_boot_stage("buffers");
     T.content = psram_aligned(HAL_W * HAL_H * 2);
-    T.ink = psram_aligned(HAL_W * HAL_H * 4);
+#if !BZ_LEAN
+    T.ink = psram_aligned(HAL_W * HAL_H * 4); /* the glass layer: the lean renderer has none (3.7 MB saved) */
+#endif
     T.out = psram_aligned(HAL_W * HAL_H * 2);
-    if (!T.content || !T.ink || !T.out) return false;
+    if (!T.content || (!BZ_LEAN && !T.ink) || !T.out) return false;
     span_add(T.content, HAL_W * HAL_H * 2);
-    span_add(T.ink, HAL_W * HAL_H * 4);
+    if (T.ink) span_add(T.ink, HAL_W * HAL_H * 4);
     span_add(T.out, HAL_W * HAL_H * 2);
     ppa_client_config_t pc = { .oper_type = PPA_OPERATION_SRM };
     ppa_register_client(&pc, &T.ppa_srm);
     ppa_register_client(&pc, &T.ppa_cam);
     pc.oper_type = PPA_OPERATION_BLEND;
     ppa_register_client(&pc, &T.ppa_blend);
-    ppa_blend_selftest();
+    if (T.ink) ppa_blend_selftest();
     par_init();
 
     hal_boot_stage("display");
