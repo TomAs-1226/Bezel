@@ -32,7 +32,7 @@ static void reading(lv_obj_t *tile, reading_t *r, const char *label, bz_font_rol
     r->label = bz_label(tile, label, BZ_F_LABEL, BZ_C_DIM);
     lv_obj_set_pos(r->label, 0, y);
     r->value = bz_label(tile, "\xe2\x80\x94", f, BZ_C_INK);
-    lv_obj_set_pos(r->value, -4, y + 20);
+    lv_obj_set_pos(r->value, -4, y + (f == BZ_F_CLOCK ? 34 : 20)); /* the clock face runs tall: clear of the label */
     r->unit = bz_label(tile, unit ? unit : "", BZ_F_NAME, BZ_C_DIM);
     lv_obj_align_to(r->unit, r->value, LV_ALIGN_OUT_RIGHT_BOTTOM, 8, -12);
 }

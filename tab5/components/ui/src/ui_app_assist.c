@@ -528,7 +528,14 @@ static void refresh_chips(void)
         snprintf(keep[i], sizeof keep[i], "%s", s[i]);
         AS.sugg[i] = keep[i];
         lv_obj_t *c = ui_chip(AS.chips, keep[i], chip_tap, (void *)(intptr_t)i);
-        lv_obj_set_style_max_width(c, 360, 0);
+        /* each its share of the row, and a long question ends in "…" instead of scrolling off the left */
+        int share = (TW - 20 - 2 * 128 - 16 - 8 * (n - 1)) / n; /* the row's width, as the build sets it */
+        lv_obj_set_style_max_width(c, share, 0);
+        lv_obj_t *l = lv_obj_get_child(c, -1);
+        if (l && lv_obj_check_type(l, &lv_label_class)) {
+            lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_style_max_width(l, share - 48, 0);
+        }
     }
 }
 
