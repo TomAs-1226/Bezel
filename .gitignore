@@ -3,3 +3,10 @@ node_modules/
 Thumbs.db
 *.log
 dist/
+
+# Catalyst Tab (tab5/): host and firmware build output
+tab5/build/
+tab5/sdkconfig
+tab5/sdkconfig.old
+tab5/managed_components/
+__pycache__/
