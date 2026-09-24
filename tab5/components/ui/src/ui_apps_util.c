@@ -3,6 +3,7 @@
  * flashlight, the tablet's own system state, and the microSD card's files. */
 #include "ui_internal.h"
 #include "ui_boot.h" /* CATALYST_TAB_VERSION */
+#include "ui_storage.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -411,25 +412,29 @@ const ui_app_t APP_CALC = { .name = "calculator", .icon = BZ_I_CALCULATE, .build
 #define NOTES_MAX 3800
 
 static struct {
-    lv_obj_t *text, *meta;
+    lv_obj_t *text, *meta, *card_chip;
     ui_kb_t *kb;
+    bool to_card;              /* also keep a copy in <sd>/CATOS/DOCS/NOTES.TXT, for the documents app and a PC */
     char buf[NOTES_MAX + 1];
-} NT;
+} NT = { .to_card = true };
 
 static void notes_save(void)
 {
-    hal_kv_set("notes", NT.buf);
-    const char *sd = hal_sd_root();
-    if (sd) {
-        char path[64];
-        snprintf(path, sizeof path, "%s/notes.txt", sd);
-        FILE *f = fopen(path, "w");
-        if (f) {
-            fputs(NT.buf, f);
-            fclose(f);
-        }
-    }
-    ui_text(NT.meta, "%u characters · saved%s", (unsigned)strlen(NT.buf), sd ? " · also on the card, notes.txt" : "");
+    hal_kv_set("notes", NT.buf); /* the tablet's copy, always */
+    char path[96];
+    bool card = NT.to_card && cstore_path(CS_DOCS, "NOTES.TXT", path, sizeof path);
+    bool ok = card && cstore_write(path, NT.buf, strlen(NT.buf));
+    ui_text(NT.meta, "%u characters · saved%s", (unsigned)strlen(NT.buf),
+            !NT.to_card ? "" : ok ? " · and on the card, CATOS/DOCS/NOTES.TXT" : card ? " · the card copy failed" : " · no card for the copy");
+}
+
+static void notes_card(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    NT.to_card = !NT.to_card;
+    ui_chip_set(NT.card_chip, NT.to_card);
+    hal_kv_set("notes_sd", NT.to_card ? "1" : "0");
+    if (NT.to_card) notes_save();
 }
 
 static void notes_done(const char *text, void *u)
@@ -468,12 +473,17 @@ static void notes_build(lv_obj_t *b)
     lv_obj_t *col = ui_scroller(wrap, W - 2 * PAD, APP_H);
     lv_obj_t *t = bz_tile(col, W - 2 * PAD, LV_SIZE_CONTENT);
     lv_obj_set_style_min_height(t, APP_H, 0);
-    NT.meta = bz_label(t, "", BZ_F_LABEL, BZ_C_DIM);
+    NT.meta = bz_label_line(t, "", BZ_F_LABEL, BZ_C_DIM, IN(W - 2 * PAD) - 220);
+    NT.card_chip = ui_chip(t, "copy to card", notes_card, NULL);
+    lv_obj_align(NT.card_chip, LV_ALIGN_TOP_RIGHT, 0, -12);
     NT.text = bz_label(t, "", BZ_F_BODY, BZ_C_INK);
     lv_obj_set_width(NT.text, IN(W - 2 * PAD));
-    lv_obj_set_pos(NT.text, 0, 36);
+    lv_obj_set_pos(NT.text, 0, 56);
     lv_label_set_long_mode(NT.text, LV_LABEL_LONG_WRAP);
     NT.kb = ui_kb_create(b, 420);
+    char v[4];
+    if (hal_kv_get("notes_sd", v, sizeof v)) NT.to_card = v[0] == '1';
+    ui_chip_set(NT.card_chip, NT.to_card);
     if (!hal_kv_get("notes", NT.buf, sizeof NT.buf)) NT.buf[0] = 0;
     lv_label_set_text(NT.text, NT.buf[0] ? NT.buf : "Nothing written yet. Tap edit.");
     ui_text(NT.meta, "%u characters", (unsigned)strlen(NT.buf));

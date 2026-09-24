@@ -100,6 +100,19 @@ bool hal_sd_space(uint64_t *total, uint64_t *free_bytes);
 bool hal_kv_get(const char *key, char *buf, size_t n);
 void hal_kv_set(const char *key, const char *value);
 
+/* ---- pictures (hal_tab5_os.c) ---- */
+/* A decoded picture: RGB565 little-endian, w×h, rows packed (stride w*2), in PSRAM. src_w/src_h are the
+ * file's own size before scaling. */
+typedef struct {
+    uint16_t *px;
+    int w, h, src_w, src_h;
+} hal_picture_t;
+/* Decodes a baseline JPEG file with the P4's hardware decoder and scales it down to fit max_w×max_h (never
+ * up). Blocking and heavy: call it from a worker. false, with err saying why, when it can't (progressive
+ * JPEGs, too large for free PSRAM, unreadable). */
+bool hal_jpeg_load(const char *path, int max_w, int max_h, hal_picture_t *out, char *err, size_t errn);
+void hal_picture_free(hal_picture_t *p);
+
 /* ---- network ---- */
 typedef enum { HAL_LINK_NONE, HAL_LINK_WIFI, HAL_LINK_USB, HAL_LINK_SIM } hal_link_t;
 typedef struct {

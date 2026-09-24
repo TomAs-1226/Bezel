@@ -454,8 +454,8 @@ void ui_page_motion(lv_obj_t *page)
 
 /* ================================================================== apps */
 
-/* The app library: every app, in three groups — the robot through Catalyst, diagnosing it from the
- * outside, and the tablet's own tools. Scrolls when it outgrows the screen. */
+/* The app library: every app, in four groups — the robot through Catalyst, diagnosing it from the
+ * outside, the tablet's own tools, and Catalyst OS's everyday apps. Scrolls when it outgrows the screen. */
 typedef struct { const ui_app_t *app; const char *icon; const char *label; const char *hint; } app_entry_t;
 static const app_entry_t APPS_ROBOT[] = {
     { &APP_PREFLIGHT, BZ_I_CHECKLIST, "preflight", "go / no-go" },
@@ -491,13 +491,21 @@ static const app_entry_t APPS_TABLET[] = {
     { &APP_SYSMON, BZ_I_MONITORING, "system", "this tablet" },
     { &APP_SETTINGS, BZ_I_SETTINGS, "settings", "everything" },
 };
+static const app_entry_t APPS_EVERYDAY[] = {
+    { &APP_CLOCK, BZ_I_SCHEDULE, "clock", "alarms, world" },
+    { &APP_CALENDAR, BZ_I_GRID_VIEW, "calendar", "month, events" },
+    { &APP_DOCS, BZ_I_DESCRIPTION, "documents", "txt, md" },
+    { &APP_PHOTOS, BZ_I_CAMERA, "photos", "pictures" },
+    { &APP_STORAGE, BZ_I_SD_CARD, "storage", "card usage" },
+};
 
 const ui_app_t *ui_app_find(const char *name)
 {
-    const app_entry_t *groups[3] = { APPS_ROBOT, APPS_DIAG, APPS_TABLET };
-    int counts[3] = { (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0]), (int)(sizeof APPS_DIAG / sizeof APPS_DIAG[0]),
-                      (int)(sizeof APPS_TABLET / sizeof APPS_TABLET[0]) };
-    for (int g = 0; g < 3; g++)
+    const app_entry_t *groups[4] = { APPS_ROBOT, APPS_DIAG, APPS_TABLET, APPS_EVERYDAY };
+    int counts[4] = { (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0]), (int)(sizeof APPS_DIAG / sizeof APPS_DIAG[0]),
+                      (int)(sizeof APPS_TABLET / sizeof APPS_TABLET[0]),
+                      (int)(sizeof APPS_EVERYDAY / sizeof APPS_EVERYDAY[0]) };
+    for (int g = 0; g < 4; g++)
         for (int i = 0; i < counts[g]; i++)
             if (!strcmp(groups[g][i].label, name) || !strcmp(groups[g][i].app->name, name)) return groups[g][i].app;
     return NULL;
@@ -538,7 +546,8 @@ void ui_page_tools(lv_obj_t *page)
     lv_obj_t *right = ui_head(page, "Apps", NULL);
     char n[16];
     snprintf(n, sizeof n, "%d apps", (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0] + sizeof APPS_DIAG / sizeof APPS_DIAG[0] +
-                                           sizeof APPS_TABLET / sizeof APPS_TABLET[0]));
+                                           sizeof APPS_TABLET / sizeof APPS_TABLET[0] +
+                                           sizeof APPS_EVERYDAY / sizeof APPS_EVERYDAY[0]));
     bz_label_line(right, n, BZ_F_LABEL, BZ_C_DIM, ui_head_width("Apps"));
     lv_obj_t *wrap = bz_box(page);
     lv_obj_set_pos(wrap, PAD, BODY_Y);
@@ -546,6 +555,7 @@ void ui_page_tools(lv_obj_t *page)
     apps_group(col, "robot", APPS_ROBOT, (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0]));
     apps_group(col, "diagnose", APPS_DIAG, (int)(sizeof APPS_DIAG / sizeof APPS_DIAG[0]));
     apps_group(col, "this tablet", APPS_TABLET, (int)(sizeof APPS_TABLET / sizeof APPS_TABLET[0]));
+    apps_group(col, "everyday", APPS_EVERYDAY, (int)(sizeof APPS_EVERYDAY / sizeof APPS_EVERYDAY[0]));
     /* room to scroll the last row clear of the dock */
     lv_obj_t *sp = bz_box(col);
     lv_obj_set_height(sp, DOCK_CLEAR);
