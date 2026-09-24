@@ -1,5 +1,6 @@
 #include "bz_ui.h"
 #include "bz_tokens.h"
+#include "lvgl_private.h" /* the pending invalidations and area helpers, for bz_ui_scroll */
 
 #include <math.h>
 #include <stdlib.h>
@@ -42,9 +43,10 @@ static struct {
     bool keep_alive;
     /* motion caches */
     bool frozen, offscreen;
+    int thaw;                /* the next band a thaw redraws, or -1 */
     lv_draw_buf_t *own_buf;
     /* performance */
-    uint32_t lvgl_px;
+    uint32_t lvgl_px, shift_px;
     bz_ui_perf_t perf;
 } U;
 
@@ -156,6 +158,7 @@ void bz_ui_init(const bz_ui_config_t *cfg)
     memset(&U, 0, sizeof U);
     U.cfg = *cfg;
     U.dark = true;
+    U.thaw = -1;
     lv_tick_set_cb(tick_ms);
     U.comp = bz_comp_create(cfg->w, cfg->h, cfg->content, cfg->ink, cfg->out);
     if (cfg->ops) bz_comp_set_ops(U.comp, cfg->ops);
@@ -359,7 +362,7 @@ static float ema(float old, float v) { return old == 0 ? v : old + (v - old) * 0
  * units); PPA and PSRAM traffic at 400 MB/s effective. The panel is fed asynchronously — the PPA turns
  * frame N into the panel's buffer while the cores draw frame N+1 — so a frame costs the larger of the
  * two, plus a little. The tablet's overlay shows measured times. */
-static float model_ms(const bz_comp_stats_t *s, uint32_t lvgl_px)
+static float model_ms(const bz_comp_stats_t *s, uint32_t lvgl_px, uint32_t shift_px)
 {
     const double MHZ = 360.0, PAR = 1.8, PPA_MBS = 400.0;
     double cpu = 0;
@@ -375,6 +378,7 @@ static float model_ms(const bz_comp_stats_t *s, uint32_t lvgl_px)
     cpu += s->base_cpu_px * 8.0 / PAR;
     cpu += s->backdrop_build_px * 22.0 / PAR;
     double cpu_ms = cpu / (MHZ * 1000.0) + lvgl_px * 26e-6;
+    cpu_ms += (double)shift_px * 4 / (PPA_MBS * 1000.0); /* a scrolled list's rows moved in PSRAM: read + write */
     double sync = 0, async = 0;
     sync += (double)s->composed_px * 4;              /* the base copied into out: the cores wait on it */
     sync += (double)s->ink_px * 8;
@@ -384,13 +388,44 @@ static float model_ms(const bz_comp_stats_t *s, uint32_t lvgl_px)
     return (float)((cpu_ms > ppa_ms ? cpu_ms : ppa_ms) + 0.5);
 }
 
+/* A thaw redraws the content a band per frame (~115k px) rather than all ~920k px in one: the layers the
+ * shell leaves up until bz_ui_thawing() says it's done hide the bands still waiting. A finger on the content, or
+ * anything about to read the content buffer, finishes it at once. */
+#define THAW_BANDS 8
+
+static void thaw_band(int b)
+{
+    lv_area_t a = { 0, b * U.cfg.h / THAW_BANDS, U.cfg.w - 1, (b + 1) * U.cfg.h / THAW_BANDS - 1 };
+    lv_inv_area(U.disp_content, &a);
+}
+
+static void thaw_step(void)
+{
+    if (U.thaw < 0) return;
+    int n = U.pressed && U.owner == 1 ? THAW_BANDS - U.thaw : 1; /* a press on glass shows on glass */
+    for (int i = 0; i < n && U.thaw < THAW_BANDS; i++) thaw_band(U.thaw++);
+    if (U.thaw >= THAW_BANDS) U.thaw = -1; /* the last band draws this frame */
+    U.keep_alive = true;
+}
+
+static void thaw_finish(void)
+{
+    if (U.thaw < 0) return;
+    while (U.thaw < THAW_BANDS) thaw_band(U.thaw++);
+    U.thaw = -1;
+    lv_refr_now(U.disp_content);
+}
+
+bool bz_ui_thawing(void) { return U.thaw >= 0; }
+void bz_ui_thaw_cancel(void) { U.thaw = -1; }
+
 bool bz_ui_frame(double now_s)
 {
     double dt = U.last > 0 ? now_s - U.last : 0.016;
     U.last = U.now = now_s;
     bz_motion_clock(now_s);
     U.keep_alive = false;
-    U.lvgl_px = 0;
+    U.lvgl_px = U.shift_px = 0;
     double t0 = wall();
 
     poll_touch();
@@ -401,6 +436,8 @@ bool bz_ui_frame(double now_s)
 
     bool moving = bz_motion_tick(&U.lx) | bz_motion_tick(&U.ly);
     bz_comp_set_light(U.comp, U.lx.value, U.ly.value);
+
+    thaw_step();
 
     double t1 = wall();
     lv_timer_handler();
@@ -424,7 +461,8 @@ bool bz_ui_frame(double now_s)
         p->lvgl_ms = ema(p->lvgl_ms, (float)((t2 - t1) * 1000));
         p->compose_ms = ema(p->compose_ms, (float)((t3 - t2) * 1000));
         p->present_ms = ema(p->present_ms, (float)((t4 - t3) * 1000));
-        p->model_ms = model_ms(&p->comp, U.lvgl_px);
+        p->model_ms = model_ms(&p->comp, U.lvgl_px, U.shift_px);
+        p->shift_px = U.shift_px;
         p->frames++;
     }
     return moving || U.keep_alive || U.pressed;
@@ -477,9 +515,12 @@ void bz_ui_freeze(bool frozen)
     if (holds < 0) holds = 0;
     bool f = holds > 0;
     if (f == U.frozen) return;
+    if (f) thaw_finish(); /* what freezes now must be whole: a picture may be taken of it */
+    /* layout moved while frozen settles while still quiet: the thaw redraws everything anyway */
+    else lv_obj_update_layout(lv_display_get_screen_active(U.disp_content));
     U.frozen = f;
     lv_display_enable_invalidation(U.disp_content, !f);
-    if (!f) lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
+    if (!f) U.thaw = 0;
 #ifndef ESP_PLATFORM
     if (getenv("SIM_DEBUG_FLUSH"))
         fprintf(stderr, "freeze %d holds %d enabled %d at %.3f\n", frozen, holds,
@@ -495,7 +536,90 @@ void bz_ui_copy(uint16_t *dst, int dst_stride, const uint16_t *src, int src_stri
     else for (int y = 0; y < h; y++) memcpy(dst + (size_t)y * dst_stride, src + (size_t)y * src_stride, (size_t)w * 2);
 }
 
-uint16_t *bz_ui_content_buf(void) { return U.cfg.content; }
+uint16_t *bz_ui_content_buf(void)
+{
+    thaw_finish(); /* whoever reads it gets it whole */
+    return U.cfg.content;
+}
+
+/* Whether `a` (the list's rect) shows its own pixels and nothing else: every ancestor holds it whole
+ * (clear of its rounded corners), none fades or scales it, and nothing drawn later (a later sibling of
+ * it or of an ancestor, or the top layer) reaches into it. */
+static bool unobstructed(lv_obj_t *o, const lv_area_t *a)
+{
+    for (lv_obj_t *p = lv_obj_get_parent(o); p; o = p, p = lv_obj_get_parent(p)) {
+        lv_area_t pc;
+        lv_obj_get_coords(p, &pc);
+        if (!lv_area_is_in(a, &pc, lv_obj_get_style_radius(p, 0))) return false;
+        if (lv_obj_get_style_opa(p, 0) < LV_OPA_MAX || lv_obj_get_style_transform_scale_x(p, 0) != LV_SCALE_NONE ||
+            lv_obj_get_style_transform_scale_y(p, 0) != LV_SCALE_NONE)
+            return false;
+        uint32_t n = lv_obj_get_child_count(p);
+        for (uint32_t i = (uint32_t)lv_obj_get_index(o) + 1; i < n; i++) {
+            lv_obj_t *c = lv_obj_get_child(p, (int32_t)i);
+            if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+            lv_area_t cc;
+            lv_obj_get_coords(c, &cc);
+            int32_t ext = lv_obj_get_ext_draw_size(c);
+            lv_area_increase(&cc, ext, ext);
+            if (lv_area_is_on(&cc, a)) return false;
+        }
+    }
+    lv_obj_t *top = lv_display_get_layer_top(U.disp_content);
+    for (uint32_t i = 0; top && i < lv_obj_get_child_count(top); i++) {
+        lv_obj_t *c = lv_obj_get_child(top, (int32_t)i);
+        lv_area_t cc;
+        lv_obj_get_coords(c, &cc);
+        if (!lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN) && lv_area_is_on(&cc, a)) return false;
+    }
+    return true;
+}
+
+bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
+{
+    lv_display_t *d = U.disp_content;
+    /* layout already pending elsewhere invalidates as it normally would; only this move is kept quiet */
+    lv_obj_update_layout(content);
+    lv_area_t a, c0, c1;
+    lv_obj_get_coords(clip, &a);
+    lv_obj_get_coords(content, &c0);
+    lv_display_enable_invalidation(d, false);
+    lv_obj_set_y(content, y);
+    lv_obj_update_layout(content);
+    lv_display_enable_invalidation(d, true);
+    lv_obj_get_coords(content, &c1);
+    int dy = (int)(c1.y1 - c0.y1), h = (int)lv_area_get_height(&a), w = (int)lv_area_get_width(&a);
+    if (!dy) return true;
+    if (U.frozen || U.offscreen || U.thaw >= 0 || abs(dy) >= h || lv_obj_get_style_radius(clip, 0) || !unobstructed(clip, &a)) {
+        lv_obj_invalidate(clip); /* what a plain move would have: both positions, clipped to the list */
+        return false;
+    }
+    /* damage still waiting to be drawn inside the list moves with it: those pixels are stale wherever
+     * they land (the damage stays where it was too, and redraws whatever scrolls into it) */
+    uint32_t n = d->inv_p;
+    for (uint32_t i = 0; i < n && i < LV_INV_BUF_SIZE; i++) {
+        lv_area_t m;
+        if (d->inv_area_joined[i] || !lv_area_intersect(&m, &d->inv_areas[i], &a)) continue;
+        m.y1 += dy;
+        m.y2 += dy;
+        if (lv_area_intersect(&m, &m, &a)) lv_inv_area(d, &m);
+    }
+    uint16_t *px = U.cfg.content + a.x1;
+    size_t W = (size_t)U.cfg.w, row = (size_t)w * 2;
+    if (dy < 0)
+        for (int r = a.y1; r <= a.y2 + dy; r++) memcpy(px + r * W, px + (r - dy) * W, row);
+    else
+        for (int r = a.y2; r >= a.y1 + dy; r--) memcpy(px + r * W, px + (r - dy) * W, row);
+    U.shift_px += (uint32_t)(w * (h - abs(dy)));
+    bz_area_t b = { (int16_t)a.x1, (int16_t)a.y1, (int16_t)a.x2, (int16_t)a.y2 };
+    bz_comp_damage_content(U.comp, &b);
+    /* LVGL draws only the strip that scrolled into view */
+    lv_area_t band = a;
+    if (dy < 0) band.y1 = a.y2 + dy + 1;
+    else band.y2 = a.y1 + dy - 1;
+    lv_inv_area(d, &band);
+    return true;
+}
 
 void bz_ui_set_mode(bool dark, bool calm)
 {

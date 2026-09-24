@@ -291,13 +291,28 @@ static void sync_transcript(void)
             grew = true;
         }
     }
-    for (int id = next; id < first + n; id++) {
-        if (AS.nv == VIEW_MAX) view_drop_front();
-        view_t *v = &AS.v[AS.nv++];
-        const as_entry_t *e = assist_entry(id - first);
-        v->id = id;
-        view_make(v, e);
-        view_fill(v, e);
+    if (next < first + n) {
+        /* new rows are made at the top of the list and laid out at the bottom; LVGL would redraw both
+         * places, the whole list: they're made quietly, and only where they land is drawn */
+        lv_display_t *d = lv_obj_get_display(AS.list);
+        lv_obj_update_layout(AS.list); /* what's already changed redraws as usual */
+        int made = AS.nv;
+        lv_display_enable_invalidation(d, false);
+        for (int id = next; id < first + n; id++) {
+            if (AS.nv == VIEW_MAX) {
+                view_drop_front();
+                made = 0; /* everything moved up */
+            }
+            view_t *v = &AS.v[AS.nv++];
+            const as_entry_t *e = assist_entry(id - first);
+            v->id = id;
+            view_make(v, e);
+            view_fill(v, e);
+        }
+        lv_obj_update_layout(AS.list);
+        lv_display_enable_invalidation(d, true);
+        if (made == 0) lv_obj_invalidate(lv_obj_get_parent(AS.list));
+        else for (int i = made; i < AS.nv; i++) lv_obj_invalidate(AS.v[i].row);
         grew = true;
     }
     assist_unlock();

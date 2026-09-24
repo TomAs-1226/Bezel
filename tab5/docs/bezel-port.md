@@ -28,21 +28,78 @@ on top. Catalyst Tab keeps that order with two LVGL displays and a compositor:
 | DOM over glass (`[data-glass]` labels) | LVGL display #2, ARGB8888, transparent screen — only what sits *on* glass |
 | Blur pyramid, level ≈ σ 11.3 px at panel scale | Per glass group: the content under it at ¼ scale, two box passes of radius 3 (σ ≈ 2.83 × 4 = 11.3 px), rebuilt only when that content changes |
 | Pass B per pixel: SDF, refraction, frost, evening, saturation, tint, rim, shadow, press glow | Same order; geometry (coverage, refraction offset, rim light, shadow) cached per group while the shape is still, so a still frame costs one bilinear lookup and a few integer ops per glass pixel |
-| Glass groups merging with smooth-min k = 16 CSS px | Same groups (dock 0, island 3, pager 5, control center 6, activities 7), k = 22.6 panel px |
-| WebGL canvas to screen | PPA rotates only the damaged rectangles into the back of two DPI frame buffers, swapped on vsync |
+| Glass groups merging with smooth-min k = 16 CSS px | Same groups (dock 0, island 3, pager 5, control center 6, activities 7 — here the assistant's orb), k = 22.6 panel px; a shape marked *solo* never melts (the control center's modules, which pass near each other while they cascade) |
+| WebGL canvas to screen | PPA rotates only the damaged rectangles into the back of two DPI frame buffers, swapped on vsync, asynchronously: the cores draw frame N+1 while the PPA turns frame N |
 
 **Glass parameters** (shader CSS px × 1.41 for a 720 px panel): frost σ 11.3, slab thickness 37,
 bezel width clamp(0.9 r, 11, 40) with profile `(1 − (1 − x)^4)^¼`, Snell n = 1.5, evening toward grey
 0.17 by 22 % (dark) or 0.93 by 38 % (light), saturation 1.12, tint `mix(g, tint·(0.82 + 0.35·luma) +
 0.04, 0.82·amt)`, rim ≈ 1 px lit by `0.16 + 0.62·max(f,0)^1.5 + 0.26·max(−f,0)^2` with the light at
 (−0.42, −0.91), shadow offset 7·big and falloff to 34·big with `big = clamp(min(w,h)/127, 0.5, 1.4)`,
-press glow `0.22·exp(−d/65)`, press scale 1.06 (dock 1.02).
+press glow `0.22·exp(−d/65)`, press scale 1.06. The dock presses with the glow alone (scale 1.0): a
+scaled shape is a new shape, and the dock's geometry table would be rebuilt every frame of every tap.
+The IMU's lean of the light is applied when compositing, from the table's stored normals, so tilting
+the tablet never rebuilds a table either.
 
 **Materialize by strength, not opacity**: strength 0→1 scales frost, evening, tint, rim, shadow and
 thickness together.
 
 **Calm** = reduced motion + solid glass: surface2 fill, rim and shadow, no frost or refraction — the
 design's own cheap path.
+
+## Keeping 60 Hz
+
+The panel is driven at 60.5 Hz (DPI timings chosen for it, `hal_tab5.c`), and a frame has 16.5 ms.
+Redrawing the page with LVGL's software renderer costs ~26 ns a pixel across both cores — a whole
+1280 × 720 page is ~24 ms — so the rule is that nothing big is ever drawn twice while it moves:
+
+- **Presenting.** Each damaged area is split into cells. A cell with no glass, ink, backdrop or
+  antialiased layer corner in it goes to the panel straight from wherever its pixels already are (the
+  content buffer or a cached picture); only the rest is composited. Work inside a frame is split
+  across both cores by rows.
+- **Pages.** While the pager moves, the five pages are one cached picture (a strip, half a page of
+  ground either side) that the compositor slides; LVGL is frozen. The page on screen is copied, not
+  drawn, when a swipe starts; the others are refreshed in the background while nothing moves, a band
+  of 90 rows per frame, never a whole page at once.
+- **App windows.** Opening draws the window once, as it will look full size, before it moves; it then
+  grows out of its icon as a picture over a picture of the page. Closing takes the window as it is on
+  screen.
+- **Landing.** When a gesture ends, LVGL has to catch up with everything it didn't draw while frozen.
+  That happens a band per frame over eight frames while the pictures stay up, and a finger on the page
+  finishes it at once so a press always shows.
+- **Lists.** A list scrolls by moving the rows already drawn and having LVGL draw only the strip that
+  came into view (`bz_ui_scroll`), and a list's column is fixed and very tall so a row that grows or
+  arrives redraws only itself. The assistant's transcript streams without redrawing what's above.
+- **Tables.** Refraction geometry per glass group, rebuilt only when a shape's size or radius changes;
+  a shape that only moves shifts its table; strength, press, tint and light are applied per pixel.
+- **The control center's blind.** The web specimen frosts the whole page by the pull's amount; a
+  per-pixel cross-fade of the whole screen every frame is more memory traffic than a frame has on the
+  P4. Here a frosted, dimmed picture of the page comes down behind the modules like a blind, and only
+  the rows its soft edge crosses are mixed. The page underneath is frozen while it is down.
+
+**What a frame costs** comes from the simulator: `trace NAME` … `trace end` in a script prints each
+frame's work (pixels LVGL drew, composited, presented directly, glass by path, tables rebuilt, blur
+sources, rows shifted) costed for the P4 — the larger of the CPU's time and the PPA's, per-kernel
+cycle estimates, PSRAM/PPA at 400 MB/s. It is a model, not a measurement; on the tablet the
+settings screen's `fps` chip shows measured frame times over every screen. Modelled today:
+
+| Interaction | avg ms | p95 ms | frames over 16.7 ms |
+|---|---|---|---|
+| swipe between pages | 11.5 | 12.8 | 0 of 65 |
+| jump pages from the dock | 11.1 | 13.7 | 0 of 65 |
+| open an app | 9.6 | 16.2 | 2 of 45 — the window is drawn once before it moves (one frame of start-up) |
+| scroll a list | 12.8 | 14.4 | 0 of 53 |
+| close an app | 7.2 | 14.3 | 0 of 65 |
+| assistant streaming a reply | 8.5 | 13.4 | 1 of 67 — the first row of a new conversation |
+| close the assistant | 5.1 | 17.0 | 9 of 124 — the orb's glass re-frosting as the window shrinks, at 17–18.5 ms |
+| **pull the control center** | 15.7 | 47.6 | **28 of 87** |
+| **close the control center** | 13.5 | 69.5 | **13 of 61** |
+| control center open, idle | 2.6 | 3.4 | 0 of 60 |
+
+The control center is the one place that doesn't hold 60 Hz in the model. Seven solo glass modules
+cascade in at once, so every frame pays for their edges and shadows (~450k glass pixels), LVGL
+redrawing their labels as they move and fade (~270k), and composing ~600k pixels over the blind. Making
+it fit means caching each module's ink while it slides and a cheaper edge while strength is below 1.
 
 ## Motion (`components/bezel/src/bz_motion.c`)
 
@@ -97,6 +154,9 @@ selection. Ice means "on"; amber means a light is on and isn't used here.
 - **Level** (Bezel's slider): track 128 tall radius 32 in the specimen; the tunables use a 96 tall
   track here, handle 6 × 88 → 4 × 104 while held, rubber-band 12 % past the ends.
 - **Meter**: 34 tall capsule, fill inner radius 6.
-- **Control center** (group 6): pulled down from the top edge; progress = dy / 380, opens if
-  `p + project(v, 0.99) > 0.5`, the page behind frosts and dims (σ grows with the pull, dim 0.9·p).
+- **Control center** (group 6, every module solo, 26 px apart): pulled down from the top edge;
+  progress = dy / 380, opens if `p + project(v, 0.99) > 0.5`; the modules cascade in by delay, each
+  materializing by strength; behind them the frosted, dimmed page comes down as a blind (above).
+- **The orb** (group 7, solo): the assistant, bottom right on every page; the confirmation card it
+  raises is group 5, solo.
 - **Apps** grow out of the icon that opened them on the release spring and can be caught mid-flight.

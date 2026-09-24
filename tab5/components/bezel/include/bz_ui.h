@@ -56,12 +56,23 @@ void bz_ui_lean_light(float dx, float dy);
 void bz_ui_render_offscreen(uint16_t *buf, int stride, const lv_area_t *area, void (*prepare)(bool before, void *u),
                             void *u);
 /* Frozen: LVGL stops drawing the content layer; the compositor shows whatever layers say. Thawing
- * redraws the whole content layer once. Counted: each freeze(true) needs its freeze(false). */
+ * redraws the whole content layer, a band per frame over the next few frames: keep the layers that hid
+ * it up until bz_ui_thawing() is false. Counted: each freeze(true) needs its freeze(false). */
 void bz_ui_freeze(bool frozen);
 bool bz_ui_frozen(void);
+bool bz_ui_thawing(void);
+/* Stops a thaw where it is, leaving the content partly stale: only for a caller about to freeze again
+ * whose layers cover the whole screen until the next thaw (which redraws everything). */
+void bz_ui_thaw_cancel(void);
 /* The platform's fast copy (PPA on the Tab5). */
 void bz_ui_copy(uint16_t *dst, int dst_stride, const uint16_t *src, int src_stride, int w, int h);
 uint16_t *bz_ui_content_buf(void);
+/* Scrolls `content` inside `clip` to y (lv_obj_set_y) by moving the pixels already drawn and having LVGL
+ * draw only the strip that comes into view: a list that scrolls a few pixels a frame costs those rows,
+ * not the whole list. Falls back to an ordinary move (LVGL redraws both positions) whenever moving the
+ * pixels couldn't be right: frozen, partly off screen or clipped, something drawn over the list, a
+ * rounded clip, or a jump taller than the list. Returns true if the pixels were moved. */
+bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y);
 
 /* ---- performance ---- */
 typedef struct {
@@ -69,6 +80,7 @@ typedef struct {
     float frame_ms, lvgl_ms, compose_ms, present_ms; /* this machine's, smoothed */
     float model_ms;            /* the same frame's work costed for the ESP32-P4 (see bz_ui.c) */
     uint32_t lvgl_px;          /* content + glass pixels LVGL drew last frame */
+    uint32_t shift_px;         /* pixels a scrolling list moved instead of redrawing */
     uint32_t frames;           /* frames presented since boot */
     bz_comp_stats_t comp;      /* last frame */
 } bz_ui_perf_t;

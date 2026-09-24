@@ -227,7 +227,13 @@ Catalyst topic contract and the Bezel port's numbers. Things that bite:
   (`bz_ui_content()`), mirroring `[data-glass]` here.
 - Motion uses `bz_motion.c`'s roles (the same `SPRINGS` as `motion.js`), never LVGL animations.
 - The tablet never commands a robot: it writes only declared tunables, the auto choice and a
-  Limelight's LED, as Catalyst Console does.
+  Limelight's LED, as Catalyst Console does. The assistant (`components/assist/`) changes things only
+  behind an on-screen confirmation, and code only as a patch branch or a work order through Catalyst
+  Link on the PC (`link/`) — never the branch you're on, never pushed or deployed.
+- 60 Hz is a budget, not a hope: measure a change with `trace NAME` … `trace end` in a sim script
+  (the P4 cost model, `docs/bezel-port.md`). Never move a big LVGL object while LVGL draws it — use the
+  motion caches (`bz_ui_freeze`, layers), `bz_ui_scroll` for lists, and set styles only when they
+  change: every style set redraws the object.
 
 ## Publishing the specimen as an artifact
 

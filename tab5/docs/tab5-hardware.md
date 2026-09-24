@@ -16,7 +16,7 @@ read as raw HTML, **[S]** the Tab5 schematic PDF. Anything not confirmed from on
 | **JPEG codec** | Baseline encode or decode, 720p at ~88 fps encode [IDF docs] | Lens snapshots to microSD. |
 | **H.264 encoder** | Hardware, up to 1080p30, input "O_UYY_E_VYY" packed YUV 4:2:0 only [esp_h264] | Lens clips: each 1280×720 camera frame is converted RGB565 → YUV420 on the PPA and encoded at 30 fps, ~4 Mbit/s, an IDR a second, into an Annex-B `.h264` on microSD (`hal_clip_start`). See [Clips](#clips-h264). |
 | **ISP + MIPI-CSI** | Via `esp_video` / `esp_ipa` | The Lens tool's camera pipeline. |
-| **ESP32-C6-MINI-1U** co-processor | Wi-Fi 6 (2.4 GHz), BLE 5, 802.15.4; 4-bit SDIO to the P4 (CLK 12, CMD 13, D0–D3 11/10/9/8, RESET 15), stock slave firmware esp-hosted 1.4.1 [D][M] | The robot link over Wi-Fi, through `esp_wifi_remote` + `esp_hosted` — the normal `esp_wifi_*` API is forwarded over SDIO. 802.15.4 isn't exposed by esp-hosted. |
+| **ESP32-C6-MINI-1U** co-processor | Wi-Fi 6 (2.4 GHz), BLE 5, 802.15.4; 4-bit SDIO to the P4 (CLK 12, CMD 13, D0–D3 11/10/9/8, RESET 15), stock slave firmware esp-hosted 1.4.1 [D][M] | The robot link over Wi-Fi, through `esp_wifi_remote` + `esp_hosted` — the normal `esp_wifi_*` API is forwarded over SDIO. 802.15.4 isn't exposed by esp-hosted. See [The C6 as a co-processor](#the-c6-as-a-co-processor). |
 | **Display** | 5″ IPS, **720 × 1280 portrait**, 2-lane MIPI-DSI, RGB565, backlight PWM on GPIO22 | Rendered in **landscape 1280 × 720**: exactly Bezel's 720-high design, so Bezel's panel unit is 1. |
 | **Touch** | GT911 @0x14 (ILI9881C units) **or** ST7123 @0x55 (from 2025-10) **or** ST7121 @0x55 (from 2026-04); 5 points; INT on GPIO23 [D][M] | Detected at boot the way both BSPs do it: probe 0x55 and read register 0 (1 = ST7121, 3 = ST7123), else 0x14 = GT911. |
 | **BMI270** IMU @0x68 | 6-axis; no magnetometer; its interrupt goes to the power MCU, not the P4 [D][S] | The **Level** tool (inclinometer to check an arm's reported angle against gravity), Bezel's glass light leaning with tilt, and pick-up-to-wake. |
@@ -34,6 +34,23 @@ read as raw HTML, **[S]** the Tab5 schematic PDF. Anything not confirmed from on
 | **RS-485** | SIT3088 on UART1 (TX 20, RX 21, DE 34); its 1.25 mm 6-pin connector also carries **SYS_VIN 6–24 V** [S] | Mainly a **power input**: the tablet can run off a robot's 12 V rail. The serial side isn't used — nothing on an FRC robot speaks RS-485. |
 | **Buttons** | Power (press on, double press off), Reset/Boot | — |
 | Not present | Ethernet, IR, magnetometer | — |
+
+## The C6 as a co-processor
+
+The C6 already carries all of the radio's work: the 802.11 MAC and PHY, the WPA2/3 handshake and its
+crypto, beacons, retries and power save run on it, and the P4 sees Ethernet-like frames over SDIO
+(4-bit, 40 MHz, with the C6 aggregating received packets — `ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE`).
+That is all its stock firmware (esp-hosted **1.4.1** slave) can take: the 1.4.7 host this firmware pairs
+with has no way to run other code on it.
+
+Giving it more would mean new C6 firmware — esp-hosted 2.x's *network split* (lwIP on the C6, which
+answers or filters traffic itself) or a custom RPC — flashed to the C6 from the P4, which breaks the
+pairing with the stock 1.4.1 slave that ships in every Tab5. It would buy little: the C6 is a single
+160 MHz RISC-V core with 512 KB SRAM and no PSRAM, ~20 MB/s away over SDIO. The P4's limit is drawing,
+and a frame (1.8 MB) takes ~90 ms just to cross that bus, so graphics can't move there; NetworkTables
+and TLS are a few percent of the P4's core 0. The one offload worth it later is **host sleep**: with
+network split, the C6 keeps the robot link and wakes the P4 on traffic, so the tablet can sleep on
+the cart without dropping off the network. That needs the C6 reflashed and a Tab5 to test it on.
 
 ## Gotchas this firmware handles
 

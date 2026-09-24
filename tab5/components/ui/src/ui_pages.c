@@ -202,7 +202,7 @@ void ui_page_overview(lv_obj_t *page)
     P.batt_mark = bz_mark(br, BZ_STALE, 10);
     P.batt_band = bz_label(br, "", BZ_F_LABEL, BZ_C_DIM);
     value_row(t, BZ_F_DISPLAY, "v", &P.batt_v, 26);
-    P.batt_spark = bz_spark(t, 150, 56, 120);
+    P.batt_spark = bz_spark(t, 96, 56, 120); /* beside "12.60 v" (tabular: never wider), not under it */
     bz_spark_min_span(P.batt_spark, 1.0f);
     lv_obj_align(P.batt_spark, LV_ALIGN_RIGHT_MID, 0, 6);
     P.batt_foot = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);

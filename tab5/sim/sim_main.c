@@ -103,9 +103,9 @@ static void frame(void)
             T.ms[T.n++] = p.model_ms;
             if (getenv("SIM_TRACE_FRAMES")) {
                 const bz_comp_stats_t *c = &p.comp;
-                printf("  %5.1f ms  lvgl %7u  comp %7u dir %7u glass %7u (flat %6u edge %6u shadow %6u) lut %6u/%6u "
+                printf("  %5.1f ms  lvgl %7u  shift %6u  comp %7u dir %7u glass %7u (flat %6u edge %6u shadow %6u) lut %6u/%6u "
                        "blur %7u mix %6u ink %6u cells %u\n",
-                       p.model_ms, p.lvgl_px, c->composed_px, c->direct_px, c->glass_px, c->glass_flat_px, c->glass_edge_px,
+                       p.model_ms, p.lvgl_px, p.shift_px, c->composed_px, c->direct_px, c->glass_px, c->glass_flat_px, c->glass_edge_px,
                        c->glass_shadow_px, c->lut_px, c->lut_ring_px, c->blur_src_px, c->mix_px, c->ink_px, c->cells);
             }
         }

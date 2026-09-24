@@ -3,6 +3,7 @@
 #include "ui_internal.h"
 #include "cat_can.h"
 #include "cat_logs.h"
+#include "link.h"
 
 #include <dirent.h>
 #include <math.h>
@@ -221,17 +222,52 @@ const ui_app_t APP_LEVEL = { .name = "level", .icon = BZ_I_STRAIGHTEN, .build = 
 
 /* ================================================================== lens */
 
+#define CLIP_MAX_S 60
+
 static struct {
-    lv_obj_t *img, *frame_box, *frz, *info;
+    lv_obj_t *img, *frame_box, *frz, *info, *rec, *clip_info;
     lv_image_dsc_t dsc;
-    bool frozen, started;
-    int shots;
+    bool frozen, started, recording;
+    int shots, shown_s;
+    char clip_path[160], clip_name[48];
+    volatile int upload;   /* 0 idle, 1 sending, 2 sent or queued, 3 failed */
+    int upload_shown;
 } LN;
+
+/* A clip ended, by the button, by closing, or by reaching its length. */
+static void clip_ended(double s)
+{
+    LN.recording = false;
+    ui_chip_set(LN.rec, false);
+    lv_label_set_text(lv_obj_get_child(LN.rec, 0), "record");
+    ui_text(LN.clip_info, "saved · %.0f s in lens/", s);
+    hal_tone(660, 80, S.volume);
+}
+
+static void clip_tick(void)
+{
+    if (LN.upload != LN.upload_shown) {
+        LN.upload_shown = LN.upload;
+        if (LN.upload == 2) ui_island_say(BZ_I_CLOUD_UPLOAD, "clip on its way to the pc");
+        else if (LN.upload == 3) ui_island_say(BZ_I_CLOUD_OFF, "couldn't send the clip");
+    }
+    if (!LN.recording) return;
+    double s = 0;
+    if (!hal_clip_active(&s)) {
+        clip_ended(CLIP_MAX_S);
+        return;
+    }
+    if ((int)s != LN.shown_s) {
+        LN.shown_s = (int)s;
+        ui_text(LN.clip_info, "recording · %d of %d s", LN.shown_s, CLIP_MAX_S);
+    }
+}
 
 static void lens_frame(double now, double dt)
 {
     (void)now; (void)dt;
     bz_ui_keep_alive();
+    clip_tick();
     if (LN.frozen) return;
     int w, h;
     const uint16_t *px = hal_camera_frame(&w, &h);
@@ -286,13 +322,74 @@ static void ln_snap(lv_obj_t *o, void *u)
     }
 }
 
+/* A clip: the camera through the P4's H.264 encoder into <sd>/lens/<time>.h264, up to a minute. */
+static void ln_clip(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    if (LN.recording) {
+        clip_ended(hal_clip_stop());
+        return;
+    }
+    const char *root = hal_sd_root();
+    if (!root) {
+        ui_island_say(BZ_I_SD_CARD, "no microSD card");
+        return;
+    }
+    if (!LN.started) {
+        ui_island_say(BZ_I_VIDEOCAM_OFF, "the camera isn't running");
+        return;
+    }
+    char dir[96];
+    snprintf(dir, sizeof dir, "%s/lens", root);
+    mkdir(dir, 0755);
+    struct tm tm;
+    hal_rtc_get(&tm);
+    snprintf(LN.clip_name, sizeof LN.clip_name, "%04d%02d%02d-%02d%02d%02d.h264", tm.tm_year + 1900, tm.tm_mon + 1,
+             tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+    snprintf(LN.clip_path, sizeof LN.clip_path, "%s/%s", dir, LN.clip_name);
+    if (!hal_clip_start(LN.clip_path, CLIP_MAX_S)) {
+        ui_island_say(BZ_I_VIDEOCAM_OFF, "the encoder didn't start");
+        LN.clip_path[0] = 0;
+        return;
+    }
+    LN.recording = true;
+    LN.shown_s = -1;
+    ui_chip_set(LN.rec, true);
+    lv_label_set_text(lv_obj_get_child(LN.rec, 0), "stop");
+    hal_tone(990, 60, S.volume);
+}
+
+static void *ln_upload_thread(void *arg)
+{
+    (void)arg;
+    /* link_upload queues on microSD when the Link is away; false means it couldn't even do that */
+    LN.upload = link_upload(LN.clip_path, LN.clip_name) ? 2 : 3;
+    return NULL;
+}
+
+static void ln_send(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    if (LN.recording || !LN.clip_path[0] || LN.upload == 1) {
+        ui_island_say(BZ_I_MOVIE, LN.recording ? "stop the clip first" : "no clip yet");
+        return;
+    }
+    LN.upload = 1;
+    if (!hal_thread("clip-upload", ln_upload_thread, NULL, 8192)) LN.upload = 3;
+    hal_tone(1800, 10, S.volume * 0.4f);
+}
+
 static void lens_open(void)
 {
     LN.started = hal_camera_start();
     ui_text(LN.info, "%s", LN.started ? "sc2356 · 2 mp" : "the camera didn't start");
 }
 
-static void lens_close(void) { hal_camera_stop(); }
+static void lens_close(void)
+{
+    if (LN.recording) clip_ended(hal_clip_stop());
+    hal_camera_stop();
+}
 
 static void lens_build(lv_obj_t *b)
 {
@@ -313,6 +410,11 @@ static void lens_build(lv_obj_t *b)
     ui_button(side, BZ_I_PHOTO_CAMERA, "save", ln_snap, NULL);
     LN.info = bz_label(side, "", BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(LN.info, W - 2 * PAD - 1000 - BZ_GAP - 2 * BZ_PAD_TILE);
+    bz_label(side, "clip · h.264", BZ_F_LABEL, BZ_C_DIM);
+    LN.rec = ui_chip(side, "record", ln_clip, NULL);
+    ui_button(side, BZ_I_CLOUD_UPLOAD, "to pc", ln_send, NULL);
+    LN.clip_info = bz_label(side, "up to a minute, to microSD", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(LN.clip_info, W - 2 * PAD - 1000 - BZ_GAP - 2 * BZ_PAD_TILE);
 }
 
 const ui_app_t APP_LENS = { .name = "lens", .icon = BZ_I_PHOTO_CAMERA, .build = lens_build, .open = lens_open,

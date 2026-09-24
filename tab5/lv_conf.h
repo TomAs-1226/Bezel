@@ -11,7 +11,8 @@
 #define LV_USE_STDLIB_STRING LV_STDLIB_CLIB
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 
-#define LV_DEF_REFR_PERIOD 16
+/* below the panel's 16.5 ms frame: LVGL renders on every frame the loop runs, never skips one to jitter */
+#define LV_DEF_REFR_PERIOD 8
 #define LV_DPI_DEF 294
 
 #ifdef ESP_PLATFORM

@@ -79,7 +79,10 @@ static struct {
     bool window;             /* the window is showing its picture */
     bool dark;
     double last_render;
-} MC;
+    int band_page, band;     /* a page being refreshed a band per frame, and the next band */
+    bool thaw_layers;        /* the pictures stay up while LVGL redraws under them (bz_ui_thawing) */
+    bool thaw_strip;         /* ...and they are the pager's strip, still showing the page LVGL is redrawing */
+} MC = { .band_page = -1 };
 
 static double g_now;
 double ui_now(void) { return g_now; }
@@ -174,10 +177,26 @@ typedef struct {
 #define MAX_SCROLLERS 64     /* every list in every app: a scroller not in here would neither coast nor follow */
 static scroller_t *g_scrollers[MAX_SCROLLERS];
 
+/* The list's content is a fixed, very tall column, so a row growing or arriving redraws only itself and
+ * what it pushes down: a column sized to its content would redraw the whole list every time it grew.
+ * How far it scrolls is measured from its lowest row instead. */
+#define SC_TALL 30000
+
 static float scroll_min(scroller_t *s)
 {
     lv_obj_update_layout(s->content);
-    float over = (float)lv_obj_get_height(s->content) - lv_obj_get_height(s->clip);
+    lv_area_t c;
+    lv_obj_get_coords(s->content, &c);
+    int32_t bottom = 0;
+    uint32_t n = lv_obj_get_child_count(s->content);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *ch = lv_obj_get_child(s->content, (int32_t)i);
+        if (lv_obj_has_flag(ch, LV_OBJ_FLAG_HIDDEN)) continue;
+        lv_area_t a;
+        lv_obj_get_coords(ch, &a);
+        if (a.y2 + 1 - c.y1 > bottom) bottom = a.y2 + 1 - c.y1;
+    }
+    float over = (float)(bottom + lv_obj_get_style_pad_bottom(s->content, 0)) - lv_obj_get_height(s->clip);
     return over > 0 ? -over : 0;
 }
 
@@ -196,7 +215,7 @@ static void sc_move(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
     scroller_t *s = u;
     float y = bz_rubber_clamp(s->start + dy, scroll_min(s), 0, (float)lv_obj_get_height(s->clip));
     bz_motion_set(&s->y, y, vy);
-    lv_obj_set_y(s->content, (int)y);
+    bz_ui_scroll(s->clip, s->content, (int32_t)y);
 }
 
 static void sc_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
@@ -225,7 +244,7 @@ static void scroll_frame(double now, double dt, void *user)
         scroller_t *s = g_scrollers[i];
         if (!s || s->dragging) continue;
         if (bz_motion_tick(&s->y)) {
-            lv_obj_set_y(s->content, (int)s->y.value);
+            bz_ui_scroll(s->clip, s->content, (int32_t)s->y.value);
             bz_ui_keep_alive();
         }
     }
@@ -253,7 +272,7 @@ lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h)
     s->clip = bz_box(parent);
     lv_obj_set_size(s->clip, w, h);
     s->content = bz_col(s->clip, BZ_GAP);
-    lv_obj_set_width(s->content, w);
+    lv_obj_set_size(s->content, w, SC_TALL);
     bz_motion_init(&s->y, 0, 0.1f);
     bz_drag_t d = { .begin = sc_begin, .move = sc_move, .end = sc_end, .user = s, .axis = 2, .slop = 10 };
     bz_drag_attach(s->clip, &d);
@@ -292,9 +311,12 @@ void ui_go(int page)
 int ui_page(void) { return U.page; }
 lv_obj_t *ui_page_body(int page) { return U.pages[page]; }
 
+static void pages_begin(void);
+
 static void pg_begin(lv_obj_t *o, lv_point_t p, void *u)
 {
     (void)o; (void)p; (void)u;
+    pages_begin(); /* before the first move: the track mustn't move under LVGL, which would redraw it all */
     U.drag_from = U.offset.value;
     bz_motion_set(&U.offset, U.offset.value, 0);
 }
@@ -646,6 +668,16 @@ static bool caches_ready(void)
     return true;
 }
 
+/* A refresh in the background is drawn a band per frame: a whole page at once (~920k px) would cost
+ * a frame on the tablet, and the screen may be animating (a reply streaming in) while nobody touches it. */
+#define CACHE_BANDS 8
+
+static void render_band(int i, int b)
+{
+    lv_area_t a = { 0, b * H / CACHE_BANDS, W - 1, (b + 1) * H / CACHE_BANDS - 1 };
+    bz_ui_render_offscreen(strip_page(i) + (size_t)a.y1 * MC.stride, MC.stride, &a, prep_page, (void *)(intptr_t)i);
+}
+
 static void render_page(int i)
 {
     lv_area_t a = { 0, 0, W - 1, H - 1 };
@@ -663,10 +695,27 @@ static void grab_page(int i)
     MC.t[i] = g_now;
 }
 
+/* The pictures a thaw left up come down once LVGL has redrawn everything under them. */
+static void thaw_layers_drop(void)
+{
+    if (!MC.thaw_layers) return;
+    MC.thaw_layers = false;
+    bz_comp_set_layer(bz_ui_comp(), 0, NULL);
+    bz_comp_set_layer(bz_ui_comp(), 1, NULL);
+}
+
 static void pages_begin(void)
 {
     if (MC.pages || MC.window || U.app || !caches_ready()) return;
-    grab_page(MC.track_page);
+    if (MC.thaw_strip && MC.thaw_layers && bz_ui_thawing()) {
+        /* swiping again right after landing: the strip is still up with this page in it, so the thaw
+         * can stop where it is rather than finish in one frame */
+        bz_ui_thaw_cancel();
+        MC.thaw_layers = false;
+    } else {
+        grab_page(MC.track_page); /* finishes a thaw still going */
+        thaw_layers_drop();
+    }
     for (int i = 0; i < NPAGES; i++) if (!MC.ok[i]) render_page(i);
     bz_ui_freeze(true);
     MC.pages = true;
@@ -679,8 +728,8 @@ static void pages_end(void)
     MC.pages = false;
     MC.track_page = U.page;
     lv_obj_set_x(U.track, -U.page * W); /* frozen: no redraw for the move */
-    bz_comp_set_layer(bz_ui_comp(), 0, NULL);
-    bz_ui_freeze(false);                /* one redraw, of the page as it is now */
+    bz_ui_freeze(false);                /* one redraw, of the page as it is now, under the strip */
+    MC.thaw_layers = MC.thaw_strip = true;
 }
 
 static void window_begin(bool opening)
@@ -696,6 +745,7 @@ static void window_begin(bool opening)
         bz_ui_copy(MC.win, W, bz_ui_content_buf(), W, W, H);
         if (!MC.ok[MC.track_page]) render_page(MC.track_page);
     }
+    thaw_layers_drop();
     bz_ui_freeze(true);
     MC.window = true;
     bz_layer_t page = { { 0, 0, W - 1, H - 1 }, 0, strip_page(MC.track_page), 0, 0, MC.stride };
@@ -706,9 +756,9 @@ static void window_end(void)
 {
     if (!MC.window) return;
     MC.window = false;
-    bz_comp_set_layer(bz_ui_comp(), 0, NULL);
-    bz_comp_set_layer(bz_ui_comp(), 1, NULL);
     bz_ui_freeze(false);
+    MC.thaw_layers = true;
+    MC.thaw_strip = false;
 }
 
 /* While nothing moves, keep the pictures fresh: the pages beside this one within 2 s, the others
@@ -725,9 +775,22 @@ static void caches_idle(void)
             for (int x = 0; x < W / 2; x++) row[x] = row[MC.stride - 1 - x] = g;
         }
         for (int i = 0; i < NPAGES; i++) MC.ok[i] = false;
+        MC.band_page = -1;
     }
-    if (MC.pages || MC.window || bz_ui_idle_s() < 0.4 || g_now - MC.last_render < 0.3) return;
+    if (MC.pages || MC.window || bz_ui_thawing() || bz_ui_idle_s() < 0.4) return;
     if (U.k.value != U.k.target || fabsf(U.offset.value - U.offset.target) > 0.5f) return;
+    if (MC.band_page >= 0) {
+        /* a picture finished band by band may mix two moments a few frames apart: fine for a picture
+         * that is only shown while it slides, and redrawn for real where it lands */
+        render_band(MC.band_page, MC.band);
+        if (++MC.band == CACHE_BANDS) {
+            MC.ok[MC.band_page] = true;
+            MC.t[MC.band_page] = MC.last_render = g_now;
+            MC.band_page = -1;
+        }
+        return;
+    }
+    if (g_now - MC.last_render < 0.3) return;
     int best = -1;
     double worst = 0;
     for (int i = 0; i < NPAGES; i++) {
@@ -737,7 +800,10 @@ static void caches_idle(void)
         double age = MC.ok[i] ? g_now - MC.t[i] : 1e9;
         if (age > limit && age - limit > worst) { worst = age - limit; best = i; }
     }
-    if (best >= 0) render_page(best);
+    if (best >= 0) {
+        MC.band_page = best;
+        MC.band = 0;
+    }
 }
 
 void ui_app_open(const ui_app_t *app, lv_obj_t *from)
@@ -970,6 +1036,7 @@ static void shell_frame(double now, double dt, void *user)
         if (p != U.page && U.offset.target == -(float)p * W) U.page = p;
     }
     if (MC.pages && !paging && !bz_drag_active() && fabsf(U.offset.value + U.page * W) < 0.5f) pages_end();
+    if (!bz_ui_thawing()) thaw_layers_drop();
     caches_idle();
     dock_frame();
     windows_frame(now, dt);
