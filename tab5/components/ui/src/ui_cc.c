@@ -22,10 +22,12 @@ static struct {
     bz_motion_t p;
     float p0;
     bool dragging;
-    lv_obj_t *link_robot, *link_wifi, *link_batt, *bright, *vol;
+    lv_obj_t *link_robot, *link_wifi, *link_usb, *link_batt, *bright, *vol;
     lv_obj_t *tog_fill[4], *tog_icon[4];
     int last_y[NMOD], last_opa[NMOD], last_tog;
     bool asleep, shown, frozen;
+    bz_motion_t boot;      /* the power-on blind: starts down, lifts off the page */
+    double boot_at;
 } C;
 
 static void cc_to(float target, float v)
@@ -117,7 +119,7 @@ static void level_cb(lv_obj_t *lv, float v, bool final, void *u)
 
 static void cc_frame(double now, double dt, void *user)
 {
-    (void)now; (void)dt; (void)user;
+    (void)dt; (void)user;
     if (C.asleep && bz_ui_idle_s() < 0.2) {
         C.asleep = false;
         hal_set_brightness(S.brightness);
@@ -125,7 +127,12 @@ static void cc_frame(double now, double dt, void *user)
     if (bz_motion_tick(&C.p) || C.dragging) bz_ui_keep_alive();
     float p = C.p.value < 0 ? 0 : C.p.value;
     bool shown = p > 0.002f || C.dragging;
-    bz_comp_set_backdrop(bz_ui_comp(), p > 1 ? 1 : p, 0.9f);
+    /* power-on: the page starts under the frosted blind and it lifts, a beat after the first frame */
+    if (C.boot_at == 0) C.boot_at = now + 0.35;
+    if (now >= C.boot_at && C.boot.target > 0) bz_motion_to(&C.boot, 0, BZ_SMOOTH);
+    if (bz_motion_tick(&C.boot)) bz_ui_keep_alive();
+    float blind = C.boot.value > p ? C.boot.value : p;
+    bz_comp_set_backdrop(bz_ui_comp(), blind > 1 ? 1 : blind < 0 ? 0 : blind, 0.9f);
     /* the page behind is frosted and dimmed out of sight: it stops redrawing (live numbers under the
      * blind would only make every module re-frost) until the blind starts back up */
     bool hold = (shown && C.p.target > 0) || C.dragging;
@@ -169,6 +176,11 @@ static void cc_refresh(void *user)
     hal_net_t n;
     hal_net(&n);
     ui_text(C.link_wifi, "%s · %d dbm", n.up ? n.ssid : "not connected", n.rssi);
+    hal_tether_t t;
+    hal_tether(&t);
+    if (t.up) ui_text(C.link_usb, "%s · %s%s", t.kind, t.ip, t.dhcp ? "" : " (fallback)");
+    else if (t.present) ui_text(C.link_usb, "%s attached · no address yet", t.kind[0] ? t.kind : "adapter");
+    else ui_text(C.link_usb, "no usb tether");
     hal_battery_t b;
     if (hal_battery(&b)) ui_text(C.link_batt, "%d %% · %.2f v%s", b.percent, b.volts, b.charging ? " · charging" : "");
     bool on[4] = { !S.dark, S.calm, false, false };
@@ -195,7 +207,7 @@ void ui_cc_init(void)
 
     /* link */
     /* 26 px between modules, as Bezel's: apart by more than the merge distance, they never melt */
-    lv_obj_t *m = module(0, 130, 70, 414, 176, 44, 0);
+    lv_obj_t *m = module(0, 130, 70, 414, 206, 44, 0);
     lv_obj_set_flex_flow(m, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(m, 8, 0);
     bz_label(m, "link", BZ_F_LABEL, BZ_C_DIM);
@@ -205,6 +217,9 @@ void ui_cc_init(void)
     row = bz_row(m, 10);
     bz_icon(row, BZ_I_WIFI, 24, BZ_C_INK);
     C.link_wifi = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    row = bz_row(m, 10);
+    bz_icon(row, BZ_I_USB, 24, BZ_C_INK);
+    C.link_usb = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
     row = bz_row(m, 10);
     bz_icon(row, BZ_I_BATTERY_5_BAR, 24, BZ_C_INK);
     C.link_batt = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
@@ -251,6 +266,7 @@ void ui_cc_init(void)
     bz_drag_attach(C.strip, &d);
 
     bz_motion_init(&C.p, 0, 0.001f);
+    bz_motion_init(&C.boot, bz_ui_calm() ? 0 : 1, 0.001f);
     for (int i = 0; i < NMOD; i++) C.last_y[i] = C.last_opa[i] = -1;
     bz_ui_on_frame(cc_frame, NULL);
     ui_on_refresh(cc_refresh, NULL);

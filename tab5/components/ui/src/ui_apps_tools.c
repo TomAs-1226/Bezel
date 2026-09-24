@@ -652,7 +652,8 @@ const ui_app_t APP_LOGS = { .name = "logs", .icon = BZ_I_RECEIPT_LONG, .build = 
 /* ================================================================== settings */
 
 static struct {
-    lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *calm_chip, *about, *wifi_list, *wifi_state;
+    lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *calm_chip, *perf_chip, *about, *wifi_list,
+        *wifi_state, *usb_state;
     lv_obj_t *kb, *ta, *kb_title;
     char entry[8];
     char join_ssid[33];
@@ -735,6 +736,14 @@ static void st_calm(lv_obj_t *o, void *u)
     ui_settings_save();
 }
 
+static void st_perf(lv_obj_t *o, void *u)
+{
+    (void)u;
+    S.perf = !S.perf;
+    ui_chip_set(o, S.perf);
+    ui_settings_save();
+}
+
 static void st_kb_event(lv_event_t *e)
 {
     lv_event_code_t code = lv_event_get_code(e);
@@ -774,6 +783,11 @@ static void settings_refresh(void)
     hal_net_t n;
     hal_net(&n);
     ui_text(ST.wifi_state, "%s%s%s · %d dbm · %s", n.up ? "on " : "off", n.up ? n.ssid : "", "", n.rssi, n.ip);
+    hal_tether_t t;
+    hal_tether(&t);
+    if (t.up) ui_text(ST.usb_state, "usb %s · %s via %s%s", t.kind, t.ip, t.gw, t.dhcp ? "" : " · fallback address");
+    else if (t.present) ui_text(ST.usb_state, "usb %s attached · waiting for an address", t.kind[0] ? t.kind : "adapter");
+    else ui_text(ST.usb_state, "usb: nothing on the usb-a port");
     hal_sys_t s;
     hal_sys(&s);
     hal_battery_t b;
@@ -793,6 +807,7 @@ static void settings_open(void)
     ui_chip_set(ST.dark_chip, S.dark);
     ui_chip_set(ST.light_chip, !S.dark);
     ui_chip_set(ST.calm_chip, S.calm);
+    ui_chip_set(ST.perf_chip, S.perf);
 }
 
 static void settings_build(lv_obj_t *b)
@@ -835,7 +850,11 @@ static void settings_build(lv_obj_t *b)
     ST.wifi_list = bz_row(l, 8);
     lv_obj_set_flex_flow(ST.wifi_list, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_width(ST.wifi_list, c2 - 2 * BZ_PAD_TILE);
-    lv_obj_t *note = bz_label(l, "At events, Wi-Fi to the robot isn't allowed: tether with a USB-Ethernet adapter on the USB-A port.",
+    bz_label(l, "usb tether", BZ_F_LABEL, BZ_C_DIM);
+    ST.usb_state = bz_label(l, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(ST.usb_state, c2 - 2 * BZ_PAD_TILE);
+    lv_obj_t *note = bz_label(l, "At events Wi-Fi to the robot isn't allowed: an A-to-C cable into Systemcore, or a USB-Ethernet "
+                                 "adapter into the radio, on the USB-A port.",
                               BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(note, c2 - 2 * BZ_PAD_TILE);
     /* display */
@@ -853,6 +872,7 @@ static void settings_build(lv_obj_t *b)
     ST.dark_chip = ui_chip(tr, "dark", st_tone, (void *)(intptr_t)0);
     ST.light_chip = ui_chip(tr, "light", st_tone, (void *)(intptr_t)1);
     ST.calm_chip = ui_chip(tr, "calm", st_calm, NULL);
+    ST.perf_chip = ui_chip(tr, "fps", st_perf, NULL);
     ST.about = bz_label(d, "", BZ_F_CAPTION, BZ_C_DIM);
 
     /* the Wi-Fi password sheet: LVGL's keyboard in Bezel's tokens */

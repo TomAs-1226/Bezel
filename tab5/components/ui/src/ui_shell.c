@@ -21,6 +21,7 @@
 #define DOCK_PAD 8
 #define DOCK_W (NPAGES * DOCK_ITEM_W + (NPAGES - 1) * DOCK_GAP + 2 * DOCK_PAD)
 #define DOCK_H 92
+#define MAX_APPS 32         /* app windows built so far: every app on the tools page fits, with room */
 
 cat_robot_t *R;
 ui_settings_t S = { .team = 5805, .brightness = 0.8f, .volume = 0.5f, .dark = true };
@@ -56,7 +57,7 @@ static struct {
     bz_glass_t *pill_glass;
     lv_area_t from;
     bz_motion_t k;
-    struct { const ui_app_t *app; lv_obj_t *inner; } built[16];
+    struct { const ui_app_t *app; lv_obj_t *inner; } built[MAX_APPS];
     int nbuilt;
     float drag_k0;
     bool win_dragging;
@@ -170,7 +171,8 @@ typedef struct {
     bool away;      /* left away from the end by a finger: don't follow new content */
 } scroller_t;
 
-static scroller_t *g_scrollers[16];
+#define MAX_SCROLLERS 64     /* every list in every app: a scroller not in here would neither coast nor follow */
+static scroller_t *g_scrollers[MAX_SCROLLERS];
 
 static float scroll_min(scroller_t *s)
 {
@@ -219,7 +221,7 @@ static void sc_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
 static void scroll_frame(double now, double dt, void *user)
 {
     (void)now; (void)dt; (void)user;
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_SCROLLERS; i++) {
         scroller_t *s = g_scrollers[i];
         if (!s || s->dragging) continue;
         if (bz_motion_tick(&s->y)) {
@@ -231,7 +233,7 @@ static void scroll_frame(double now, double dt, void *user)
 
 bool ui_scroller_follow(lv_obj_t *content)
 {
-    for (int i = 0; i < 16; i++) {
+    for (int i = 0; i < MAX_SCROLLERS; i++) {
         scroller_t *s = g_scrollers[i];
         if (!s || s->content != content) continue;
         if (s->dragging || s->away) return false;
@@ -256,7 +258,7 @@ lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h)
     bz_drag_t d = { .begin = sc_begin, .move = sc_move, .end = sc_end, .user = s, .axis = 2, .slop = 10 };
     bz_drag_attach(s->clip, &d);
     lv_obj_add_flag(s->clip, LV_OBJ_FLAG_EVENT_BUBBLE);
-    for (int i = 0; i < 16; i++) if (!g_scrollers[i]) { g_scrollers[i] = s; break; }
+    for (int i = 0; i < MAX_SCROLLERS; i++) if (!g_scrollers[i]) { g_scrollers[i] = s; break; }
     return s->content;
 }
 
@@ -423,7 +425,8 @@ static void build_dock(void)
     bz_glass_show(U.droplet_glass, false);
     bz_motion_init(&U.drop_x, item_cx(0), 0.1f);
     bz_motion_init(&U.drop_lift, 0, 0.002f);
-    bz_motion_init(&U.dock_tuck, 0, 0.002f);
+    /* power-on: the dock rises into place as the blind lifts (dock_frame sends it home) */
+    bz_motion_init(&U.dock_tuck, bz_ui_calm() ? 0 : 1, 0.002f);
 }
 
 static void dock_frame(void)
@@ -452,7 +455,9 @@ static void dock_frame(void)
     }
 
     /* the dock tucks away while an app is open, and after 4 s idle on a page (panel.js:34,166) */
-    bool tuck = U.app != NULL;
+    static double boot0;
+    if (boot0 == 0) boot0 = g_now;
+    bool tuck = U.app != NULL || g_now - boot0 < 0.5; /* at power-on it waits for the blind to start lifting */
     if (bz_motion_tick(&U.dock_tuck)) bz_ui_keep_alive();
     float target = tuck ? 1 : 0;
     if (U.dock_tuck.target != target) {
@@ -525,7 +530,17 @@ static void island_refresh(void)
     hal_battery_t b;
     hal_net_t n;
     hal_net(&n);
-    if (hal_battery(&b) && b.ok) ui_text(U.island_tail, "%s  %d%%", n.up ? "wi-fi" : "no link", b.percent);
+    hal_tether_t t;
+    hal_tether(&t);
+    const char *via = t.up ? "usb" : n.up ? "wi-fi" : "no link";
+    if (hal_battery(&b) && b.ok) ui_text(U.island_tail, "%s  %d%%", via, b.percent);
+    /* the cable came or went: the robot's likeliest address changed with it */
+    static bool was_up;
+    if (t.up != was_up) {
+        was_up = t.up;
+        ui_apply_addresses();
+        if (t.up) ui_island_say(BZ_I_USB, "usb tether up");
+    }
 }
 
 /* ------------------------------------------------------------------ apps */
@@ -537,7 +552,7 @@ static lv_obj_t *app_inner(const ui_app_t *app)
     lv_obj_set_size(inner, W, H);
     lv_obj_add_flag(inner, LV_OBJ_FLAG_IGNORE_LAYOUT);
     app->build(inner);
-    if (U.nbuilt < 16) {
+    if (U.nbuilt < MAX_APPS) {
         U.built[U.nbuilt].app = app;
         U.built[U.nbuilt].inner = inner;
         U.nbuilt++;
@@ -828,6 +843,7 @@ static void windows_frame(double now, double dt)
     if (MC.window && !moving && !U.win_dragging) window_end();
     if (U.app->frame && U.k.target > 0) U.app->frame(now, dt);
     if (U.k.target == 0 && U.k.value <= 0.01f) {
+        window_end(); /* the spring may still be settling, but the window is gone */
         if (U.app->close) U.app->close();
         U.app = NULL;
         lv_obj_add_flag(U.pill, LV_OBJ_FLAG_HIDDEN);
@@ -848,6 +864,7 @@ void ui_settings_save(void)
     hal_kv_set("volume", buf);
     hal_kv_set("dark", S.dark ? "1" : "0");
     hal_kv_set("calm", S.calm ? "1" : "0");
+    hal_kv_set("perf", S.perf ? "1" : "0");
 }
 
 static void settings_load(void)
@@ -859,17 +876,83 @@ static void settings_load(void)
     if (hal_kv_get("volume", buf, sizeof buf)) S.volume = (float)atof(buf);
     if (hal_kv_get("dark", buf, sizeof buf)) S.dark = buf[0] == '1';
     if (hal_kv_get("calm", buf, sizeof buf)) S.calm = buf[0] == '1';
+    if (hal_kv_get("perf", buf, sizeof buf)) S.perf = buf[0] == '1';
+}
+
+void ui_set_tone(bool dark, bool calm)
+{
+    S.dark = dark;
+    S.calm = calm;
+    bz_ui_set_mode(dark, calm);
+    ui_settings_save();
 }
 
 void ui_apply_addresses(void)
 {
-    char addrs[8][64];
-    const char *ptrs[8];
+    char addrs[10][64];
+    const char *ptrs[10];
     const char *override = S.address[0] ? S.address : U.cfg.sim_address;
-    int n = cat_addresses(S.team, override, addrs, 8);
+    int n = cat_addresses(S.team, override, addrs, 10);
     if (U.cfg.sim_address && !S.address[0]) n = 1; /* the simulator talks to its fake robot only */
     for (int i = 0; i < n; i++) ptrs[i] = addrs[i];
+    /* tethered, the cable's addresses go first: over it, `.local` names don't resolve (lwIP asks the
+     * default interface, which is Wi-Fi), and it's the link the technician plugged in on purpose */
+    hal_tether_t t;
+    hal_tether(&t);
+    if (t.up && !S.address[0]) {
+        int k = 0;
+        for (int i = 0; i < n; i++)
+            if (!strncmp(ptrs[i], "172.26.", 7) || !strncmp(ptrs[i], "172.27.", 7) ||
+                (t.gw[0] && !strcmp(ptrs[i], t.gw))) {
+                const char *p = ptrs[i];
+                memmove(&ptrs[k + 1], &ptrs[k], sizeof(ptrs[0]) * (size_t)(i - k));
+                ptrs[k++] = p;
+            }
+    }
     nt4_set_addresses(U.cfg.nt, ptrs, n);
+    /* a USB-Ethernet dongle into the robot's radio or switch gets 10.TE.AM.60 if nothing answers DHCP */
+    if (S.team > 0 && S.team < 10000) {
+        char ip[16];
+        snprintf(ip, sizeof ip, "10.%d.%d.60", S.team / 100, S.team % 100);
+        hal_tether_fallback(ip, "255.255.255.0");
+    }
+}
+
+/* ------------------------------------------------------------------ the frame-time overlay */
+
+/* Frames per second and where a frame's time goes, measured on this machine (the tablet's own clock
+ * on the Tab5), four times a second so the overlay doesn't cost frames itself. The simulator adds the
+ * frame costed for the ESP32-P4 (bz_ui.c). */
+static lv_obj_t *g_perf;
+
+static void perf_frame(double now)
+{
+    static double last;
+    if (!S.perf) {
+        if (g_perf) lv_obj_add_flag(g_perf, LV_OBJ_FLAG_HIDDEN);
+        return;
+    }
+    if (!g_perf) {
+        g_perf = bz_label(bz_ui_glass(), "", BZ_F_CAPTION, BZ_C_INK);
+        lv_obj_set_style_bg_opa(g_perf, LV_OPA_70, 0);
+        lv_obj_add_style(g_perf, bz_style_fill(BZ_C_SURFACE1), 0);
+        lv_obj_set_style_pad_hor(g_perf, 10, 0);
+        lv_obj_set_style_pad_ver(g_perf, 6, 0);
+        lv_obj_set_style_radius(g_perf, 10, 0);
+        lv_obj_set_pos(g_perf, PAD, H - 30 - 40);
+    }
+    lv_obj_remove_flag(g_perf, LV_OBJ_FLAG_HIDDEN);
+    if (now - last < 0.25) return;
+    last = now;
+    bz_ui_perf_t p;
+    bz_ui_perf(&p);
+#ifdef ESP_PLATFORM
+    ui_text(g_perf, "%4.1f fps · %4.1f ms · lvgl %.1f · comp %.1f · present %.1f", p.fps, p.frame_ms, p.lvgl_ms,
+            p.compose_ms, p.present_ms);
+#else
+    ui_text(g_perf, "%4.1f fps · p4 %4.1f ms · lvgl %u px · glass %u px", p.fps, p.model_ms, (unsigned)p.lvgl_px,
+            (unsigned)p.comp.glass_px);
+#endif
 }
 
 /* ------------------------------------------------------------------ frame */
@@ -890,6 +973,7 @@ static void shell_frame(double now, double dt, void *user)
     caches_idle();
     dock_frame();
     windows_frame(now, dt);
+    perf_frame(now);
 
     if (now - U.last_refresh >= 0.1) {
         U.last_refresh = now;

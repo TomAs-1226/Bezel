@@ -1,5 +1,9 @@
-# Every screen, in order. From tab5/build (with tools/fake_robot.py running):
-#   ./sim/catalyst_tab_sim --script ../sim/tour.txt --out shots
+# Every screen, in order. From tab5/build, with the fakes running (tools/: fake_robot.py, fake_agent.py,
+# and fake_claude.py --port 8787 --link-port 8765):
+#   ./sim/catalyst_tab_sim --script ../sim/tour.txt --out shots \
+#       --claude http://127.0.0.1:8787 --link http://127.0.0.1:8765 test-token
+# Tools grid: rows at y 178 / 340 / 502, columns at x 125 330 535 740 945 1150; a window's back pill at 90,48.
+mode dark
 wait 2.5
 shot 01-pulse
 tap 532 644
@@ -14,105 +18,60 @@ shot 04-motion
 tap 856 644
 wait 1
 shot 05-tools
-tap 125 204
+# ---- the robot, through Catalyst
+tap 125 178
 wait 4.2
 shot 06-preflight
 tap 90 48
 wait 0.8
-tap 330 204
+tap 330 178
 wait 1
 shot 07-alerts
 tap 90 48
 wait 0.8
-tap 535 204
+tap 535 178
 wait 1
 shot 08-tune
 tap 90 48
 wait 0.8
-tap 740 204
+tap 740 178
 wait 1
 shot 09-auto
 tap 90 48
 wait 0.8
-tap 945 204
+tap 945 178
 wait 1
 shot 10-field
 tap 90 48
 wait 0.8
-tap 1150 204
+tap 1150 178
 wait 1
 shot 11-robot
 tap 90 48
 wait 0.8
-tap 125 418
-wait 2
-shot 12-listen
-tap 90 48
-wait 0.8
-tap 330 418
-wait 1.5
-shot 13-level
-tap 90 48
-wait 0.8
-tap 535 418
-wait 1.5
-shot 14-lens
-tap 90 48
-wait 0.8
-tap 740 418
-wait 2.5
-shot 15-cantap
-tap 90 48
-wait 0.8
-tap 945 418
-wait 1
-tap 640 134
-wait 1.5
-shot 16-logs
-tap 90 48
-wait 0.8
-tap 1150 418
-wait 1.2
-shot 17-settings
-tap 90 48
-wait 0.8
-tap 424 644
-wait 1
-drag 640 4 640 330 0.35
-wait 1
-shot 18-control-center
-tap 630 350
-wait 1
-tap 200 600
-wait 1.2
-shot 19-pulse-light
-# Systemcore and Catalyst depth (docs/systemcore.md). With python3 tools/fake_agent.py running too, the
-# systemcore and motors screens show catalyst-agent's detail; without it, the NetworkTables summary.
-mode dark
-tap 856 644
-wait 1
+# ---- the controller and its history (docs/systemcore.md)
 tap 125 340
 wait 4.5
-shot 20-systemcore
+shot 12-systemcore
 tap 90 48
 wait 0.8
 tap 330 340
 wait 3
-shot 21-motors
+shot 13-motors
 tap 90 48
 wait 0.8
 tap 535 340
 wait 1.2
 tap 971 48
 wait 1.2
-shot 22-states
+shot 14-states
 tap 90 48
 wait 0.8
 tap 740 340
 wait 1.2
 tap 960 424
 wait 1
-shot 23-controls
+shot 15-controls
 tap 90 48
 wait 0.8
 tap 945 340
@@ -121,8 +80,77 @@ tap 516 610
 wait 2
 tap 663 610
 wait 1.5
-shot 24-recorder
+shot 16-recorder
 tap 516 610
 wait 1
 tap 90 48
 wait 0.8
+tap 1150 340
+wait 2.5
+shot 17-cantap
+tap 90 48
+wait 0.8
+# ---- the tablet and the PC
+tap 125 502
+wait 1.2
+ask What's wrong with the robot?
+wait 3.5
+shot 18-assist
+ask Raise the shooter target
+wait 2.5
+shot 19-assist-card
+tap 650 487
+wait 3
+tap 90 48
+wait 0.8
+tap 330 502
+wait 4
+shot 20-link
+tap 90 48
+wait 0.8
+tap 535 502
+wait 1
+tap 640 134
+wait 1.5
+shot 21-logs
+tap 90 48
+wait 0.8
+tap 740 502
+wait 1.5
+shot 22-level
+tap 90 48
+wait 0.8
+tap 945 502
+wait 1.5
+shot 23-lens
+tap 90 48
+wait 0.8
+tap 1150 502
+wait 1.2
+shot 24-settings
+tap 90 48
+wait 0.8
+# ---- the control center, and light
+tap 424 644
+wait 1
+drag 640 4 640 330 0.35
+wait 1
+shot 25-control-center
+tap 200 600
+wait 1.2
+mode light
+wait 0.8
+shot 26-pulse-light
+tap 1204 644
+wait 1.2
+shot 27-assist-light
+tap 90 48
+wait 0.8
+tap 856 644
+wait 1
+tap 125 340
+wait 4
+shot 28-systemcore-light
+tap 90 48
+wait 0.8
+mode dark

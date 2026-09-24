@@ -1,6 +1,11 @@
 /* Catalyst Tab on a laptop: the firmware's UI, renderer and NT client with the simulated HAL.
  *
  *   catalyst_tab_sim [--robot HOST] [--team N] [--script FILE] [--out DIR] [--light] [--calm]
+ *                    [--claude URL] [--link URL TOKEN]
+ *
+ * --claude points the assistant straight at a Messages API (tools/fake_claude.py), --link pairs it with a
+ * Catalyst Link (the real one in link/, or fake_claude.py --link-port). Both are saved as the tablet would
+ * save them, in sim_sd/.
  *
  * Script commands, one per line (# comments):
  *   wait S                    let S seconds of real time pass, rendering at 60 Hz
@@ -37,6 +42,18 @@ int png_write_rgb565(const char *path, const uint16_t *px, int w, int h);
 
 static const char *g_out = "shots";
 static double g_next;
+
+/* The simulator's `who X Y`: every visible content-layer object covering a point, and where it is. */
+static void who(lv_obj_t *o, int x, int y, int depth)
+{
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return;
+    lv_area_t a;
+    lv_obj_get_coords(o, &a);
+    if (x >= a.x1 && x <= a.x2 && y >= a.y1 && y <= a.y2)
+        printf("%*s%s %d,%d-%d,%d opa %d\n", depth * 2, "", lv_obj_check_type(o, &lv_label_class) ? "label" : lv_obj_check_type(o, &lv_image_class) ? "image" : lv_obj_check_type(o, &lv_canvas_class) ? "canvas" : "obj",
+               (int)a.x1, (int)a.y1, (int)a.x2, (int)a.y2, lv_obj_get_style_opa(o, 0));
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) who(lv_obj_get_child(o, (int32_t)i), x, y, depth + 1);
+}
 
 static struct {
     bool on;
@@ -137,6 +154,7 @@ int main(int argc, char **argv)
     const char *robot = "127.0.0.1", *script = NULL;
     int team = 5805;
     bool light = false, calm = false, probe = false;
+    const char *claude = NULL, *link_url = NULL, *link_token = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--robot") && i + 1 < argc) robot = argv[++i];
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
@@ -145,11 +163,22 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--light")) light = true;
         else if (!strcmp(argv[i], "--calm")) calm = true;
         else if (!strcmp(argv[i], "--probe")) probe = true;
+        else if (!strcmp(argv[i], "--claude") && i + 1 < argc) claude = argv[++i];
+        else if (!strcmp(argv[i], "--link") && i + 2 < argc) { link_url = argv[++i]; link_token = argv[++i]; }
     }
     mkdir(g_out, 0755);
 
     lv_init();
     hal_init();
+    if (claude) {
+        hal_kv_set("ai_route", "direct");
+        hal_kv_set("ai_key", "sim-key");
+        hal_kv_set("ai_base", claude);
+    }
+    if (link_url) {
+        hal_kv_set("link_url", link_url);
+        hal_kv_set("link_token", link_token);
+    }
     hal_display_t d;
     hal_display(&d);
     bz_ui_config_t cfg = {
@@ -223,8 +252,8 @@ int main(int argc, char **argv)
                    sscanf(line, "%*s %lf %lf %lf %lf %lf", &a, &b, &c, &e, &s) == 5) {
             finger((int)a, (int)b, (int)c, (int)e, s, cmd[0] == 'f');
         } else if (!strcmp(cmd, "shot") && sscanf(line, "%*s %199s", arg) == 1) shot(arg);
-        else if (!strcmp(cmd, "mode") && sscanf(line, "%*s %199s", arg) == 1) bz_ui_set_mode(strcmp(arg, "light") != 0, bz_ui_calm());
-        else if (!strcmp(cmd, "calm") && sscanf(line, "%*s %199s", arg) == 1) bz_ui_set_mode(bz_ui_dark(), !strcmp(arg, "on"));
+        else if (!strcmp(cmd, "mode") && sscanf(line, "%*s %199s", arg) == 1) ui_set_tone(strcmp(arg, "light") != 0, bz_ui_calm());
+        else if (!strcmp(cmd, "calm") && sscanf(line, "%*s %199s", arg) == 1) ui_set_tone(bz_ui_dark(), !strcmp(arg, "on"));
         else if (!strcmp(cmd, "tilt") && sscanf(line, "%*s %lf %lf", &a, &b) == 2) sim_tilt((float)a, (float)b);
         else if (!strcmp(cmd, "trace") && sscanf(line, "%*s %63s", arg) == 1) {
             if (!strcmp(arg, "end")) trace_end();
@@ -242,7 +271,17 @@ int main(int argc, char **argv)
             const uint16_t *px = ui_debug_strip(&st, &w, &h);
             char path[512];
             snprintf(path, sizeof path, "%s/%s.png", g_out, arg);
-            if (!strcmp(arg, "base")) {
+            if (!strcmp(arg, "ink")) {
+                /* the glass layer: its colour where it has any, magenta where it's clear */
+                static uint16_t buf[HAL_W * HAL_H];
+                hal_display_t dd;
+                hal_display(&dd);
+                for (int i = 0; i < HAL_W * HAL_H; i++) {
+                    uint32_t p = dd.ink[i];
+                    buf[i] = (p >> 24) ? (uint16_t)((((p >> 19) & 31) << 11) | (((p >> 10) & 63) << 5) | ((p >> 3) & 31)) : 0xF81F;
+                }
+                png_write_rgb565(path, buf, HAL_W, HAL_H);
+            } else if (!strcmp(arg, "base")) {
                 void bz_comp_debug_base(bz_comp_t *c, uint16_t *dst);
                 static uint16_t buf[HAL_W * HAL_H];
                 bz_comp_debug_base(bz_ui_comp(), buf);
@@ -259,6 +298,10 @@ int main(int argc, char **argv)
             snprintf(buf, sizeof buf, "%s", q);
             buf[strcspn(buf, "\n")] = 0;
             if (!assist_send(buf)) fprintf(stderr, "script: the assistant is busy or not set up\n");
+        } else if (!strcmp(cmd, "who") && sscanf(line, "%*s %lf %lf", &a, &b) == 2) {
+            who(bz_ui_content(), (int)a, (int)b, 0);
+        } else if (!strcmp(cmd, "redraw")) {
+            lv_obj_invalidate(bz_ui_content());
         } else if (!strcmp(cmd, "stats")) {
             bz_comp_stats_t st;
             bz_comp_stats(bz_ui_comp(), &st);

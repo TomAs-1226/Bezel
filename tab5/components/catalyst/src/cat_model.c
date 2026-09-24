@@ -677,7 +677,9 @@ int cat_addresses(int team, const char *override_addr, char out[][64], int max)
     int n = 0;
     if (override_addr && override_addr[0] && n < max) snprintf(out[n++], 64, "%s", override_addr);
     if (n < max) snprintf(out[n++], 64, "robot.local");
+    /* Systemcore's USB-C gadget: its RNDIS side answers at 172.26.0.1, its ECM side at 172.27.0.1 */
     if (n < max) snprintf(out[n++], 64, "172.26.0.1");
+    if (n < max) snprintf(out[n++], 64, "172.27.0.1");
     if (n < max) snprintf(out[n++], 64, "172.30.0.1");
     if (team > 0 && team < 10000) {
         if (n < max) snprintf(out[n++], 64, "10.%d.%d.2", team / 100, team % 100);

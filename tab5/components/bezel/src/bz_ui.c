@@ -69,7 +69,7 @@ static void flush_content(lv_display_t *d, const lv_area_t *a, uint8_t *px)
     U.lvgl_px += (uint32_t)lv_area_get_size(a);
     if (!U.offscreen) {
 #ifndef ESP_PLATFORM
-        if (getenv("SIM_DEBUG_FLUSH") && lv_area_get_size(a) > 200000)
+        if (getenv("SIM_DEBUG_FLUSH"))
             fprintf(stderr, "flush content %d,%d-%d,%d\n", (int)a->x1, (int)a->y1, (int)a->x2, (int)a->y2);
 #endif
         bz_area_t b = { (int16_t)a->x1, (int16_t)a->y1, (int16_t)a->x2, (int16_t)a->y2 };
@@ -480,6 +480,11 @@ void bz_ui_freeze(bool frozen)
     U.frozen = f;
     lv_display_enable_invalidation(U.disp_content, !f);
     if (!f) lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
+#ifndef ESP_PLATFORM
+    if (getenv("SIM_DEBUG_FLUSH"))
+        fprintf(stderr, "freeze %d holds %d enabled %d at %.3f\n", frozen, holds,
+                lv_display_is_invalidation_enabled(U.disp_content), U.now);
+#endif
 }
 
 bool bz_ui_frozen(void) { return U.frozen; }

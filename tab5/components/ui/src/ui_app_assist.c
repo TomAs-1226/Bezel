@@ -432,8 +432,17 @@ static void card_frame(double now)
         int left = (int)ceil(AS.card_deadline - hal_seconds());
         ui_text(AS.card_time, "declines itself in %d s", left < 0 ? 0 : left);
     }
-    if (!AS.card_shown && bz_glass_strength(AS.card_glass) < 0.02f) lv_obj_add_flag(AS.card, LV_OBJ_FLAG_HIDDEN);
     (void)now;
+}
+
+/* Runs every frame whatever is open (from the orb's hook): the card and the lens live on the glass
+ * layer, outside the app's window, so they must leave with it. */
+static void assist_glass_housekeeping(void)
+{
+    if (!AS.card) return;
+    if (!ui_app_is_open(&APP_ASSIST)) card_show(false);
+    if (!AS.card_shown && bz_glass_strength(AS.card_glass) < 0.02f && !lv_obj_has_flag(AS.card, LV_OBJ_FLAG_HIDDEN))
+        lv_obj_add_flag(AS.card, LV_OBJ_FLAG_HIDDEN);
 }
 
 /* ---- the prompt bar ---- */
@@ -733,6 +742,7 @@ static void orb_tap(lv_obj_t *o, void *u)
 static void orb_frame(double now, double dt, void *u)
 {
     (void)dt; (void)u;
+    assist_glass_housekeeping();
     as_phase_t ph = assist_phase();
     bool busy = ph != AS_PHASE_IDLE && ph != AS_PHASE_ERROR;
     bool here = ui_app_is_open(&APP_ASSIST);
@@ -903,7 +913,7 @@ static void link_open(void)
     bool direct = !strcmp(v, "direct");
     ui_chip_set(LK.route_chips[0], !direct);
     ui_chip_set(LK.route_chips[1], direct);
-    LK.sig = 0;
+    LK.sig = 0xFFFFFFFFu; /* no signature matches: the lists draw, empty ones included */
 }
 
 static void link_build(lv_obj_t *b)

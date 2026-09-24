@@ -23,6 +23,7 @@ typedef struct {
     char address[64];      /* override: tried first */
     float brightness, volume;
     bool dark, calm;
+    bool perf;             /* the frame-time overlay */
     char wifi_ssid[33];
 } ui_settings_t;
 extern ui_settings_t S;

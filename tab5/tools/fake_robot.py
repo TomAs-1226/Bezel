@@ -48,6 +48,48 @@ def modules(pairs):
     return b"".join(struct.pack("<2d", s, a) for s, a in pairs)
 
 
+# What the systemcore, motors, states and controls screens read (docs/systemcore.md): the controls
+# manifest, motor history rows, state machines cycling through their states, per-bus CAN health with one
+# bus's TEC climbing, and the rest of Systemcore's summary.
+CONTROLS = [
+    {"control": "Left stick", "action": "Drive, field-centric", "controller": "Driver", "combo": False},
+    {"control": "Right stick", "action": "Turn", "controller": "Driver", "combo": False},
+    {"control": "L1", "action": "Slow mode (35%) while held", "controller": "Driver", "combo": False},
+    {"control": "R1", "action": "Turret mode while held: drive anywhere, keep facing the tag", "controller": "Driver", "combo": False},
+    {"control": "Circle", "action": "X-brake while held", "controller": "Driver", "combo": False},
+    {"control": "Triangle", "action": "Face the field centre while held", "controller": "Driver", "combo": False},
+    {"control": "Square", "action": "Snap to the nearest 90° while held", "controller": "Driver", "combo": False},
+    {"control": "D-pad up", "action": "Line up on the tag; press again or push a stick to stop", "controller": "Driver", "combo": False},
+    {"control": "D-pad left", "action": "Aim left of the tag", "controller": "Driver", "combo": False},
+    {"control": "D-pad right", "action": "Aim right of the tag", "controller": "Driver", "combo": False},
+    {"control": "Cross", "action": "Co-pilot on / off", "controller": "Driver", "combo": False},
+    {"control": "Options", "action": "Forward is where the robot faces now", "controller": "Driver", "combo": False},
+    {"control": "Create", "action": "Start / stop recording a ghost", "controller": "Driver", "combo": False},
+    {"control": "A", "action": "Intake while held", "controller": "Operator", "combo": False},
+    {"control": "B", "action": "Spit a note", "controller": "Operator", "combo": False},
+    {"control": "Right trigger", "action": "Shoot when at speed", "controller": "Operator", "combo": False},
+    {"control": "Left bumper + Y", "action": "Climb (end game only)", "controller": "Operator", "combo": True},
+    {"control": "D-pad down", "action": "Stow everything", "controller": "Operator", "combo": False},
+]
+
+SEQ = {
+    "Arm": [("STOW", 6), ("INTAKE", 3), ("STOW", 4), ("AMP", 5), ("STOW", 7), ("SPEAKER", 4)],
+    "Shooter": [("IDLE", 5), ("SPINUP", 2), ("AT_SPEED", 4), ("FIRE", 1), ("IDLE", 8)],
+    "Intake": [("IDLE", 4), ("INTAKING", 3), ("HOLDING", 6), ("FEEDING", 1), ("IDLE", 5)],
+    "Superstructure": [("STOW", 5), ("INTAKE", 4), ("HANDOFF", 2), ("SCORE_HIGH", 5), ("STOW", 6)],
+}
+
+
+def at(seq, t):
+    total = sum(d for _, d in seq)
+    x = t % total
+    for s, d in seq:
+        if x < d:
+            return s
+        x -= d
+    return seq[-1][0]
+
+
 class Robot:
     def __init__(self, scenario):
         self.scenario = scenario
@@ -176,6 +218,19 @@ class Robot:
         p("/Catalyst/Auto/StartCheck/HeadingErrorDeg", "double", 4.0)
         p("/PathPlanner/activePath", "struct:Pose2d[]",
           b"".join(pose2d(1.4 + 0.25 * i, 5.5 - 0.12 * i * i / 3, -0.2 * i) for i in range(12)))
+        p = self.put
+        p("/Catalyst/Controls/.manifest", "json", json.dumps(CONTROLS))
+        self.mh_rows = []
+        s = "000E0B500C776800000A00011A00"
+        for k, (name, cid, bus, ph, peak, hot, ids) in enumerate([
+                ("FL drive", 1, "can_s0", 14.2, 58, 0, 1), ("FR drive", 3, "can_s0", 14.0, 56, 0, 1),
+                ("Shooter L", 25, "can_s2", 9.8, 88.4, 2710, 2), ("Intake", 28, "can_s2", 21.5, 64, 0, 3)]):
+            self.mh_rows.append("|".join(map(str, [s + "%04X" % k, "Talon FX", "motor", bus, cid, name, "26.1.1.1",
+                                                   ph * 3600, ph * 1000, ph * 600, 400000, 100, peak, hot, 1e6, 60, 0,
+                                                   0, ids, 0])))
+        p("/Catalyst/MotorHistory/Rows", "string[]", self.mh_rows)
+        p("/Catalyst/MotorHistory/Summary", "string", "4 motors, 59.5 h powered in total, hottest ever 88 C (Shooter L)")
+        p("/Catalyst/Superstructure/Phase", "string", "IDLE")
         self.tick()
 
     def tick(self):
@@ -251,6 +306,30 @@ class Robot:
         p("/Catalyst/Vision/Health/Rows", "string[]",
           [f"limelight-ground|LOW_FPS|2 tags|{18 + int(3 * math.sin(t))}|52.0|true"])
         p("/Catalyst/Match/TimeLeft", "double", round(max(0.0, 135 - (t % 150)), 1) if self.enabled else -1.0)
+
+        for mech in ("Arm", "Shooter", "Intake", "Superstructure"):
+            p(f"/Catalyst/{mech}/State", "string", at(SEQ[mech], t + 3))
+        p("/Catalyst/Superstructure/Phase", "string", "MOVING" if int(t) % 5 < 1 else "HOLDING")
+        p("/Catalyst/Superstructure/Counters/Transitions", "int", int(t / 4.4))
+        p("/Catalyst/Superstructure/Counters/Rejections", "int", int(t / 30))
+        p("/Catalyst/Autonomy/Tasks/Running", "string", ["score", "collect", "collect, defend", "-"][int(t / 7) % 4])
+        for i, b in enumerate(["can_s0", "can_s2"]):
+            H = f"/Catalyst/CAN/Health/{b}/"
+            p(H + "OK", "boolean", True)
+            p(H + "Utilization", "double", round(0.46 + 0.05 * math.sin(t), 3) if i == 0 else round(0.31 + 0.03 * math.sin(t * 1.3), 3))
+            p(H + "BusOffCount", "int", 0 if i == 0 else 1)
+            p(H + "TxFullCount", "int", 0)
+            p(H + "REC", "int", 0 if i == 0 else 3)
+            p(H + "TEC", "int", 0 if i == 0 else min(255, int(40 + 3 * t)))
+        p("/Catalyst/Systemcore/RamUsedBytes", "double", 0.41 * 4246257664)
+        p("/Catalyst/Systemcore/RamTotalBytes", "double", 4246257664.0)
+        p("/Catalyst/Systemcore/StorageUsedBytes", "double", 0.62 * 7326429184)
+        p("/Catalyst/Systemcore/StorageTotalBytes", "double", 7326429184.0)
+        p("/Catalyst/Systemcore/EmmcLifeUsed", "double", 0.15)
+        p("/Catalyst/Systemcore/CanDownCount", "double", 1.0)
+        p("/Catalyst/Systemcore/NetworkInterfaces", "string[]", ["end0: 10.58.5.2", "usb0: 172.26.0.1", "wlan0: 172.30.0.1"])
+        p("/Catalyst/Systemcore/Rail3v3Amps", "double", 0.12)
+        p("/Catalyst/Systemcore/BrownoutVolts", "double", 6.75)
 
 
 class Session:
