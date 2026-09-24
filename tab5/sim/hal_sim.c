@@ -246,6 +246,22 @@ void hal_rtc_set(const struct tm *t) { (void)t; }
 const char *hal_sd_root(void) { return "sim_sd"; }
 bool hal_sd_space(uint64_t *total, uint64_t *free_bytes) { *total = 32ull << 30; *free_bytes = 30ull << 30; return true; }
 
+/* no JPEG decoder on the host: the photos app shows the error path */
+bool hal_jpeg_load(const char *path, int max_w, int max_h, hal_picture_t *out, char *err, size_t errn)
+{
+    (void)path; (void)max_w; (void)max_h;
+    memset(out, 0, sizeof *out);
+    if (err && errn) snprintf(err, errn, "no JPEG decoder in the simulator");
+    return false;
+}
+
+void hal_picture_free(hal_picture_t *p)
+{
+    if (!p) return;
+    free(p->px);
+    p->px = NULL;
+}
+
 bool hal_kv_get(const char *key, char *buf, size_t n)
 {
     char path[160];
