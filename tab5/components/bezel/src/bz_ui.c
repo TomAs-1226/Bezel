@@ -162,8 +162,10 @@ void bz_ui_init(const bz_ui_config_t *cfg)
     lv_tick_set_cb(tick_ms);
     U.comp = bz_comp_create(cfg->w, cfg->h, cfg->content, cfg->ink, cfg->out);
     if (cfg->ops) bz_comp_set_ops(U.comp, cfg->ops);
-    uint16_t *out2 = aligned_alloc(64, (size_t)cfg->w * cfg->h * 2);
-    if (out2) bz_comp_set_out2(U.comp, out2);
+    if (cfg->async_present) {
+        uint16_t *out2 = aligned_alloc(64, (size_t)cfg->w * cfg->h * 2);
+        if (out2) bz_comp_set_out2(U.comp, out2);
+    }
 
     U.disp_content = lv_display_create(cfg->w, cfg->h);
     lv_display_set_color_format(U.disp_content, LV_COLOR_FORMAT_RGB565);

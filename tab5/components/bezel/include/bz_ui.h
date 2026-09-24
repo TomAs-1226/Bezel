@@ -25,6 +25,8 @@ typedef struct {
     bool (*read_touch)(int *x, int *y, void *user);
     void *user;
     const bz_gfx_ops_t *ops; /* accelerated copy/blend, or NULL for the CPU versions */
+    bool async_present;      /* present returns before the panel has the frame: composite alternately
+                                into a second buffer (allocated here) so the last one stays readable */
 } bz_ui_config_t;
 
 void bz_ui_init(const bz_ui_config_t *cfg);

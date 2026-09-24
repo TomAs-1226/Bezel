@@ -24,9 +24,18 @@ typedef struct {
     uint32_t *ink;       /* HAL_W*HAL_H ARGB8888 */
     uint16_t *out;       /* HAL_W*HAL_H RGB565 */
     const bz_gfx_ops_t *ops;
+    bool async_present;  /* hal_present returns before the panel has read the frame: compose alternately
+                            into two buffers (bz_ui_config_t.async_present) */
 } hal_display_t;
 
+/* Start-up comes in three steps, so the boot animation is on screen for all but the first:
+ *   hal_init()      power, I2C, the panel and the frame buffers: enough to show something;
+ *   hal_start()     everything else — speaker, microSD, sensors, Wi-Fi — while the animation plays;
+ *   hal_settle()    once the UI is up: the USB-A port's 5 V and the tether, last, so the tablet never
+ *                   switches every rail on at the same moment. */
 bool hal_init(void);
+void hal_start(void);
+void hal_settle(void);
 void hal_display(hal_display_t *out);
 void hal_present(const bz_present_t *areas, int n, void *user);
 bool hal_touch(int *x, int *y, void *user);
@@ -189,6 +198,22 @@ typedef struct {
 } hal_sys_t;
 void hal_sys(hal_sys_t *out);
 void hal_power_off(void);
+
+/* ---- the start-up record ----
+ * Where each start got to survives a reset, so a start that dies can be told apart from a clean one and
+ * the next one can say what happened (on the boot screen, in the log, in <sd>/catalyst-boot.txt) and
+ * come up in safe mode. */
+typedef struct {
+    bool failed;          /* the previous start never settled */
+    int fails;            /* consecutive starts that didn't */
+    char reason[24];      /* how it ended: "crash", "watchdog", "brownout", "restart" */
+    char stage[24];       /* the last stage it reached */
+    char detail[72];      /* from the core dump, when there is one: task and address */
+} hal_boot_t;
+void hal_boot_stage(const char *stage);   /* a breadcrumb */
+void hal_boot_prev(hal_boot_t *out);      /* how the previous start went */
+void hal_boot_ok(void);                   /* this start has run long enough to count as good */
+void hal_boot_watch(void (*fn)(const char *stage)); /* called with each stage as it's reached */
 
 #ifdef __cplusplus
 }

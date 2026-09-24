@@ -19,6 +19,8 @@
 /* Two software draw units, one per HP core: LVGL's renderer uses both. */
 #define LV_USE_OS LV_OS_FREERTOS
 #define LV_DRAW_SW_DRAW_UNIT_CNT 2
+/* shadows, big glyphs and transforms go deep: LVGL's 8 KB default is too tight for its draw threads */
+#define LV_DRAW_THREAD_STACK_SIZE (16 * 1024)
 #define LV_ATTRIBUTE_FAST_MEM IRAM_ATTR
 #else
 #define LV_USE_OS LV_OS_NONE

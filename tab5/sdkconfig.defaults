@@ -13,11 +13,11 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
-# 32 MB PSRAM in the package: hex mode at 200 MHz (experimental in IDF), code executes from it too
-CONFIG_IDF_EXPERIMENTAL_FEATURES=y
+# 32 MB PSRAM in the package: hex mode at 80 MHz. 200 MHz is faster but ESP-IDF 5.5 marks it
+# experimental; a tablet that boots every time matters more than frame rate. Code executes from it too.
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_HEX=y
-CONFIG_SPIRAM_SPEED_200M=y
+CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
@@ -90,3 +90,9 @@ CONFIG_CAMERA_SC202CS_MIPI_DEFAULT_FMT_RAW8_1280X720_30FPS=y
 
 CONFIG_FATFS_LFN_HEAP=y
 CONFIG_FATFS_VFS_FSTAT_BLKSIZE=4096
+
+# A crash leaves a core dump in flash; the next start reads its summary (task, address) onto the boot
+# screen and into <sd>/catalyst-boot.txt, then erases it
+CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
+CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
+CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y

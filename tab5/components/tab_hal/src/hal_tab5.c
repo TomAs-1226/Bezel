@@ -37,6 +37,7 @@
 #include "driver/twai.h"
 #include "esp_cache.h"
 #include "esp_codec_dev.h"
+#include "esp_core_dump.h"
 #include "esp_h264_alloc.h"
 #include "esp_h264_enc_single_hw.h"
 #include "esp_heap_caps.h"
@@ -46,6 +47,7 @@
 #include "esp_lcd_touch.h"
 #include "esp_log.h"
 #include "esp_memory_utils.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "esp_video_device.h"
 #include "esp_video_init.h"
@@ -76,27 +78,23 @@ static const char *TAG = "hal";
 #define CAN_TX_GPIO 53
 #define CAN_RX_GPIO 54
 
-/* expander pins (docs/tab5-hardware.md) */
+/* expander pins (docs/tab5-hardware.md); E2's are further down, with the code that drives it */
 #define E1_ANTENNA IO_EXPANDER_PIN_NUM_0
 #define E1_SPK_EN IO_EXPANDER_PIN_NUM_1
 #define E1_EXT5V IO_EXPANDER_PIN_NUM_2
-#define E2_WLAN_PWR IO_EXPANDER_PIN_NUM_0
-#define E2_USB5V IO_EXPANDER_PIN_NUM_3
-#define E2_PWROFF IO_EXPANDER_PIN_NUM_4
-#define E2_NCHG_QC IO_EXPANDER_PIN_NUM_5
-#define E2_CHG_STAT IO_EXPANDER_PIN_NUM_6
-#define E2_CHG_EN IO_EXPANDER_PIN_NUM_7
 
 static struct {
-    esp_io_expander_handle_t e1, e2;
+    esp_io_expander_handle_t e1;
     i2c_master_bus_handle_t i2c;
-    i2c_master_dev_handle_t ina, rtc;
+    i2c_master_dev_handle_t ina, rtc, e2;
     bsp_lcd_handles_t lcd;
     void *fb[2];
     int back;
     SemaphoreHandle_t vsync;
     uint32_t lane_mbps;   /* MIPI lane rate: 1000, or 965 on the ST7121 */
-    double refresh_hz;    /* from the DPI timing actually programmed */
+    volatile uint32_t vsyncs; /* frames the panel has scanned out, for the measured refresh rate */
+    double display_t0;
+    bool lit;                 /* the backlight is on: only once a real frame is on the glass */
     /* one SRM client per task that uses it (a client queues one blocking transaction at a time): the
      * UI thread's copies and blocking rotations, and the camera task's scaling and clip conversion */
     ppa_client_handle_t ppa_srm, ppa_cam, ppa_blend;
@@ -121,33 +119,80 @@ static void *psram_aligned(size_t n)
 
 /* ------------------------------------------------------------------ power and expanders */
 
+/* Expander 0x44 (E2) holds the ESP32-C6's power, the USB-A port's 5 V and the charger. It is driven here
+ * register by register and never through the esp_io_expander driver, whose start-up resets the chip:
+ * that drops every output for a moment, which power-cycles the C6 under a running esp-hosted link (and
+ * esp-hosted answers a lost link with esp_restart(), every start) and stops charging. Nothing else may
+ * create a handle for it — the BSP only would for BSP_FEATURE_WIFI/USB, which this firmware never calls.
+ * PI4IOE5V6408 registers: 0x03 direction (1 out), 0x05 output, 0x07 output high-Z (1 floating),
+ * 0x0B pull-up/down enable. */
+#define E2_ADDR 0x44
+#define PI_DIR 0x03
+#define PI_OUT 0x05
+#define PI_HIZ 0x07
+
+static uint8_t e2_read(uint8_t reg)
+{
+    uint8_t v = 0;
+    if (T.e2) i2c_master_transmit_receive(T.e2, &reg, 1, &v, 1, 50);
+    return v;
+}
+
+static void e2_write(uint8_t reg, uint8_t v)
+{
+    uint8_t b[2] = { reg, v };
+    if (T.e2) i2c_master_transmit(T.e2, b, 2, 50);
+}
+
+/* One E2 pin as a driven output at `level`, the others left exactly as they are: level first, then
+ * direction, then out of high-Z, so the pin never passes through the opposite level. */
+static void e2_set(int pin, bool level)
+{
+    uint8_t bit = (uint8_t)(1u << pin);
+    uint8_t out = e2_read(PI_OUT);
+    e2_write(PI_OUT, level ? (out | bit) : (out & ~bit));
+    e2_write(PI_DIR, e2_read(PI_DIR) | bit);
+    e2_write(PI_HIZ, e2_read(PI_HIZ) & ~bit);
+}
+
+#define E2_WLAN_PWR 0
+#define E2_USB5V 3
+#define E2_PWROFF 4
+#define E2_NCHG_QC 5
+#define E2_CHG_STAT 6
+#define E2_CHG_EN 7
+
 static void power_init(void)
 {
-    /* Create both expander handles first: the driver's init resets its outputs, so every level set
-     * below must come after, and nothing may create them again later (the upstream Wi-Fi feature
-     * enable is reported to re-initialise 0x44 and cut charging). */
+    i2c_device_config_t c = { .dev_addr_length = I2C_ADDR_BIT_LEN_7, .device_address = E2_ADDR, .scl_speed_hz = 400000 };
+    if (i2c_master_bus_add_device(T.i2c, &c, &T.e2) != ESP_OK) T.e2 = NULL;
+    /* the power-off line low first (it's the one pin whose wrong level turns the tablet off), then the
+     * C6 on and kept on, then charging as M5Stack's own firmware does. The USB-A port's 5 V waits for
+     * hal_settle(), and the Grove port's for the CAN tap. */
+    e2_set(E2_PWROFF, 0);
+    e2_set(E2_WLAN_PWR, 1);
+    e2_set(E2_NCHG_QC, 0);
+    e2_set(E2_CHG_EN, 1);
+    /* E1 (0x43: antenna, speaker, Grove 5 V, the LCD/touch/camera resets) through the BSP, which the
+     * display and touch bring-up use too; its reset at creation is harmless here, before the panel */
     T.e1 = bsp_io_expander_init();
-    T.e2 = bsp_io_expander1_init();
-    esp_io_expander_set_dir(T.e1, E1_ANTENNA | E1_SPK_EN | E1_EXT5V, IO_EXPANDER_OUTPUT);
+    esp_io_expander_set_dir(T.e1, E1_ANTENNA | E1_EXT5V, IO_EXPANDER_OUTPUT);
     esp_io_expander_set_level(T.e1, E1_ANTENNA, 0); /* the internal 3D antenna */
-    esp_io_expander_set_level(T.e1, E1_EXT5V, 1);   /* 5 V to Grove: the CAN transceiver */
-    esp_io_expander_set_dir(T.e2, E2_WLAN_PWR | E2_USB5V | E2_PWROFF | E2_NCHG_QC | E2_CHG_EN, IO_EXPANDER_OUTPUT);
-    esp_io_expander_set_dir(T.e2, E2_CHG_STAT, IO_EXPANDER_INPUT);
-    esp_io_expander_set_level(T.e2, E2_PWROFF, 0);
-    esp_io_expander_set_level(T.e2, E2_WLAN_PWR, 1);
-    esp_io_expander_set_level(T.e2, E2_USB5V, 1);
-    /* the Tab5 charges only while firmware asks it to (M5's demo: quick charge, then charge enable) */
-    esp_io_expander_set_level(T.e2, E2_NCHG_QC, 0);
-    esp_io_expander_set_level(T.e2, E2_CHG_EN, 1);
+    esp_io_expander_set_level(T.e1, E1_EXT5V, 0);   /* Grove 5 V off until the CAN tap wants it */
+}
+
+static void ext5v(bool on)
+{
+    if (T.e1) esp_io_expander_set_level(T.e1, E1_EXT5V, on);
 }
 
 void hal_power_off(void)
 {
     /* the power MCU turns the tablet off on three pulses */
     for (int i = 0; i < 3; i++) {
-        esp_io_expander_set_level(T.e2, E2_PWROFF, 1);
+        e2_set(E2_PWROFF, 1);
         vTaskDelay(pdMS_TO_TICKS(20));
-        esp_io_expander_set_level(T.e2, E2_PWROFF, 0);
+        e2_set(E2_PWROFF, 0);
         vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
@@ -291,15 +336,19 @@ bool hal_imu(hal_imu_t *o)
 static bool IRAM_ATTR on_refresh_done(esp_lcd_panel_handle_t panel, esp_lcd_dpi_panel_event_data_t *e, void *user)
 {
     BaseType_t woken = pdFALSE;
+    T.vsyncs++;
     xSemaphoreGiveFromISR(T.vsync, &woken);
     return woken == pdTRUE;
 }
 
-/* Tells the ST7121 panel apart: its lanes run at 965 Mbps, the others at the BSP's 1000. */
+/* Tells the panels apart exactly as the BSP's own bsp_get_board_version() does — the same 500 ms for the
+ * touch controller to come out of reset, the same register — because the BSP picks the panel's init
+ * sequence and timing from its answer, and the lane rate has to agree: 965 Mbps on the ST7121, the BSP's
+ * 1000 on the others. The panel runs at the BSP's own timing: nothing here changes it. */
 static uint32_t lane_rate(void)
 {
     bsp_feature_enable(BSP_FEATURE_TOUCH, true);
-    vTaskDelay(pdMS_TO_TICKS(50));
+    vTaskDelay(pdMS_TO_TICKS(500));
     T.lane_mbps = BSP_LCD_MIPI_DSI_LANE_BITRATE_MBPS;
     if (i2c_master_probe(T.i2c, 0x55, 100) != ESP_OK) {
         snprintf(T.panel, sizeof T.panel, "ILI9881C");
@@ -314,77 +363,10 @@ static uint32_t lane_rate(void)
     return T.lane_mbps;
 }
 
-/* ---- the panel at 60 Hz ----
- *
- * The BSP fixes each panel's DPI timing inside bsp_display_new_with_handles(), and the pixel clock it asks
- * for isn't the one it gets: the DPI clock is PLL_F240M over an integer divider that esp_lcd rounds down,
- * so the BSP's "60 MHz" is 60 and its "70 MHz" is 80. As shipped that makes the ILI9881C
- * 60e6 / (940 × 1324) = 48.2 Hz, the ST7123 80e6 / (802 × 1510) = 66.1 Hz and the ST7121
- * 80e6 / (802 × 1524) = 65.5 Hz.
- *
- * Catalyst Tab runs all three at ~60.5 Hz: an 80 MHz pixel clock (240 / 3, exact), the BSP's vertical
- * timing untouched, and the horizontal back porch widened until the frame is 60.5 Hz or just over. A
- * longer line than the BSP's is gentler on the panels' source drivers, never harsher, and 60.5 Hz keeps
- * the scan-out's PSRAM reads (~112 MB/s) under the ST712x's shipped 66 Hz. RGB565 at 80 MHz is
- * 1280 Mbit/s over two lanes: 64 % of 2 × 1000 Mbit/s, 66 % of the ST7121's 2 × 965.
- *
- * The timing is changed on its way into esp_lcd: tab_hal links with --wrap=esp_lcd_new_panel_dpi (its
- * CMakeLists.txt), so the BSP's panel drivers call __wrap_esp_lcd_new_panel_dpi() below, which adjusts a
- * copy of the config and hands it to the real function; the BSP's init sequences (private to it) stay the
- * BSP's. UNVERIFIED on all three panels: that each takes the wider line and runs at the logged rate. A
- * panel that doesn't shows a rolling or blank picture; build with CATALYST_BSP_PANEL_TIMING to go back. */
-#define PANEL_TARGET_HZ 60.5
-#define DPI_SRC_MHZ 240 /* PLL_F240M, esp_lcd's default DPI clock source on the P4 */
-#define DPI_MHZ 80
-
-esp_err_t __real_esp_lcd_new_panel_dpi(esp_lcd_dsi_bus_handle_t bus, const esp_lcd_dpi_panel_config_t *cfg,
-                                       esp_lcd_panel_handle_t *ret);
-esp_err_t __wrap_esp_lcd_new_panel_dpi(esp_lcd_dsi_bus_handle_t bus, const esp_lcd_dpi_panel_config_t *cfg,
-                                       esp_lcd_panel_handle_t *ret);
-
-static uint32_t dpi_htotal(const esp_lcd_video_timing_t *t)
-{
-    return t->h_size + t->hsync_back_porch + t->hsync_pulse_width + t->hsync_front_porch;
-}
-
-static uint32_t dpi_vtotal(const esp_lcd_video_timing_t *t)
-{
-    return t->v_size + t->vsync_back_porch + t->vsync_pulse_width + t->vsync_front_porch;
-}
-
-esp_err_t __wrap_esp_lcd_new_panel_dpi(esp_lcd_dsi_bus_handle_t bus, const esp_lcd_dpi_panel_config_t *cfg,
-                                       esp_lcd_panel_handle_t *ret)
-{
-    esp_lcd_dpi_panel_config_t c = *cfg;
-    esp_lcd_video_timing_t *t = &c.video_timing;
-    uint32_t div = DPI_SRC_MHZ / (cfg->dpi_clock_freq_mhz ? cfg->dpi_clock_freq_mhz : DPI_SRC_MHZ);
-    double bsp_mhz = (double)DPI_SRC_MHZ / (div ? div : 1);
-    double bsp_hz = bsp_mhz * 1e6 / ((double)dpi_htotal(t) * dpi_vtotal(t));
-    T.refresh_hz = bsp_hz;
-#ifndef CATALYST_BSP_PANEL_TIMING
-    uint32_t vtotal = dpi_vtotal(t);
-    uint32_t htotal = (uint32_t)(DPI_MHZ * 1e6 / (PANEL_TARGET_HZ * vtotal)); /* rounded down: at or over 60.5 */
-    uint32_t hfixed = t->h_size + t->hsync_pulse_width + t->hsync_front_porch;
-    /* RGB565 over the two lanes, with a fifth kept for blanking packets and protocol overhead */
-    bool lanes_ok = DPI_MHZ * 16 <= T.lane_mbps * 2 * 4 / 5;
-    bool src_ok = cfg->dpi_clk_src == 0 || cfg->dpi_clk_src == MIPI_DSI_DPI_CLK_SRC_PLL_F240M;
-    if (lanes_ok && src_ok && htotal >= hfixed + t->hsync_back_porch) {
-        c.dpi_clk_src = MIPI_DSI_DPI_CLK_SRC_PLL_F240M;
-        c.dpi_clock_freq_mhz = DPI_MHZ;
-        t->hsync_back_porch = htotal - hfixed;
-        T.refresh_hz = DPI_MHZ * 1e6 / ((double)dpi_htotal(t) * vtotal);
-    }
-#endif
-    ESP_LOGI(TAG, "panel %s: BSP timing %.0f MHz (asked %u), %u x %u -> %.1f Hz; running %u MHz, %u x %u -> %.2f Hz",
-             T.panel, bsp_mhz, (unsigned)cfg->dpi_clock_freq_mhz, (unsigned)dpi_htotal(&cfg->video_timing),
-             (unsigned)dpi_vtotal(&cfg->video_timing), bsp_hz, (unsigned)(DPI_SRC_MHZ / (DPI_SRC_MHZ / c.dpi_clock_freq_mhz)),
-             (unsigned)dpi_htotal(t), (unsigned)dpi_vtotal(t), T.refresh_hz);
-    return __real_esp_lcd_new_panel_dpi(bus, &c, ret);
-}
-
 /* ---- presenting: the finished landscape areas, turned into the portrait back buffer ----
  *
- * hal_present() is asynchronous, so the UI core composes frame N+1 while the PPA turns frame N:
+ * Built with CATALYST_ASYNC_PRESENT, hal_present() is asynchronous, so the UI core composes frame N+1
+ * while the PPA turns frame N (the default is the synchronous version further down):
  *
  *   hal_present(N+1)  waits for frame N's hand-over (at most one frame in flight), copies the area list,
  *                     queues the rotations — frame N's areas first (the back buffer is one frame old, and
@@ -412,15 +394,17 @@ static struct {
     SemaphoreHandle_t done;     /* counts finished rotations (given from the PPA's interrupt) */
     SemaphoreHandle_t handover; /* free: the previous frame is on the glass */
     QueueHandle_t jobs;
-    uint32_t overflow;
+    uint32_t overflow, late;
 } P;
 
+#ifdef CATALYST_ASYNC_PRESENT
 static bool IRAM_ATTR on_rotated(ppa_client_handle_t client, ppa_event_data_t *e, void *user)
 {
     BaseType_t woken = pdFALSE;
     xSemaphoreGiveFromISR(P.done, &woken);
     return woken == pdTRUE;
 }
+#endif
 
 /* A PPA input block, given only its first pixel and row pitch. The PPA reads from any address; the block is
  * described from the largest alignment (64, else 4 bytes) at or before the first pixel that still fits the
@@ -469,7 +453,11 @@ static bool rotate_area(const bz_present_t *p, void *fb, bool async)
     op.out.block_offset_x = (uint32_t)(HAL_H - 1 - a->y2);
     op.out.block_offset_y = (uint32_t)a->x1;
 #endif
+#ifdef CATALYST_ASYNC_PRESENT
     if (async && ppa_do_scale_rotate_mirror(P.ppa, &op) == ESP_OK) return true;
+#else
+    (void)async;
+#endif
     /* no room in the queue: blocking, which also waits out everything queued before it */
     op.mode = PPA_TRANS_MODE_BLOCKING;
     ppa_do_scale_rotate_mirror(T.ppa_srm, &op);
@@ -481,6 +469,7 @@ static bool covers(const bz_area_t *o, const bz_area_t *a)
     return o->x1 <= a->x1 && o->y1 <= a->y1 && o->x2 >= a->x2 && o->y2 >= a->y2;
 }
 
+#ifdef CATALYST_ASYNC_PRESENT
 void hal_present(const bz_present_t *areas, int n, void *user)
 {
     (void)user;
@@ -520,6 +509,10 @@ static void present_task(void *arg)
         esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, 0, PANEL_W, PANEL_H, job.fb);
         xSemaphoreTake(T.vsync, pdMS_TO_TICKS(40));
         T.back ^= 1;
+        if (!T.lit) {
+            T.lit = true;
+            bsp_display_brightness_set(70);
+        }
         xSemaphoreGive(P.handover);
     }
 }
@@ -539,6 +532,39 @@ static void present_init(void)
     xTaskCreatePinnedToCore(present_task, "present", 3072, NULL, 7, NULL, 0);
 }
 
+#else
+/* The default: synchronous. Each area (and whatever of the last frame's the back buffer is missing) is
+ * turned into the back buffer with blocking PPA calls, the buffer is handed to the DPI controller, and
+ * the call returns once the panel has switched to it. The UI waits on the PPA and on vsync, so a frame
+ * that misses one waits for the next — 30 Hz rather than 60 when a frame runs long — and there is no
+ * second task, no queue and nothing in flight across frames. */
+void hal_present(const bz_present_t *areas, int n, void *user)
+{
+    (void)user;
+    void *fb = T.fb[T.back];
+    for (int i = 0; i < P.nprev; i++) {
+        bool covered = false;
+        for (int j = 0; j < n && !covered; j++) covered = covers(&areas[j].a, &P.prev[i].a);
+        if (!covered) rotate_area(&P.prev[i], fb, false);
+    }
+    for (int i = 0; i < n; i++) rotate_area(&areas[i], fb, false);
+    int keep = n < PRESENT_MAX ? n : PRESENT_MAX;
+    if (keep < n && !P.overflow++) ESP_LOGW(TAG, "present: %d areas, catch-up keeps %d", n, PRESENT_MAX);
+    memcpy(P.prev, areas, sizeof *areas * (size_t)keep);
+    P.nprev = keep;
+    xSemaphoreTake(T.vsync, 0);
+    esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, 0, PANEL_W, PANEL_H, fb);
+    if (xSemaphoreTake(T.vsync, pdMS_TO_TICKS(100)) != pdTRUE && !P.late++) ESP_LOGW(TAG, "present: no vsync");
+    T.back ^= 1;
+    if (!T.lit) {
+        T.lit = true;
+        bsp_display_brightness_set(70);
+    }
+}
+
+static void present_init(void) {}
+#endif
+
 static void display_init(void)
 {
     bsp_display_config_t cfg = { .dsi_bus = { .phy_clk_src = 0, .lane_bit_rate_mbps = lane_rate() } };
@@ -550,15 +576,19 @@ static void display_init(void)
     esp_lcd_dpi_panel_register_event_callbacks(T.lcd.panel, &cbs, NULL);
     T.back = 1;
     present_init();
-    bsp_display_backlight_on();
+    T.display_t0 = hal_seconds();
+    /* the backlight stays off until hal_present() has put a real frame up: never the panel's power-on
+     * noise, and one less load switching on with everything else */
     bsp_touch_new(NULL, &T.touch);
-    ESP_LOGI(TAG, "panel %s at %.2f Hz, frame buffers %p %p", T.panel, T.refresh_hz, T.fb[0], T.fb[1]);
+    ESP_LOGI(TAG, "panel %s at the BSP's timing, lanes %u Mbps, frame buffers %p %p", T.panel, (unsigned)T.lane_mbps,
+             T.fb[0], T.fb[1]);
 }
 
 const char *hal_panel_name(void) { return T.panel; }
 
 void hal_set_brightness(float v)
 {
+    if (!T.lit) return; /* the first frame lights it */
     bsp_display_brightness_set((int)(v * 100 + 0.5f));
 }
 
@@ -765,6 +795,11 @@ void hal_display(hal_display_t *o)
     o->ink = T.ink;
     o->out = T.out;
     o->ops = &OPS;
+#ifdef CATALYST_ASYNC_PRESENT
+    o->async_present = true;
+#else
+    o->async_present = false;
+#endif
 }
 
 /* ------------------------------------------------------------------ audio */
@@ -1205,15 +1240,21 @@ static struct {
 bool hal_can_start(int bitrate)
 {
     if (K.on) return true;
+    ext5v(true); /* the Grove port's 5 V powers the CAN transceiver unit: on only while tapping */
+    vTaskDelay(pdMS_TO_TICKS(20));
     /* listen-only: the controller never acknowledges or sends, so a tap can't disturb the robot */
     twai_general_config_t g = TWAI_GENERAL_CONFIG_DEFAULT_V2(0, CAN_TX_GPIO, CAN_RX_GPIO, TWAI_MODE_LISTEN_ONLY);
     g.rx_queue_len = 512;
     twai_timing_config_t t = TWAI_TIMING_CONFIG_1MBITS();
     if (bitrate == 500000) t = (twai_timing_config_t)TWAI_TIMING_CONFIG_500KBITS();
     twai_filter_config_t f = TWAI_FILTER_CONFIG_ACCEPT_ALL();
-    if (twai_driver_install_v2(&g, &t, &f, &K.h) != ESP_OK) return false;
+    if (twai_driver_install_v2(&g, &t, &f, &K.h) != ESP_OK) {
+        ext5v(false);
+        return false;
+    }
     if (twai_start_v2(K.h) != ESP_OK) {
         twai_driver_uninstall_v2(K.h);
+        ext5v(false);
         return false;
     }
     memset(&K.st, 0, sizeof K.st);
@@ -1261,6 +1302,7 @@ void hal_can_stop(void)
     if (!K.on) return;
     twai_stop_v2(K.h);
     twai_driver_uninstall_v2(K.h);
+    ext5v(false);
     K.on = false;
     K.st.state = 0;
 }
@@ -1290,23 +1332,127 @@ void hal_sys(hal_sys_t *o)
     snprintf(o->chip, sizeof o->chip, "esp32-p4 · 360 mhz");
 }
 
+/* ------------------------------------------------------------------ the start-up record */
+
+#define BOOT_MAGIC 0xCA7A1257u
+
+/* In RTC memory that a reset leaves alone (a power-on clears it: magic no longer matches). */
+static RTC_NOINIT_ATTR struct {
+    uint32_t magic;
+    uint32_t fails;    /* consecutive starts that never reached hal_boot_ok() */
+    uint32_t settled;  /* this start did */
+    char stage[24];
+} B;
+
+static hal_boot_t s_prev;
+static bool s_minimal; /* three failed starts running: no Wi-Fi, no USB host, until one settles */
+
+static const char *reset_name(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_PANIC: return "crash";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT: return "watchdog";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SW: return "restart";
+    case ESP_RST_POWERON: return "power on";
+    case ESP_RST_EXT: return "reset button";
+    case ESP_RST_DEEPSLEEP: return "wake";
+    default: return "reset";
+    }
+}
+
+static void boot_record_init(void)
+{
+    esp_reset_reason_t r = esp_reset_reason();
+    bool valid = B.magic == BOOT_MAGIC;
+    /* a crash, a watchdog, a brownout or a restart nobody here asked for (esp-hosted restarts the chip
+     * when it loses the C6) — anything but a power-on or the reset button */
+    bool abnormal = r == ESP_RST_PANIC || r == ESP_RST_INT_WDT || r == ESP_RST_TASK_WDT || r == ESP_RST_WDT ||
+                    r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
+    memset(&s_prev, 0, sizeof s_prev);
+    snprintf(s_prev.reason, sizeof s_prev.reason, "%s", reset_name(r));
+    if (valid) snprintf(s_prev.stage, sizeof s_prev.stage, "%.*s", (int)sizeof B.stage - 1, B.stage);
+    if (!valid) B.fails = 0;
+    if (valid && abnormal) {
+        s_prev.failed = true;
+        if (!B.settled) B.fails++;
+    } else {
+        B.fails = 0;
+    }
+    s_prev.fails = (int)B.fails;
+    s_minimal = B.fails >= 3;
+    /* the core dump the crash left, if any: which task, where, and the caller */
+    if (esp_core_dump_image_check() == ESP_OK) {
+        esp_core_dump_summary_t *sum = malloc(sizeof *sum);
+        if (sum && esp_core_dump_get_summary(sum) == ESP_OK)
+            snprintf(s_prev.detail, sizeof s_prev.detail, "%.15s pc %08lx ra %08lx cause %lu", sum->exc_task,
+                     (unsigned long)sum->exc_pc, (unsigned long)sum->ex_info.ra, (unsigned long)sum->ex_info.mcause);
+        free(sum);
+        esp_core_dump_image_erase();
+    }
+    B.magic = BOOT_MAGIC;
+    B.settled = 0;
+    snprintf(B.stage, sizeof B.stage, "start");
+    if (s_prev.failed)
+        ESP_LOGW(TAG, "last start ended: %s at \"%s\" (%d in a row)%s%s", s_prev.reason, s_prev.stage, s_prev.fails,
+                 s_prev.detail[0] ? ", " : "", s_prev.detail);
+}
+
+static void (*s_watch)(const char *stage);
+
+void hal_boot_watch(void (*fn)(const char *stage)) { s_watch = fn; }
+
+void hal_boot_stage(const char *stage)
+{
+    snprintf(B.stage, sizeof B.stage, "%s", stage);
+    ESP_LOGI(TAG, "start: %s", stage);
+    if (s_watch) s_watch(stage);
+}
+
+void hal_boot_prev(hal_boot_t *o) { *o = s_prev; }
+
+void hal_boot_ok(void)
+{
+    B.settled = 1;
+    B.fails = 0;
+    snprintf(B.stage, sizeof B.stage, "running");
+}
+
+/* The last start's ending, where someone can read it without a serial cable: <sd>/catalyst-boot.txt. */
+static void boot_report_sd(void)
+{
+    if (!T.sd || !s_prev.failed) return;
+    FILE *f = fopen(BSP_SD_MOUNT_POINT "/catalyst-boot.txt", "a");
+    if (!f) return;
+    struct tm tm;
+    time_t now = time(NULL);
+    localtime_r(&now, &tm);
+    fprintf(f, "%04d-%02d-%02d %02d:%02d  last start: %s at \"%s\", %d in a row%s%s\n", tm.tm_year + 1900,
+            tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, s_prev.reason, s_prev.stage, s_prev.fails,
+            s_prev.detail[0] ? " · " : "", s_prev.detail);
+    fclose(f);
+}
+
 /* ------------------------------------------------------------------ init */
 
 bool hal_init(void)
 {
+    boot_record_init();
+    hal_boot_stage("nvs");
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();
     }
+    hal_boot_stage("power");
     ESP_ERROR_CHECK(bsp_i2c_init());
     T.i2c = bsp_i2c_get_handle();
     power_init();
-    ina226_init();
-    rtc_init();
-    imu_init();
 
     /* the three full-frame buffers the renderer works in, in PSRAM */
+    hal_boot_stage("buffers");
     T.content = psram_aligned(HAL_W * HAL_H * 2);
     T.ink = psram_aligned(HAL_W * HAL_H * 4);
     T.out = psram_aligned(HAL_W * HAL_H * 2);
@@ -1321,12 +1467,41 @@ bool hal_init(void)
     ppa_register_client(&pc, &T.ppa_blend);
     ppa_blend_selftest();
 
+    hal_boot_stage("display");
     display_init();
+    return true;
+}
+
+void hal_start(void)
+{
+    hal_boot_stage("sensors");
+    ina226_init();
+    rtc_init();
+    imu_init();
+    hal_boot_stage("speaker");
     audio_init();
+    hal_boot_stage("microsd");
     T.sd = bsp_sdcard_mount() == ESP_OK;
+    boot_report_sd();
     temperature_sensor_config_t tc = TEMPERATURE_SENSOR_CONFIG_DEFAULT(-10, 80);
     if (temperature_sensor_install(&tc, &T.tsens) == ESP_OK) temperature_sensor_enable(T.tsens);
-    hal_net_init();
+    if (s_minimal) {
+        ESP_LOGW(TAG, "three failed starts: no Wi-Fi or USB tether until one settles");
+    } else {
+        hal_boot_stage("wi-fi");
+        hal_net_init();
+    }
+    hal_boot_stage("ui");
     ESP_LOGI(TAG, "ready: panel %s, sd %s, imu %s", T.panel, T.sd ? "mounted" : "none", T.imu ? "ok" : "missing");
-    return true;
+}
+
+void hal_settle(void)
+{
+    ESP_LOGI(TAG, "panel refresh measured %.1f Hz", T.vsyncs / (hal_seconds() - T.display_t0 + 1e-6));
+    if (s_minimal) return;
+    hal_boot_stage("usb");
+    e2_set(E2_USB5V, 1); /* the USB-A port's 5 V, for a Systemcore cable or a dongle */
+    vTaskDelay(pdMS_TO_TICKS(50));
+    hal_net_tether_init();
+    hal_boot_stage("settling");
 }

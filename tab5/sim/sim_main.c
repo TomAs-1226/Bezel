@@ -26,8 +26,10 @@
 #include "hal.h"
 #include "nt4.h"
 #include "ui.h"
+#include "ui_boot.h"
 #include "cat_model.h"
 
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -149,12 +151,63 @@ static void *nt_thread(void *arg)
     return NULL;
 }
 
+/* --boot-shots DIR: plays the start-up animation on a virtual clock (60 frames a second, as fast as the
+ * machine goes), with the stages a Tab5 goes through, and writes frames to DIR. SIM_PREV_BOOT fakes a
+ * failed last start (hal_sim.c). */
+static void boot_play(const char *dir)
+{
+    mkdir(dir, 0755);
+    hal_display_t d;
+    hal_display(&d);
+    hal_boot_t prev;
+    hal_boot_prev(&prev);
+    ui_boot_t *b = ui_boot_create(d.out, HAL_W, HAL_H, &prev, prev.fails >= 1);
+    static const struct { double t; float p; const char *s; } STAGES[] = {
+        { 0.0, 0.08, "starting the display" }, { 0.35, 0.22, "sensors and speaker" }, { 0.6, 0.3, "microSD" },
+        { 0.8, 0.45, "waking the wi-fi co-processor" }, { 1.4, 0.72, "building the interface" },
+        { 2.1, 0.9, "looking for the robot" },
+    };
+    static const double SHOTS[] = { 0.12, 0.3, 0.5, 0.75, 1.0, 1.4, 1.9, 2.45, 2.6, 2.75, 3.0 };
+    size_t st = 0, sh = 0;
+    double worst = 0, total = 0, t = 0;
+    int frames = 0;
+    for (int f = 0; f < 60 * 8; f++) {
+        t = f / 60.0;
+        while (st < sizeof STAGES / sizeof *STAGES && STAGES[st].t <= t) {
+            ui_boot_set(b, STAGES[st].p, STAGES[st].s);
+            st++;
+        }
+        if (t >= 2.3) ui_boot_finish(b);
+        struct timespec a, z;
+        clock_gettime(CLOCK_MONOTONIC, &a);
+        bz_area_t dmg;
+        bool more = ui_boot_frame(b, t, &dmg);
+        clock_gettime(CLOCK_MONOTONIC, &z);
+        double ms = (z.tv_sec - a.tv_sec) * 1e3 + (z.tv_nsec - a.tv_nsec) / 1e6;
+        total += ms;
+        frames++;
+        if (ms > worst) worst = ms;
+        while (sh < sizeof SHOTS / sizeof *SHOTS && SHOTS[sh] <= t + 1e-9) {
+            char path[512];
+            snprintf(path, sizeof path, "%s/boot-%04d.png", dir, (int)lround(SHOTS[sh] * 1000));
+            png_write_rgb565(path, d.out, HAL_W, HAL_H);
+            sh++;
+        }
+        if (!more) break;
+    }
+    char path[512];
+    snprintf(path, sizeof path, "%s/boot-end.png", dir);
+    png_write_rgb565(path, d.out, HAL_W, HAL_H);
+    printf("boot: %d frames to %.2f s, this machine %.2f ms a frame (worst %.2f)\n", frames, t, total / frames, worst);
+    ui_boot_destroy(b);
+}
+
 int main(int argc, char **argv)
 {
     const char *robot = "127.0.0.1", *script = NULL;
     int team = 5805;
     bool light = false, calm = false, probe = false;
-    const char *claude = NULL, *link_url = NULL, *link_token = NULL;
+    const char *claude = NULL, *link_url = NULL, *link_token = NULL, *boot_shots = NULL;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--robot") && i + 1 < argc) robot = argv[++i];
         else if (!strcmp(argv[i], "--script") && i + 1 < argc) script = argv[++i];
@@ -165,11 +218,16 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--probe")) probe = true;
         else if (!strcmp(argv[i], "--claude") && i + 1 < argc) claude = argv[++i];
         else if (!strcmp(argv[i], "--link") && i + 2 < argc) { link_url = argv[++i]; link_token = argv[++i]; }
+        else if (!strcmp(argv[i], "--boot-shots") && i + 1 < argc) boot_shots = argv[++i];
     }
     mkdir(g_out, 0755);
 
     lv_init();
     hal_init();
+    if (boot_shots) {
+        boot_play(boot_shots);
+        return 0;
+    }
     if (claude) {
         hal_kv_set("ai_route", "direct");
         hal_kv_set("ai_key", "sim-key");

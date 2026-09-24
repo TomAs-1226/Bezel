@@ -455,7 +455,7 @@ static void tether_init(void)
 {
     /* The USB host library, installed here rather than by iot_usbh_cdc so the enumeration filter can pick
      * a Realtek adapter's ECM configuration. Its default controller on the P4 is the high-speed one: the
-     * USB-A port. VBUS (E2.P3) is already on. UNVERIFIED: enumeration through the Tab5's USB-A port (the
+     * USB-A port. VBUS (E2.P3) is switched on just before (hal_settle). UNVERIFIED: enumeration through the Tab5's USB-A port (the
      * BSP's USB HID example uses the same controller and switch). */
     usb_host_config_t hc = { .intr_flags = ESP_INTR_FLAG_LEVEL1, .enum_filter_cb = usb_enum_filter };
     if (usb_host_install(&hc) != ESP_OK) {
@@ -790,6 +790,11 @@ void hal_net_init(void)
     esp_event_loop_create_default();
     if (mdns_init() == ESP_OK) mdns_hostname_set("catalyst-tab");
     wifi_init();
-    /* which of the two interfaces lwIP lists first depends on start order; tether_promote() settles it */
+}
+
+void hal_net_tether_init(void)
+{
+    /* after Wi-Fi, once the UI is up (hal_settle): which of the two interfaces lwIP lists first depends
+     * on start order, and tether_promote() settles it */
     tether_init();
 }

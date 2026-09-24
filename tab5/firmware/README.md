@@ -1,7 +1,7 @@
 # Prebuilt firmware
 
-Ready-to-flash images for the **M5Stack Tab5**, built with ESP-IDF 5.5.1 from commit `277448c`
-(`idf.py build`, then `esptool.py merge_bin`). If the source has moved on since, rebuild; see
+Ready-to-flash images for the **M5Stack Tab5**, built with ESP-IDF 5.5.1 from the commit that last
+changed this folder (`idf.py build`, then `esptool.py merge_bin`). If the source has moved on since, rebuild; see
 [../README.md](../README.md#building-the-firmware).
 
 | File | Flash at | What |
@@ -16,10 +16,10 @@ Flash settings: DIO, 80 MHz, 16 MB.
 SHA-256:
 
 ```
-61b3460e4ad03f60afd74ea5aa370e0268792c3fa04bb537a0982433f221e9c3  catalyst-tab-merged.bin
-6955e009009e869fd0a3288263cc3a7dd855a1a8aaf4ec6ef1bf5a89f8c2d52b  bootloader.bin
-ef38c1c8bdb24a2006840e0b411327c92ac382d3138835ada6b6a8448d0db3a7  partition-table.bin
-9077d533968a2802735224c44d0cfc761ad239812d6e45e587dc69ff926231ba  catalyst_tab.bin
+9aa4ec05a15f8e8804931072159cecec46491058b3a799f33c74e45e66708624  catalyst-tab-merged.bin
+2965e24341f7475c8c440e74447607f2d92e47e167bb157c86f95d8ff22aeed5  bootloader.bin
+a9dd45b38158fe74aca40ab373f015fcc5a0bebe3aabb0f29cad0a2cc8f596eb  partition-table.bin
+e2218abdafbd6ccacf083c09907a8c81aca55f31e12826695714b70b71c9f38c  catalyst_tab.bin
 ```
 
 ## Flash and go
@@ -43,6 +43,25 @@ address to `0x0`, choose `catalyst-tab-merged.bin`, then click **Program**.
 If the tablet won't connect, it isn't in download mode: put it into download mode with the
 reset/boot button as M5Stack's Tab5 documentation describes, then try again. After flashing, press
 reset or unplug and replug to start it.
+
+**Flash the merged image this time**, not just the app: the partition table changed (it now holds a
+crash-dump area at `0xA10000`).
+
+## If it doesn't start
+
+The tablet keeps a record of how far each start got. After a start that crashes, hits a watchdog,
+browns out or gets restarted, the next start does two things:
+- It shows the record in amber under the Catalyst card, e.g. `LAST START: CRASH AT WI-FI · SAFE MODE`,
+  with the crashing task and address underneath. The same line is appended to
+  `catalyst-boot.txt` on the microSD card.
+- It comes up in **safe mode**: solid glass, no frost.
+
+After three failed starts in a row it also skips Wi-Fi and the USB tether, until one start runs for
+20 seconds.
+
+A photo of that amber text is enough for a fix. The serial log says the same and more: plug in the
+USB-C port and open a monitor at 115200 baud. `idf.py -p <port> monitor` works, or the
+Console tab at <https://espressif.github.io/esptool-js/>.
 
 ## Updating later
 

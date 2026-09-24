@@ -366,3 +366,26 @@ void hal_sys(hal_sys_t *o)
 }
 
 void hal_power_off(void) {}
+
+void hal_start(void) {}
+void hal_settle(void) {}
+
+/* The start-up record: SIM_PREV_BOOT="reason:stage:fails[:detail]" pretends the last start failed. */
+void hal_boot_stage(const char *stage) { (void)stage; }
+void hal_boot_ok(void) {}
+void hal_boot_watch(void (*fn)(const char *stage)) { (void)fn; }
+void hal_boot_prev(hal_boot_t *o)
+{
+    memset(o, 0, sizeof *o);
+    const char *e = getenv("SIM_PREV_BOOT");
+    if (!e || !*e) return;
+    char buf[160];
+    snprintf(buf, sizeof buf, "%s", e);
+    char *save = NULL, *reason = strtok_r(buf, ":", &save), *stage = strtok_r(NULL, ":", &save);
+    char *fails = strtok_r(NULL, ":", &save), *detail = strtok_r(NULL, "", &save);
+    o->failed = true;
+    snprintf(o->reason, sizeof o->reason, "%s", reason ? reason : "crash");
+    snprintf(o->stage, sizeof o->stage, "%s", stage ? stage : "start");
+    o->fails = fails ? atoi(fails) : 1;
+    if (detail) snprintf(o->detail, sizeof o->detail, "%s", detail);
+}

@@ -32,6 +32,8 @@ SOURCES = {
     "flex_display300.ttf": "Google+Sans+Flex:wdth,wght@112,300",
     "flex_clock250.ttf": "Google+Sans+Flex:wdth,wght@118,250",
     "code400.ttf": "Google+Sans+Code:wght@400",
+    "flex700.ttf": "Google+Sans+Flex:wght@700",
+    "flex250.ttf": "Google+Sans+Flex:wght@250",
     "sym_outline.ttf": "Material+Symbols+Rounded:opsz,wght,FILL,GRAD@40,400,0,0",
     "sym_fill.ttf": "Material+Symbols+Rounded:opsz,wght,FILL,GRAD@40,500,1,0",
 }
@@ -39,7 +41,8 @@ SOURCES = {
 ASCII = "0x20-0x7E"
 # typographic extras the UI prints: · — – ° ± µ × → ← ↑ ↓ … ● ◆ ■ ○ ▲ Ω
 EXTRA = "0xB7,0x2014,0x2013,0xB0,0xB1,0xB5,0xD7,0x2192,0x2190,0x2191,0x2193,0x2026,0x25CF,0x25C6,0x25A0,0x25CB,0x25B2,0x3A9"
-DIGITS = "0x20,0x2B-0x3A,0x25,0xB0,0x2014"  # space + - . / 0-9 : % ° —
+DIGITS = "0x20,0x2B-0x3A,0x25,0xB0,0x2014"
+BRAND = "0x20,0x2E,0x30-0x39,0x41-0x5A,0x61-0x7A"  # letters, digits, space and a point  # space + - . / 0-9 : % ° —
 
 # (symbol name, source file, size, ranges, frozen tnum?)
 TEXT_FONTS = [
@@ -52,6 +55,9 @@ TEXT_FONTS = [
     ("bz_font_body_17", "flex400.ttf", 17, ASCII + "," + EXTRA, True),
     ("bz_font_mono_16", "code400.ttf", 16, ASCII + "," + EXTRA, False),
     ("bz_font_mono_13", "code400.ttf", 13, ASCII + "," + EXTRA, False),
+    # the Catalyst wordmark on the boot screen: "Catalyst" light, the product bold (the family's banners)
+    ("bz_font_brand_light_72", "flex250.ttf", 72, BRAND, False),
+    ("bz_font_brand_bold_72", "flex700.ttf", 72, BRAND, False),
 ]
 
 ICONS = """
