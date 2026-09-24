@@ -76,8 +76,8 @@ static struct {
     int slide_dx, slide_shown;
     /* a sheet over the page (bz_ui_sheet_begin): its visible height, what's on the panel, and how much of
      * the picture it reveals has been drawn (rows [sheet_lo, h) of U.nb, drawn and handed over) */
-    bool sheeting, sheet_open;
-    int sheet_h, sheet_shown, sheet_lo, sheet_sh;
+    bool sheeting, sheet_open, sheet_bottom;
+    int sheet_h, sheet_shown, sheet_lo, sheet_hi, sheet_sh;
     void (*sheet_prep)(bool before, void *u);
     void *sheet_u;
 #endif
@@ -758,20 +758,28 @@ bool bz_ui_frame(double now_s)
         U.nlean = 0;
         if (U.sheet_h != U.sheet_shown) {
             int sh = U.sheet_sh, h = U.sheet_h < 0 ? 0 : U.sheet_h > sh ? sh : U.sheet_h;
-            /* the rows of the picture this height reveals, and a margin: opening, the sheet's bottom rows;
-             * closing, the page's rows under the sheet's edge */
-            int need = (U.sheet_open ? sh - h : h) - 48;
-            if (need < 0) need = 0;
-            if (need < U.sheet_lo) {
-                lv_area_t a = { 0, need, U.cfg.w - 1, U.sheet_lo - 1 };
-                bz_ui_render_offscreen(U.nb + (size_t)need * U.cfg.w, U.cfg.w, &a, U.sheet_prep, U.sheet_u);
-                bz_present_t p = { { 0, (int16_t)need, (int16_t)(U.cfg.w - 1), (int16_t)(U.sheet_lo - 1) },
-                                   U.nb + (size_t)need * U.cfg.w, U.cfg.w };
+            /* the rows of the other picture this height reveals, and a margin, drawn and handed over:
+             * from the top, opening shows the sheet's last rows and closing the page's under its edge;
+             * from the bottom, the sheet's first rows or the page's above its edge */
+            int a0 = 0, a1 = -1;
+            if (!U.sheet_bottom) {
+                int need = (U.sheet_open ? sh - h : h) - 48;
+                if (need < 0) need = 0;
+                if (need < U.sheet_lo) { a0 = need; a1 = U.sheet_lo - 1; U.sheet_lo = need; }
+            } else {
+                int need = (U.sheet_open ? h : sh - h) + 48;
+                if (need > sh) need = sh;
+                if (need > U.sheet_hi) { a0 = U.sheet_hi; a1 = need - 1; U.sheet_hi = need; }
+            }
+            if (a1 >= a0) {
+                lv_area_t a = { 0, a0, U.cfg.w - 1, a1 };
+                bz_ui_render_offscreen(U.nb + (size_t)a0 * U.cfg.w, U.cfg.w, &a, U.sheet_prep, U.sheet_u);
+                bz_present_t p = { { 0, (int16_t)a0, (int16_t)(U.cfg.w - 1), (int16_t)a1 },
+                                   U.nb + (size_t)a0 * U.cfg.w, U.cfg.w };
                 U.cfg.slide->patch(&p, true);
-                U.sheet_lo = need;
             }
             U.sheet_shown = U.sheet_h;
-            U.cfg.slide->sheet(h, sh, !U.sheet_open);
+            U.cfg.slide->sheet(h, sh, !U.sheet_open, U.sheet_bottom);
         }
     } else if (U.sliding && U.cfg.slide) {
         U.nlean = 0;
@@ -1036,7 +1044,7 @@ void bz_ui_slide_end(void)
 #endif
 }
 
-bool bz_ui_sheet_begin(bool opening, int height, void (*prep)(bool before, void *u), void *u)
+bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool before, void *u), void *u)
 {
 #if BZ_LEAN
     if (!U.cfg.slide || !U.cfg.slide->sheet || U.sliding || U.sheeting) return false;
@@ -1055,13 +1063,15 @@ bool bz_ui_sheet_begin(bool opening, int height, void (*prep)(bool before, void 
     U.sheet_open = opening;
     U.sheet_prep = prep;
     U.sheet_u = u;
-    U.sheet_sh = height < 16 ? 16 : height > U.cfg.h ? U.cfg.h : height;
+    U.sheet_bottom = bottom;
+    U.sheet_sh = bottom ? U.cfg.h : height < 16 ? 16 : height > U.cfg.h ? U.cfg.h : height;
     U.sheet_lo = U.sheet_sh; /* nothing of the other picture drawn yet */
+    U.sheet_hi = 0;
     U.sheet_h = opening ? 0 : U.sheet_sh;
     U.sheet_shown = -1;
     return true;
 #else
-    (void)opening; (void)height; (void)prep; (void)u;
+    (void)opening; (void)height; (void)bottom; (void)prep; (void)u;
     return false;
 #endif
 }

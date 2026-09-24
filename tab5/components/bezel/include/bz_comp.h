@@ -54,10 +54,11 @@ typedef struct bz_slide_ops {
     void (*patch)(const bz_present_t *area, bool neighbour);
     void (*frame)(int dx, int side, const bz_area_t *chrome, int nchrome);
     void (*end)(void);
-    /* A sheet `sh` rows tall over the page, pulled down from the top: landscape rows [0, h) show the
-     * sheet by its bottom h rows, the rest the page. `swapped` (closing a sheet that was on the glass):
-     * the sheet is the snapshot begin took, and the page's rows under it, [h, sh), are the neighbour. */
-    void (*sheet)(int h, int sh, bool swapped);
+    /* A sheet `sh` rows tall over the page. From the top (bottom false): landscape rows [0, h) show the
+     * sheet by its last h rows. From the bottom (a full-screen sheet, sh = the screen): rows [H - h, H)
+     * show it by its first h rows. `swapped` (closing a sheet that was on the glass): the sheet is the
+     * snapshot begin took, and the page's rows it uncovers are the neighbour. */
+    void (*sheet)(int h, int sh, bool swapped, bool bottom);
     /* Both of the panel's buffers made what is on the glass now, so drawing can carry on in areas. */
     void (*settle)(void);
 } bz_slide_ops_t;

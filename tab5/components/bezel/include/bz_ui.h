@@ -125,8 +125,9 @@ void bz_ui_slide_nb_patch(const lv_area_t *a);
  * it appear for the drawing and `prep(false)` putting things back. Closing: the other way round, the
  * sheet on the glass and the page drawn. h: how much of the sheet shows, 0 .. screen height. false: no
  * such platform support (animate some other way). End puts LVGL back in charge without a redraw, so show
- * the resting height (0 or `height`) first. The sheet is `height` rows from the top; below, the page. */
-bool bz_ui_sheet_begin(bool opening, int height, void (*prep)(bool before, void *u), void *u);
+ * the resting height (0 or `height`) first. The sheet is `height` rows from the top; below, the page. With
+ * `bottom` it is the whole screen coming up from the bottom edge (an app opening). */
+bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool before, void *u), void *u);
 void bz_ui_sheet(int h);
 int bz_ui_sheet_shown(void); /* the height on the panel now (-1: none yet) */
 bool bz_ui_sheeting(void);

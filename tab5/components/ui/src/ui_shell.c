@@ -1064,9 +1064,59 @@ static void caches_idle(void)
     }
 }
 
+/* Lean: an app comes up from the bottom edge as a sheet, and goes back down it. The platform slides a
+ * picture of it over the page with no drawing per frame (bz_ui_sheet_*); the window itself switches at
+ * once underneath, and takes over from the picture when the sheet comes to rest. */
+static struct {
+    bool on;
+    bz_motion_t k;
+} ASH;
+
+static bool app_sheet_start(bool opening)
+{
+#if BZ_LEAN
+    if (ASH.on || bz_ui_sheeting()) return false;
+    if (!bz_ui_sheet_begin(opening, H, true, NULL, NULL)) return false;
+    if (!ASH.k.keep) {
+        bz_motion_init(&ASH.k, 0, 0.001f);
+        ASH.k.keep = true; /* animates though the lean renderer makes other motion instant */
+    }
+    bz_motion_set(&ASH.k, opening ? 0 : 1, 0);
+    bz_motion_to(&ASH.k, opening ? 1 : 0, BZ_RELEASE);
+    ASH.on = true;
+    bz_ui_keep_alive();
+    return true;
+#else
+    (void)opening;
+    return false;
+#endif
+}
+
+static void app_sheet_frame(void)
+{
+    if (!ASH.on) return;
+    bool moving = bz_motion_tick(&ASH.k);
+    float k = ASH.k.value < 0 ? 0 : ASH.k.value > 1 ? 1 : ASH.k.value;
+    bz_ui_keep_alive();
+    if (moving) {
+        bz_ui_sheet((int)(k * H + 0.5f));
+        return;
+    }
+    /* at rest: the resting picture on the glass, then the window (or the page) takes over, not redrawn */
+    int rest = ASH.k.target > 0.5f ? H : 0;
+    if (bz_ui_sheet_shown() != rest) {
+        bz_ui_sheet(rest);
+        return;
+    }
+    bz_ui_sheet_end();
+    ASH.on = false;
+}
+
 void ui_app_open(const ui_app_t *app, lv_obj_t *from)
 {
     bz_ui_wake();
+    /* from the page (nothing open): the sheet starts while the glass still shows the page */
+    if (!U.app || U.k.target == 0) app_sheet_start(true);
     if (U.app && U.app != app) {
         if (U.app->close) U.app->close();
         lv_obj_add_flag(U.win_inner, LV_OBJ_FLAG_HIDDEN);
@@ -1100,6 +1150,7 @@ void ui_app_open(const ui_app_t *app, lv_obj_t *from)
 void ui_app_close(void)
 {
     if (!U.app) return;
+    if (U.k.value > 0.98f) app_sheet_start(false);
     if (U.k.value > 0.98f) window_begin(false);
     bz_motion_to(&U.k, 0, BZ_RELEASE);
     bz_glass_show(U.pill_glass, false);
@@ -1176,6 +1227,7 @@ static void build_windows(void)
 
 static void windows_frame(double now, double dt)
 {
+    app_sheet_frame();
     if (!U.app) return;
     bool moving = bz_motion_tick(&U.k);
     if (moving) bz_ui_keep_alive();

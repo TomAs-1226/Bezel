@@ -96,7 +96,7 @@ static void cc_prep(bool before, void *u)
 static void sheet_start(bool opening)
 {
     if (C.sheet) return;
-    if (bz_ui_sheet_begin(opening, CC_SH, cc_prep, (void *)(intptr_t)opening)) C.sheet = C.sheet_mode = true;
+    if (bz_ui_sheet_begin(opening, CC_SH, false, cc_prep, (void *)(intptr_t)opening)) C.sheet = C.sheet_mode = true;
 }
 
 static void cc_close(void)
