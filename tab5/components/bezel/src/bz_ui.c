@@ -1222,7 +1222,13 @@ void bz_drag_attach(lv_obj_t *obj, const bz_drag_t *d)
 typedef struct {
     bz_tap_fn cb;
     void *user;
+    lv_point_t down; /* where the press began */
 } tap_t;
+
+/* How far a press may travel and still be a tap. LVGL keeps an object pressed when the finger slides off
+ * it (PRESS_LOCK) and clicks it on release wherever that is: a drag that happened to start on a button
+ * would press the button. */
+#define TAP_SLOP 24
 
 static void (*s_on_any_tap)(void);
 void bz_ui_on_any_tap(void (*fn)(void)) { s_on_any_tap = fn; }
@@ -1230,11 +1236,22 @@ void bz_ui_on_any_tap(void (*fn)(void)) { s_on_any_tap = fn; }
 static void tap_event(lv_event_t *e)
 {
     tap_t *t = lv_event_get_user_data(e);
-    if (lv_event_get_code(e) == LV_EVENT_DELETE) {
-        free(t);
+    lv_event_code_t code = lv_event_get_code(e);
+    if (code == LV_EVENT_DELETE) {
+        lv_free(t);
+        return;
+    }
+    lv_indev_t *in = lv_indev_active();
+    if (code == LV_EVENT_PRESSED) {
+        if (in) lv_indev_get_point(in, &t->down);
         return;
     }
     if (g_press_claimed) return; /* a drag's release is not a tap */
+    if (in) {
+        lv_point_t up;
+        lv_indev_get_point(in, &up);
+        if (LV_ABS(up.x - t->down.x) > TAP_SLOP || LV_ABS(up.y - t->down.y) > TAP_SLOP) return;
+    }
     if (s_on_any_tap) s_on_any_tap();
     t->cb(lv_event_get_current_target(e), t->user);
 }
@@ -1245,7 +1262,9 @@ void bz_on_tap(lv_obj_t *obj, bz_tap_fn cb, void *user)
     if (!t) return;
     t->cb = cb;
     t->user = user;
+    t->down = (lv_point_t){ 0, 0 };
     lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(obj, tap_event, LV_EVENT_PRESSED, t);
     lv_obj_add_event_cb(obj, tap_event, LV_EVENT_CLICKED, t);
     lv_obj_add_event_cb(obj, tap_event, LV_EVENT_DELETE, t);
 }

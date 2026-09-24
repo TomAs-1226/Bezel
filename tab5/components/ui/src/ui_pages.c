@@ -166,7 +166,9 @@ static void pulse_refresh(void *u)
         ui_text(P.vis_foot, " ");
     }
 
-    if (r->connected && r->have_identity) ui_text(P.team, "team %d", r->team);
+    /* the robot by its own name when it publishes one */
+    if (r->connected && r->have_identity && r->name[0]) ui_text(P.team, "%s \xc2\xb7 team %d", r->name, r->team);
+    else if (r->connected && r->have_identity) ui_text(P.team, "team %d", r->team);
     else ui_text(P.team, "team %d", S.team);
 }
 

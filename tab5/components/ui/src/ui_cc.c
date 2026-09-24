@@ -195,7 +195,8 @@ static void cc_refresh(void *user)
     else ui_text(C.link_robot, "looking for team %d", S.team);
     hal_net_t n;
     hal_net(&n);
-    ui_text(C.link_wifi, "%s · %d dbm", n.up ? n.ssid : "not connected", n.rssi);
+    if (n.up) ui_text(C.link_wifi, "%s · %d dBm", n.ssid, n.rssi);
+    else ui_text(C.link_wifi, "wi-fi not connected");
     hal_tether_t t;
     hal_tether(&t);
     if (t.up) ui_text(C.link_usb, "%s · %s%s", t.kind, t.ip, t.dhcp ? "" : " (fallback)");

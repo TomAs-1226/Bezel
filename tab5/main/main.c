@@ -87,6 +87,10 @@ static void ui_task(void *arg)
 
 static ui_boot_t *s_boot;
 static SemaphoreHandle_t s_boot_done;
+/* where the boot task is, for a start that hangs: 1 drawing, 2 presenting, 3 waiting a tick */
+static volatile int s_boot_at;
+static volatile double s_boot_t;
+static volatile bool s_boot_abandoned; /* the interface started without it: it must not draw again */
 
 static void boot_task(void *arg)
 {
@@ -98,6 +102,9 @@ static void boot_task(void *arg)
     for (;;) {
         bz_area_t a;
         double f0 = hal_seconds();
+        if (s_boot_abandoned) vTaskDelete(NULL);
+        s_boot_at = 1;
+        s_boot_t = hal_seconds() - t0;
         bool more = ui_boot_frame(s_boot, hal_seconds() - t0, &a);
         double now = hal_seconds();
         draw += now - f0;
@@ -113,11 +120,13 @@ static void boot_task(void *arg)
                 p[i] = (bz_present_t){ box[i], buf + (size_t)box[i].y1 * HAL_W + box[i].x1, HAL_W };
                 px += (uint32_t)(box[i].x2 - box[i].x1 + 1) * (uint32_t)(box[i].y2 - box[i].y1 + 1);
             }
+            s_boot_at = 2;
             hal_present(p, nb, NULL);
             pres += hal_seconds() - now;
         }
         if (!more) break;
         /* a frame with nothing to present (the outro dims the backlight) waits about as long as one that has */
+        s_boot_at = 3;
         vTaskDelay(nb ? 1 : pdMS_TO_TICKS(12));
     }
     ESP_LOGI(TAG, "boot: %d frames in %.2f s, %.1f fps, worst gap %.0f ms; per frame draw %.1f ms, present %.1f ms, %u px",
@@ -196,8 +205,16 @@ void app_main(void)
 
     hal_boot_stage("first frame");
     ui_boot_finish(s_boot);
-    xSemaphoreTake(s_boot_done, portMAX_DELAY);
-    ui_boot_destroy(s_boot);
+    /* the card runs its outro and hands over; if it hasn't in 6 s something holds it, and the interface
+     * starts regardless (say where it was, for the log) */
+    if (xSemaphoreTake(s_boot_done, pdMS_TO_TICKS(6000)) != pdTRUE) {
+        static const char *const AT[] = { "?", "drawing", "presenting", "between frames" };
+        ESP_LOGE(TAG, "boot animation stuck %s at %.2f s: starting the interface without it", AT[s_boot_at & 3], s_boot_t);
+        s_boot_abandoned = true; /* its card is left allocated: the task may still be inside it */
+        hal_set_brightness(0);
+    } else {
+        ui_boot_destroy(s_boot);
+    }
     s_boot = NULL;
     bz_comp_damage_all(bz_ui_comp());
     ESP_LOGI(TAG, "internal RAM free %u, largest block %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
