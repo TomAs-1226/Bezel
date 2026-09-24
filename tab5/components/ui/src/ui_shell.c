@@ -713,6 +713,7 @@ static void status_refresh(void)
 
 void ui_island_say(const char *icon, const char *text)
 {
+    ui_notify_add(icon, text); /* kept for the control center and the lock screen */
     U.island_until = g_now + 2.4;
     lv_obj_add_flag(U.island_mark, LV_OBJ_FLAG_HIDDEN);
     lv_obj_remove_flag(U.island_icon, LV_OBJ_FLAG_HIDDEN);
@@ -1265,6 +1266,7 @@ void ui_settings_save(void)
     hal_kv_set("dim", n);
     snprintf(n, sizeof n, "%d", S.sleep_s);
     hal_kv_set("sleep", n);
+    hal_kv_set("lock", S.lock ? "1" : "0");
     hal_kv_set("clicks", S.clicks ? "1" : "0");
     snprintf(n, sizeof n, "%d", S.tz);
     hal_kv_set("tzi", n);
@@ -1291,6 +1293,8 @@ static void settings_load(void)
     if (hal_kv_get("dim", buf, sizeof buf)) S.dim_s = atoi(buf);
     S.sleep_s = 300;
     if (hal_kv_get("sleep", buf, sizeof buf)) S.sleep_s = atoi(buf);
+    S.lock = true;
+    if (hal_kv_get("lock", buf, sizeof buf)) S.lock = buf[0] == '1';
     S.clicks = true;
     if (hal_kv_get("clicks", buf, sizeof buf)) S.clicks = buf[0] == '1';
     if (hal_kv_get("tzi", buf, sizeof buf)) S.tz = atoi(buf);
@@ -1466,6 +1470,7 @@ static void shell_frame(double now, double dt, void *user)
         SLP.at = now;
         hal_set_brightness(0);
         bz_ui_swallow_touch();
+        ui_lock_show(); /* drawn while dark: it's what the screen wakes to */
     } else if (SLP.asleep && now - idle_s > SLP.at + 0.05) {
         /* a touch since it went off: back on, and the dim timer starts over */
         SLP.asleep = false;
@@ -1535,6 +1540,7 @@ void ui_init(const ui_config_t *cfg)
     build_dock();
     build_island();
     ui_cc_init();
+    ui_lock_init();
     ui_orb_init();
     snap_init();
     link_init();

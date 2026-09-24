@@ -769,7 +769,7 @@ static void orb_frame(double now, double dt, void *u)
     bool busy = ph != AS_PHASE_IDLE && ph != AS_PHASE_ERROR;
     bool here = ui_app_is_open(&APP_ASSIST);
     /* over the pages only: an open app (this one included) takes the corner */
-    bool show = !here && !ui_app_any_open();
+    bool show = !here && !ui_app_any_open() && !ui_overlay_up();
     bool hidden = lv_obj_has_flag(ORB.obj, LV_OBJ_FLAG_HIDDEN);
     if (show == hidden) {
         if (show) lv_obj_remove_flag(ORB.obj, LV_OBJ_FLAG_HIDDEN);

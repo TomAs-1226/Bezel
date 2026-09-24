@@ -1047,7 +1047,12 @@ void bz_ui_slide_end(void)
 bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool before, void *u), void *u)
 {
 #if BZ_LEAN
-    if (!U.cfg.slide || !U.cfg.slide->sheet || U.sliding || U.sheeting) return false;
+    if (!U.cfg.slide || !U.cfg.slide->sheet || U.sliding || U.sheeting) {
+#ifdef ESP_PLATFORM
+        ESP_LOGW("bz_ui", "sheet refused: %s", U.sheeting ? "a sheet is running" : U.sliding ? "a slide is running" : "no platform support");
+#endif
+        return false;
+    }
     if (!bz_ui_slide_nb_buf()) return false;
     /* what's pending goes on the glass first: begin captures the glass */
     lv_refr_now(U.disp_content);
@@ -1059,6 +1064,9 @@ bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool 
     if (U.nlean && U.cfg.present) U.cfg.present(U.lean, U.nlean, U.cfg.user);
     U.nlean = 0;
     if (!U.cfg.slide->begin(bz_color(BZ_C_GROUND), NULL, 0)) return false;
+#ifdef ESP_PLATFORM
+    ESP_LOGI("bz_ui", "sheet %s %s, %d rows", opening ? "opening" : "closing", bottom ? "from the bottom" : "from the top", height);
+#endif
     U.sheeting = true;
     U.sheet_open = opening;
     U.sheet_prep = prep;
@@ -1108,6 +1116,9 @@ void bz_ui_sheet_end(void)
 #if BZ_LEAN
     if (!U.sheeting) return;
     U.sheeting = false;
+#ifdef ESP_PLATFORM
+    ESP_LOGI("bz_ui", "sheet end at %d", U.sheet_shown);
+#endif
     U.cfg.slide->end();
     /* The glass already shows the sheet at rest (or the page): LVGL draws everything into its own buffer
      * once, and that isn't sent again; the panel's other buffer is made the same so later areas land

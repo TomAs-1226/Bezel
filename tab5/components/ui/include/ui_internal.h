@@ -6,6 +6,8 @@
 #include "hal.h"
 #include "ui.h"
 
+#include <time.h>
+
 #include <stdbool.h>
 #include <stdio.h>
 
@@ -34,6 +36,7 @@ typedef struct {
     bool flip;             /* which way up now (and the fixed choice when auto_rotate is off) */
     int dim_s;             /* the panel dims after this long untouched (0: never) */
     int sleep_s;           /* the screen goes off after this long untouched (0: never); a tap wakes it */
+    bool lock;             /* the screen wakes to the lock screen (a push up opens it) */
     bool clicks;           /* a soft tick on taps */
     int tz;                /* index into the time zones settings offers */
     char wifi_ssid[33];
@@ -42,6 +45,25 @@ extern ui_settings_t S;
 void ui_settings_save(void);
 /* The screen off now (the robot link stays up); the next tap wakes it without pressing anything. */
 void ui_sleep_now(void);
+
+/* Notifications: every island message, kept (newest first) for the control center and the lock screen. */
+typedef struct {
+    const char *icon;
+    char text[96];
+    time_t at;       /* wall clock, for anything older than a few hours */
+    double mono;     /* hal_seconds() when it came */
+} ui_note_t;
+void ui_notify_add(const char *icon, const char *text);
+int ui_notify_count(void);
+unsigned ui_notify_gen(void);            /* changes whenever the list does */
+const ui_note_t *ui_notify_get(int i);   /* 0 = newest */
+void ui_notify_clear(void);
+void ui_notify_age(const ui_note_t *n, char *out, size_t len);
+/* The lock screen (ui_lock.c): shown as the screen goes to sleep, lifted by a push up. */
+void ui_lock_init(void);
+void ui_lock_show(void);
+bool ui_locked(void);
+bool ui_overlay_up(void);  /* the lock screen or the control center covers the pages */
 bool ui_asleep(void);
 void ui_set_flip(bool flip); /* turns the picture 180° and redraws everything */
 void ui_apply_addresses(void);
@@ -106,7 +128,8 @@ void ui_os_boot(void);
 void ui_cc_init(void);
 /* The assistant's orb, over every screen (ui_app_assist.c). */
 void ui_orb_init(void);
-void ui_cc_open(void);       /* the control center, as if pulled down */
+void ui_cc_open(void);
+bool ui_cc_is_open(void);       /* the control center, as if pulled down */
 void ui_orb_show(bool show); /* the orb floats over the pages; an open app takes its corner */
 /* Starts the state recorder, so the states app has a timeline from boot (ui_apps_sc.c). */
 void ui_sc_boot(void);

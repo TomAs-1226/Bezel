@@ -13,6 +13,7 @@
 #include <stdlib.h>
 
 #define NMOD 7
+#define NOTE_ROWS 4 /* notifications listed under the modules */
 
 static struct {
     lv_obj_t *strip, *scrim;
@@ -40,9 +41,13 @@ static struct {
      * the platform has shown it can (the older per-module cascade is the fallback) */
     bool sheet, open, sheet_mode;
     lv_obj_t *panel;
+    /* the notifications, under the modules */
+    lv_obj_t *notes, *note_row[NOTE_ROWS], *note_icon[NOTE_ROWS], *note_text[NOTE_ROWS], *note_age[NOTE_ROWS],
+        *notes_empty, *notes_clear;
+    unsigned notes_gen;
 } C;
 
-#define CC_SH 460     /* the sheet's height: the modules and a handle; the page shows below it */
+#define CC_SH H       /* the sheet covers the screen: the modules, the notifications and a handle */
 #define EDGE_H 64     /* the top band a pull may start in: the status bar and a finger's width */
 #define EDGE_SLOP 10  /* px down, more down than sideways, before it's a pull */
 
@@ -66,9 +71,11 @@ static void cc_show(bool on)
         lv_obj_set_style_bg_opa(C.scrim, LV_OPA_TRANSP, 0);
         lv_obj_remove_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(C.panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(C.notes, LV_OBJ_FLAG_HIDDEN);
     } else {
         lv_obj_add_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(C.panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(C.notes, LV_OBJ_FLAG_HIDDEN);
     }
     for (int i = 0; i < NMOD; i++) {
         if (on) {
@@ -179,6 +186,13 @@ static void toggle_tap(lv_obj_t *o, void *u)
     }
     ui_settings_save();
     hal_tone(1600, 10, S.volume * 0.4f);
+}
+
+static void notes_clear_tap(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    ui_notify_clear();
+    cc_refresh(NULL);
 }
 
 static void level_cb(lv_obj_t *lv, float v, bool final, void *u)
@@ -324,6 +338,27 @@ static void cc_refresh(void *user)
 #else
     bool on[4] = { !S.dark, S.calm, false, false };
 #endif
+    if (C.notes_gen != ui_notify_gen()) {
+        C.notes_gen = ui_notify_gen();
+        int n = ui_notify_count();
+        for (int i = 0; i < NOTE_ROWS; i++) {
+            const ui_note_t *nt = ui_notify_get(i);
+            if (!nt) {
+                lv_obj_add_flag(C.note_row[i], LV_OBJ_FLAG_HIDDEN);
+                continue;
+            }
+            char age[16];
+            ui_notify_age(nt, age, sizeof age);
+            lv_label_set_text(C.note_icon[i], nt->icon);
+            ui_text(C.note_text[i], "%s", nt->text);
+            ui_text(C.note_age[i], "%s", age);
+            lv_obj_remove_flag(C.note_row[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (n) lv_obj_add_flag(C.notes_empty, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(C.notes_empty, LV_OBJ_FLAG_HIDDEN);
+        if (n) lv_obj_remove_flag(C.notes_clear, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(C.notes_clear, LV_OBJ_FLAG_HIDDEN);
+    }
     int bits = on[0] | on[1] << 1 | 16;
     (void)0;
     if (bits == C.last_tog) return;
@@ -333,6 +368,8 @@ static void cc_refresh(void *user)
         bz_set_color(C.tog_icon[i], on[i] ? BZ_C_ON_ICE : BZ_C_INK);
     }
 }
+
+bool ui_cc_is_open(void) { return C.open || C.sheet; }
 
 void ui_cc_open(void)
 {
@@ -357,7 +394,7 @@ void ui_cc_init(void)
     lv_obj_remove_style_all(C.panel);
     lv_obj_set_size(C.panel, W, CC_SH + 40);
     lv_obj_set_pos(C.panel, 0, -40); /* its top corners above the screen: only the foot is rounded */
-    lv_obj_add_style(C.panel, bz_style_fill(BZ_C_SURFACE1), 0);
+    lv_obj_add_style(C.panel, bz_style_fill(BZ_C_GROUND), 0); /* the modules and tiles stand on it */
     lv_obj_set_style_radius(C.panel, 28, 0);
     lv_obj_remove_flag(C.panel, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(C.panel, LV_OBJ_FLAG_SCROLLABLE);
@@ -421,6 +458,33 @@ void ui_cc_init(void)
         lv_obj_center(C.tog_icon[i]);
         bz_on_tap(m, toggle_tap, (void *)(intptr_t)i);
     }
+
+    /* notifications: what the island said, newest first */
+    C.notes = bz_tile(g, 1020, 244);
+    lv_obj_set_pos(C.notes, 130, 426);
+    lv_obj_set_style_radius(C.notes, 36, 0);
+    lv_obj_remove_flag(C.notes, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(C.notes, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *nh = bz_label(C.notes, "notifications", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_set_pos(nh, 0, 0);
+    C.notes_clear = ui_button(C.notes, BZ_I_CLOSE, "clear", notes_clear_tap, NULL);
+    lv_obj_align(C.notes_clear, LV_ALIGN_TOP_RIGHT, 0, -12);
+    C.notes_empty = bz_label(C.notes, "Nothing yet. What the island tells you stays here.", BZ_F_BODY_S, BZ_C_DIM);
+    lv_obj_set_pos(C.notes_empty, 0, 44);
+    int iw = 1020 - 2 * BZ_PAD_TILE;
+    for (int i = 0; i < NOTE_ROWS; i++) {
+        lv_obj_t *r = bz_row(C.notes, 14);
+        lv_obj_set_width(r, iw);
+        lv_obj_set_pos(r, 0, 48 + i * 40);
+        lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        C.note_icon[i] = bz_icon(r, BZ_I_INFO, 24, BZ_C_DIM);
+        C.note_text[i] = bz_label_line(r, "", BZ_F_BODY_S, BZ_C_INK, iw - 24 - 14 - 90 - 14);
+        C.note_age[i] = bz_label_line(r, "", BZ_F_CAPTION, BZ_C_DIM, 90);
+        lv_obj_set_style_text_align(C.note_age[i], LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_add_flag(r, LV_OBJ_FLAG_HIDDEN);
+        C.note_row[i] = r;
+    }
+    C.notes_gen = ~0u;
 
     /* the pull strip along the top edge (a 30 px band, as the specimen) */
     C.strip = lv_obj_create(g);

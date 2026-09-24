@@ -987,7 +987,7 @@ static const char *SS_ICON[SS_COUNT];
 static struct {
     lv_obj_t *nav[SS_COUNT], *pane[SS_COUNT];
     int cur;
-    lv_obj_t *sleep_chips[4], *dim_chips[4], *click_chip, *tz_chips[5], *clock, *sd_state, *batt, *off_btn, *link_state, *assist_state;
+    lv_obj_t *lock_chip, *sleep_chips[4], *dim_chips[4], *click_chip, *tz_chips[5], *clock, *sd_state, *batt, *off_btn, *link_state, *assist_state;
     double off_armed;
 } SX;
 
@@ -1023,11 +1023,20 @@ static void sx_dim(lv_obj_t *o, void *u)
     ui_settings_save();
 }
 
+static void sx_lock(lv_obj_t *o, void *u)
+{
+    (void)u;
+    S.lock = !S.lock;
+    ui_chip_set(o, S.lock);
+    ui_settings_save();
+}
+
 static void sx_sleep_after(lv_obj_t *o, void *u)
 {
     (void)o;
     S.sleep_s = SLEEP_S[(int)(intptr_t)u];
     for (int i = 0; i < 4; i++) ui_chip_set(SX.sleep_chips[i], S.sleep_s == SLEEP_S[i]);
+    ui_chip_set(SX.lock_chip, S.lock);
     ui_settings_save();
 }
 
@@ -1308,8 +1317,10 @@ static void settings_build(lv_obj_t *b)
     bz_label(t, "screen off when untouched for", BZ_F_LABEL, BZ_C_DIM);
     r = sx_wrap_row(t, iw);
     for (int i = 0; i < 4; i++) SX.sleep_chips[i] = ui_chip(r, SLEEP_L[i], sx_sleep_after, (void *)(intptr_t)i);
+    r = sx_wrap_row(t, iw);
+    SX.lock_chip = ui_chip(r, "wake to the lock screen", sx_lock, NULL);
     lv_obj_t *sn = bz_label(t, "Off, the robot link and recording keep running. A tap wakes the screen, and that tap "
-                               "presses nothing.", BZ_F_CAPTION, BZ_C_DIM);
+                               "presses nothing; a push up opens the lock screen.", BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(sn, iw);
 
     /* about */
