@@ -147,6 +147,7 @@ class LinkCase(unittest.TestCase):
     # and the tests must not depend on whether this PC is logged in to Claude Code.
     claude: str = "api"
     agent_factory: Any = None
+    media_platform: Any = None  # a fake media.Platform; None: whatever this PC has
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="link-test-")).resolve()
@@ -156,7 +157,8 @@ class LinkCase(unittest.TestCase):
         cfg = Config(repo=self.repo, port=0, bind="127.0.0.1", check=self.check,
                      check_timeout=self.check_timeout, on_work_order=self.on_work_order, name="test-pc",
                      claude=self.claude)
-        self.app = LinkApp(cfg, self.state, claude_client=self.claude_client, agent_factory=self.agent_factory)
+        self.app = LinkApp(cfg, self.state, claude_client=self.claude_client, agent_factory=self.agent_factory,
+                           media_platform=self.media_platform)
         self.server = make_server(self.app, quiet=True)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True)

@@ -8,6 +8,7 @@
 #include "as_snap.h"
 #include "assist.h"
 #include "link.h"
+#include "ui_home_mode.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -378,11 +379,24 @@ lv_obj_t *ui_page_body(int page) { return U.pages[page]; }
 
 static void pages_begin(void);
 
+/* Home mode (ui_home_mode.c) covers the pages: the status band and the orb go while it's up; the dock tucks
+ * itself (dock_frame) */
+static void home_changed(bool active)
+{
+    if (active) {
+        lv_obj_add_flag(U.status, LV_OBJ_FLAG_HIDDEN);
+        ui_orb_show(false);
+    } else if (!U.app) {
+        lv_obj_remove_flag(U.status, LV_OBJ_FLAG_HIDDEN);
+        ui_orb_show(true);
+    }
+}
+
 static void pg_begin(lv_obj_t *o, lv_point_t p, void *u)
 {
     (void)o; (void)p; (void)u;
 #if BZ_LEAN
-    if (SL.settling) return; /* a catch mid-settle: let it land (a moment) */
+    if (SL.settling || ui_home_mode_active()) return; /* a catch mid-settle: let it land (a moment) */
     bz_ui_slide_begin();
     SL.active = true;
     SL.side = 0;
@@ -604,7 +618,7 @@ static void dock_frame(void)
     /* the dock tucks away while an app is open, and after 4 s idle on a page (panel.js:34,166) */
     static double boot0;
     if (boot0 == 0) boot0 = g_now;
-    bool tuck = U.app != NULL || g_now - boot0 < 0.5; /* at power-on it waits for the blind to start lifting */
+    bool tuck = U.app != NULL || ui_home_mode_active() || g_now - boot0 < 0.5; /* at power-on it waits for the blind to start lifting */
     if (bz_motion_tick(&U.dock_tuck)) bz_ui_keep_alive();
     float target = tuck ? 1 : 0;
     if (U.dock_tuck.target != target) {
@@ -1290,8 +1304,10 @@ static void windows_frame(double now, double dt)
         if (U.app->close) U.app->close();
         U.app = NULL;
         lv_obj_add_flag(U.pill, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(U.status, LV_OBJ_FLAG_HIDDEN);
-        ui_orb_show(true);
+        if (!ui_home_mode_active()) {
+            lv_obj_remove_flag(U.status, LV_OBJ_FLAG_HIDDEN);
+            ui_orb_show(true);
+        }
     }
 }
 
@@ -1508,7 +1524,7 @@ static void shell_frame(double now, double dt, void *user)
         island_refresh();
         PROF_MARK(8);
         /* a page's refresh only while it's on screen and nothing covers it */
-        bool covered = U.app && U.k.target > 0;
+        bool covered = (U.app && U.k.target > 0) || ui_home_mode_active();
         for (int i = 0; i < U.nrefresh; i++)
             if (U.refresh[i].page < 0 || (U.refresh[i].page == U.page && !covered)) U.refresh[i].fn(U.refresh[i].user);
         PROF_MARK(9);
@@ -1529,7 +1545,7 @@ static void shell_frame(double now, double dt, void *user)
      * nothing. Asleep, the link to the robot and everything behind the glass keep running. */
     double idle_s = bz_ui_idle_s();
     /* the companion on a stand, on power, stays awake (it only dims) */
-    if (!SLP.asleep && (SLP.request || (!ui_companion_keeps_awake() && S.sleep_s > 0 && idle_s > S.sleep_s))) {
+    if (!SLP.asleep && (SLP.request || (!ui_companion_keeps_awake() && !ui_home_mode_keeps_awake() && S.sleep_s > 0 && idle_s > S.sleep_s))) {
         SLP.asleep = true;
         SLP.request = false;
         SLP.at = now;
@@ -1608,6 +1624,7 @@ void ui_init(const ui_config_t *cfg)
     ui_cc_init();
     ui_lock_init();
     ui_orb_init();
+    ui_home_mode_init(home_changed);
     snap_init();
     link_init();
     assist_init();

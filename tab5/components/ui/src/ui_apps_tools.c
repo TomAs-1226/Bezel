@@ -1,6 +1,7 @@
 /* Apps that use the tablet's own hardware: level (IMU), lens (camera), can tap (TWAI),
  * logs (microSD) and settings. */
 #include "ui_internal.h"
+#include "ui_home_mode.h"
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
 #include "cat_can.h"
 #include "cat_logs.h"
@@ -979,9 +980,10 @@ static void settings_refresh(void)
 
 /* ---- the settings app: a list of sections on the left, the chosen one on the right ---- */
 
-enum { SS_DISPLAY, SS_SOUND, SS_ROBOT, SS_NETWORK, SS_LINK, SS_ASSIST, SS_TIME, SS_STORAGE, SS_POWER, SS_ABOUT, SS_COUNT };
+enum { SS_DISPLAY, SS_SOUND, SS_ROBOT, SS_NETWORK, SS_LINK, SS_ASSIST, SS_HOME, SS_TIME, SS_STORAGE, SS_POWER, SS_ABOUT,
+       SS_COUNT };
 static const char *const SS_NAME[SS_COUNT] = { "display", "sound", "robot", "network", "pc link",
-                                               "assistant", "date and time", "storage", "power", "about" };
+                                               "assistant", "home", "date and time", "storage", "power", "about" };
 static const char *SS_ICON[SS_COUNT];
 
 static struct {
@@ -1148,6 +1150,8 @@ static void settings_open(void)
     SX.off_armed = 0;
     lv_label_set_text(lv_obj_get_child(SX.off_btn, 1), "turn off");
     ui_assist_settings_open();
+    ui_home_settings_open();
+    if (ui_home_settings_wanted()) SX.cur = SS_HOME; /* "settings" from home mode */
     sx_show(SX.cur);
 }
 
@@ -1180,6 +1184,7 @@ static void settings_build(lv_obj_t *b)
     SS_ICON[SS_NETWORK] = BZ_I_WIFI;
     SS_ICON[SS_LINK] = BZ_I_COMPUTER;
     SS_ICON[SS_ASSIST] = BZ_I_AUTO_AWESOME;
+    SS_ICON[SS_HOME] = BZ_I_HOME;
     SS_ICON[SS_TIME] = BZ_I_SCHEDULE;
     SS_ICON[SS_STORAGE] = BZ_I_SD_CARD;
     SS_ICON[SS_POWER] = BZ_I_POWER;
@@ -1194,7 +1199,8 @@ static void settings_build(lv_obj_t *b)
     lv_obj_set_style_pad_row(nav, 4, 0);
     for (int i = 0; i < SS_COUNT; i++) {
         lv_obj_t *n = ui_button(nav, SS_ICON[i], SS_NAME[i], sx_nav, (void *)(intptr_t)i);
-        lv_obj_set_size(n, nav_w - 24, 52);
+        /* eleven sections in the tile's height (APP_H less its padding) */
+        lv_obj_set_size(n, nav_w - 24, (APP_H - 24 - (SS_COUNT - 1) * 4) / SS_COUNT);
         lv_obj_set_style_radius(n, 16, 0);
         lv_obj_set_flex_align(n, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         SX.nav[i] = n;
@@ -1290,6 +1296,10 @@ static void settings_build(lv_obj_t *b)
     ui_button(r, BZ_I_AUTO_AWESOME, "open assist", sx_open_app, (void *)&APP_ASSIST);
     ui_button(r, BZ_I_COMPUTER, "pair the pc", sx_open_app, (void *)&APP_LINK);
     ui_assist_settings(t, b, iw);
+
+    /* home mode */
+    t = sx_pane(b, SS_HOME, px, pw);
+    ui_home_settings(t, b, iw);
 
     /* date and time */
     t = sx_pane(b, SS_TIME, px, pw);

@@ -53,7 +53,12 @@ Python 3.10 or newer, and git.
 cd tab5/link
 python -m pip install .            # the catalyst-link command, with the anthropic SDK and claude-agent-sdk
 python -m pip install zeroconf     # optional: lets the tablet find the Link by mDNS
+python -m pip install ".[media]"   # optional, Windows: the media remote for the tablet's home mode
 ```
+
+The media remote shows the tablet what this PC is playing (Spotify, YouTube Music, anything in Windows'
+media controls) with its album art, and lets it play, pause, skip and change the volume
+([docs/link-api.md](../docs/link-api.md#media--what-the-pc-is-playing-for-the-tablets-home-mode)).
 
 Or without installing: `pip install -r requirements.txt` and run `python -m catalyst_link …` from
 `tab5/link/`.
@@ -82,6 +87,7 @@ token once (leave the address empty to find the Link by mDNS, or type `http://<p
 | `--claude MODE` | how the tablet reaches Claude: `claude-code`, `api`, `off`, or `auto` (default): `api` when `ANTHROPIC_API_KEY` is set, else `claude-code` |
 | `--claude-model MODEL` | `claude-code` only: the model (default: Claude Code's own default) |
 | `--claude-cli PATH` | `claude-code` only: the Claude Code CLI to run (also `$CATALYST_LINK_CLAUDE_CLI`) |
+| `--no-media` | no media remote: the tablet's home mode then can't see or control what this PC plays |
 | `--no-mdns`, `--quiet` | |
 
 State lives in `~/.catalyst-link/` (override with `CATALYST_LINK_HOME`): `token`, `inbox/`,

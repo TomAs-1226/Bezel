@@ -31,6 +31,7 @@
 #include "ccwatch.h"
 #include "link.h"
 #include "voice.h"
+#include "ui_home_mode.h"
 
 #include "lvgl_private.h" /* lv_area_intersect, and the layer's clip for drawing an eye */
 
@@ -1659,7 +1660,7 @@ static void desk_tick(double now)
     next = now + 1.0;
     hal_battery_t bat;
     g_power = hal_battery(&bat) && bat.ok && (bat.charging || bat.external);
-    if (!CFG.desk_auto || CP.open || ui_app_any_open() || ui_asleep() || !g_power) {
+    if (!CFG.desk_auto || CP.open || ui_app_any_open() || ui_asleep() || !g_power || ui_home_mode_active()) {
         still_since = 0;
         return;
     }

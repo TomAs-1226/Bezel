@@ -24,8 +24,10 @@
 /* Two software draw units, one per HP core: LVGL's renderer uses both. */
 #define LV_USE_OS LV_OS_FREERTOS
 #define LV_DRAW_SW_DRAW_UNIT_CNT 2
-/* shadows, big glyphs and transforms go deep: LVGL's 8 KB default is too tight for its draw threads */
-#define LV_DRAW_THREAD_STACK_SIZE (16 * 1024)
+/* shadows, big glyphs and transforms go deep: LVGL's 8 KB default is too tight for its draw threads. 16 KB
+ * each was measured to peak near 1.2 KB (dev console "mem"), and the two stacks are internal RAM, the
+ * scarce kind: at 16 KB the NetworkTables thread no longer fit beside the voice and home workers */
+#define LV_DRAW_THREAD_STACK_SIZE (10 * 1024)
 /* above the NetworkTables client (5), the HAL workers (4) and lwIP, level with the UI task: at LVGL's
  * default (3 over idle) a draw thread on core 0 waits behind the network and a frame waits for it */
 #define LV_DRAW_THREAD_PRIO 6

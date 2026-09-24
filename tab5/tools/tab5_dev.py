@@ -52,6 +52,9 @@ def reply(s, timeout=20):
         if text.startswith("AP "):
             print(text[3:])  # a network from "scan"
             continue
+        if text.startswith(("MEM ", "TASK ")):
+            print(text)  # from "mem"
+            continue
         if text == "OK":
             return ("ok",)
         if text.startswith("ERR"):

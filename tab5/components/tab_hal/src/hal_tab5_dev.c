@@ -161,6 +161,26 @@ static void run(char *line)
         localtime_r(&tv.tv_sec, &tm);
         hal_rtc_set(&tm);
         say("OK\n");
+    } else if (!strcmp(line, "mem")) {
+        /* internal RAM (the scarce kind) and PSRAM: free, the lowest it has been, the largest block; then
+         * each task's stack headroom */
+        char buf[160];
+        snprintf(buf, sizeof buf, "MEM internal free %u min %u largest %u; psram free %u largest %u\n",
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                 (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+        say(buf);
+        static TaskStatus_t st[48];
+        int n = (int)uxTaskGetSystemState(st, 48, NULL);
+        for (int i = 0; i < n; i++) {
+            snprintf(buf, sizeof buf, "TASK %-16s core %d prio %u headroom %u\n", st[i].pcTaskName,
+                     (int)xTaskGetCoreID(st[i].xHandle), (unsigned)st[i].uxCurrentPriority,
+                     (unsigned)st[i].usStackHighWaterMark);
+            say(buf);
+        }
+        say("OK\n");
     } else if (!strcmp(line, "scan")) {
         /* a Wi-Fi scan, one "AP rssi ssid" line per network heard */
         static hal_ap_t ap[20];

@@ -13,6 +13,11 @@ dependencies = ["anthropic>=1.8", "claude-agent-sdk>=0.2.159"]
 
 [project.optional-dependencies]
 mdns = ["zeroconf>=0.130"]
+# the media remote (/media/*): the PC's now-playing through Windows' media controls, album art, volume
+media = ["winrt-Windows.Media.Control>=2.0; sys_platform == 'win32'",
+         "winrt-Windows.Storage.Streams>=2.0; sys_platform == 'win32'",
+         "winrt-Windows.Foundation>=2.0; sys_platform == 'win32'",
+         "pillow>=10", "pycaw>=20240210; sys_platform == 'win32'"]
 
 [project.scripts]
 catalyst-link = "catalyst_link.cli:main"

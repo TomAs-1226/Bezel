@@ -41,7 +41,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     cfg = Config(repo=Path(args.repo).expanduser(), port=args.port, bind=args.bind, check=args.check,
                  check_timeout=args.check_timeout, on_work_order=args.on_work_order,
-                 claude=args.claude, claude_model=args.claude_model, claude_cli=args.claude_cli)
+                 claude=args.claude, claude_model=args.claude_model, claude_cli=args.claude_cli,
+                 media=not args.no_media)
     if args.name:
         cfg.name = args.name
     state = _state()
@@ -56,6 +57,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         print(f"  url      http://{a}:{port}")
     print(f"  token    {state.token()}   (type this into the tablet's settings once)")
     print(f"  claude   {_claude_line(app)}")
+    media_line = "on (the PC's now-playing, for the tablet's home mode)" if app.media.available else app.media.reason
+    print(f"  media    {media_line}")
     print(f"  check    {cfg.check or 'off'}" + (f"  (timeout {cfg.check_timeout:g} s)" if cfg.check else ""))
     print(f"  on-work-order  {cfg.on_work_order or 'off'}")
     print(f"  state    {state.home}")
@@ -313,6 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--claude-model", help="claude-code: the model (default: Claude Code's own default)")
     s.add_argument("--claude-cli", metavar="PATH", help="claude-code: the Claude Code CLI to run (default: found)")
     s.add_argument("--no-mdns", action="store_true", help="don't advertise over mDNS")
+    s.add_argument("--no-media", action="store_true",
+                   help="no media remote (the tablet's home mode then can't see or control what the PC plays)")
     s.add_argument("--quiet", action="store_true", help="no per-request log lines")
     s.set_defaults(fn=cmd_serve)
 

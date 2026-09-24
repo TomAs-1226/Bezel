@@ -190,8 +190,26 @@ void hal_audio_volume(float v)
     if (AU.spk) esp_codec_dev_set_out_vol(AU.spk, (int)(v * 100));
 }
 
+/* The music player's stream (components/home/include/hal_play.h): 1 or 2 channels at any rate. Stereo is
+ * mixed down (the speaker is one); a rate 48 kHz isn't a multiple of (44.1 kHz and its halves) is taken to
+ * 48 kHz here by linear interpolation, which the output task then plays as is. */
+static struct {
+    bool on;
+    int ch, rate;
+    double pos;      /* the next output sample's position in the input, from the last chunk's start */
+    int16_t last;    /* the input's last sample of the previous chunk */
+    int16_t mono[512], out[512 * 48000 / 11025 + 2];
+} MU;
+
+static bool s_music_opening;
+
 bool hal_play_start(int rate)
 {
+    /* the assistant speaking up takes the speaker from the music */
+    if (MU.on && !s_music_opening) {
+        MU.on = false;
+        hal_play_stop();
+    }
     if (!AU.pcm || rate <= 0 || RATE % rate || RATE / rate > FRAME || AU.open) return false;
     AU.rate = rate;
     AU.ended = false;
@@ -200,7 +218,8 @@ bool hal_play_start(int rate)
     return true;
 }
 
-int hal_play_write(const int16_t *pcm, int n, int timeout_ms)
+/* mono samples at the stream's rate into the queue the output task drains */
+static int play_queue(const int16_t *pcm, int n, int timeout_ms)
 {
     if (!AU.open || AU.ended || n <= 0) return 0;
     const uint8_t *p = (const uint8_t *)pcm;
@@ -214,6 +233,62 @@ int hal_play_write(const int16_t *pcm, int n, int timeout_ms)
         left -= w;
     }
     return (int)(((size_t)n * 2 - left) / 2);
+}
+
+bool hal_play_open(int sample_rate, int channels)
+{
+    if (channels < 1 || channels > 2 || sample_rate < 8000 || sample_rate > 48000) return false;
+    bool direct = RATE % sample_rate == 0 && RATE / sample_rate <= FRAME;
+    s_music_opening = true;
+    bool ok = hal_play_start(direct ? sample_rate : RATE);
+    s_music_opening = false;
+    if (!ok) return false;
+    MU = (typeof(MU)){ .on = true, .ch = channels, .rate = direct ? 0 : sample_rate };
+    return true;
+}
+
+void hal_play_close(void)
+{
+    if (!MU.on) return;
+    MU.on = false;
+    hal_play_stop();
+}
+
+static int music_write(const int16_t *pcm, int frames, int timeout_ms)
+{
+    if (!AU.open) return -1; /* taken away (the assistant spoke up, a stop): the player closes */
+    int done = 0;
+    while (done < frames) {
+        int n = frames - done < 512 ? frames - done : 512;
+        const int16_t *in = pcm + (size_t)done * MU.ch;
+        for (int i = 0; i < n; i++) MU.mono[i] = MU.ch == 2 ? (int16_t)((in[2 * i] + in[2 * i + 1]) / 2) : in[i];
+        const int16_t *q = MU.mono;
+        int m = n;
+        if (MU.rate) {
+            /* position -1 is the previous chunk's last sample, so the joins interpolate too */
+            double step = (double)MU.rate / RATE;
+            m = 0;
+            for (; MU.pos < n - 1; MU.pos += step) {
+                int k = (int)floor(MU.pos);
+                float f = (float)(MU.pos - k);
+                int16_t s0 = k < 0 ? MU.last : MU.mono[k], s1 = MU.mono[k + 1];
+                MU.out[m++] = (int16_t)(s0 + (s1 - s0) * f);
+            }
+            MU.pos -= n;
+            MU.last = MU.mono[n - 1];
+            q = MU.out;
+        }
+        int took = play_queue(q, m, timeout_ms);
+        if (took < m) return done ? done : 0; /* a timeout: the caller writes the rest again */
+        done += n;
+    }
+    return done;
+}
+
+int hal_play_write(const int16_t *pcm, int n, int timeout_ms)
+{
+    if (MU.on) return music_write(pcm, n, timeout_ms);
+    return play_queue(pcm, n, timeout_ms);
 }
 
 void hal_play_end(void) { AU.ended = true; }

@@ -10,6 +10,7 @@
  * page drawn under it a band at a time. Not a security lock: it is there so a tablet on a belt or a desk
  * doesn't act on the first brush of a hand. */
 #include "ui_internal.h"
+#include "ui_home_mode.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -153,7 +154,7 @@ void ui_lock_show(void)
 bool ui_locked(void) { return LK.locked; }
 
 /* something covers the pages (the orb, which floats over them, stays out of its way) */
-bool ui_overlay_up(void) { return LK.locked || ui_cc_is_open(); }
+bool ui_overlay_up(void) { return LK.locked || ui_cc_is_open() || ui_home_mode_active(); }
 
 static void lock_frame(double now, double dt, void *user)
 {

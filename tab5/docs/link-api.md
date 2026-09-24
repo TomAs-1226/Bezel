@@ -295,3 +295,39 @@ eyes react, a chime plays, the island shows a message, and the reminder repeats 
 or 5 minutes (default 2) — until the owner taps the companion's face or that session's row, which
 posts the acknowledgement back to the Link. The assistant also has a read-only tool, `claude_sessions`,
 that reads this same endpoint.
+
+## Media — what the PC is playing, for the tablet's home mode
+
+The PC's now-playing and its transport controls, from Windows' Global System Media Transport Controls
+(the volume flyout's media card: Spotify, YouTube Music in a browser or as an app, anything that reports
+to it). `link/catalyst_link/media.py`; the extras are `pip install catalyst-link[media]` (the WinRT
+projections, Pillow for album art, pycaw for a volume level). Without them, on another OS, or with
+`serve --no-media`, the routes answer `"available": false` with the reason. `GET /link/status` carries
+`"media": true|false`. These routes are routine traffic: not written to `log.jsonl`.
+
+- `GET /media/now` →
+  ```json
+  {"ok":true,"available":true,"volume":0.42,"muted":false,
+   "playing":{"title":"Midnight City","artist":"M83","album":"Hurry Up, We're Dreaming",
+              "app":"Spotify","app_id":"Spotify.exe","state":"playing",
+              "position":31.4,"duration":243.0,
+              "can":{"play":false,"pause":true,"next":true,"previous":true},"art":"9f3c0a1b2c3d"}}
+  ```
+  `playing` is `null` with no media session. `state` is `playing`, `paused`, `stopped`, `changing`,
+  `opened` or `closed`. `position` runs on from the session's last report while playing (clamped to
+  `duration`); either may be `null`. `volume`/`muted` are `null` without pycaw. `art` is an id that
+  changes with the song, `null` when the song has no thumbnail. 502 when Windows' media service fails.
+- `GET /media/art?format=jpeg|rgb565&size=16..512` → the current thumbnail. `jpeg` (default): a baseline
+  JPEG fitted inside `size` (the raw thumbnail when it's already a JPEG and Pillow is missing).
+  `rgb565`: exactly `size`×`size` pixels, cropped to fill, little-endian, rows packed
+  (`application/octet-stream`). Add `encoding=base64` for `{"ok":true,"id","size","format","bytes",
+  "data":"<base64>"}` instead (the tablet reads JSON bodies only). 404 with no art (or no Pillow).
+- `POST /media/control` `{"action":"play|pause|toggle|next|previous|stop|volume_up|volume_down|mute"}`
+  → `{"ok":true,"done":bool}` (`done` false: the app refused, e.g. no next track).
+  `{"action":"volume","level":0.5}` sets the master volume (501 without pycaw); `volume_up`,
+  `volume_down` and `mute` press the keyboard's media keys, so they need nothing extra. 400 for any
+  other action, 503 when the remote isn't available.
+
+The tablet side is `components/home/src/home_pc.c`: `/media/now` every second while home mode or the
+music app shows it (every few seconds when nothing plays), the art as base64 RGB565 at 160 px when its
+id changes, and the controls sent the moment they're tapped.

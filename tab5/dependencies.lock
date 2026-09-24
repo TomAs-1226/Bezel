@@ -89,6 +89,16 @@ dependencies:
       registry_url: https://components.espressif.com/
       type: service
     version: 2.4.7
+  espressif/esp_audio_codec:
+    component_hash: af4663830bc73eca58febcc34a976d003465e78ed57458aa00a14b231e392ca1
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.4'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 2.4.1
   espressif/esp_cam_sensor:
     component_hash: 902c305b77f7c42b60fff5a084e397694f8a3fd6e6b72299996a7c856666e983
     dependencies:
@@ -610,6 +620,7 @@ dependencies:
     version: 9.5.0
 direct_dependencies:
 - espressif/esp-sr
+- espressif/esp_audio_codec
 - espressif/esp_h264
 - espressif/esp_hosted
 - espressif/esp_lcd_touch
@@ -623,6 +634,6 @@ direct_dependencies:
 - espressif/mdns
 - idf
 - lvgl/lvgl
-manifest_hash: ec4a5a5ccc6a25fe0b7599bec60fa4380976c9810c8bd72c5dac8aee5ce3c3c6
+manifest_hash: 53199f338fd25ebc75e7ce80ca69ace85644371784cda74a629f8e09c63e17db
 target: esp32p4
 version: 2.0.0

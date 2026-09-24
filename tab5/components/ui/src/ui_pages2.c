@@ -1,5 +1,6 @@
 /* Devices, power, motion and the tools launcher. */
 #include "ui_internal.h"
+#include "ui_home_mode.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -457,6 +458,8 @@ void ui_page_motion(lv_obj_t *page)
 /* The app library: every app, in four groups — the robot through Catalyst, diagnosing it from the
  * outside, the tablet's own tools, and Catalyst OS's everyday apps. Scrolls when it outgrows the screen. */
 typedef struct { const ui_app_t *app; const char *icon; const char *label; const char *hint; } app_entry_t;
+/* Home mode is a mode, not an app window: its tile enters it (ui_home_mode.h) and nothing opens it by name. */
+static const ui_app_t HOME_MODE_TILE = { .name = "home mode", .icon = BZ_I_HOME };
 static const app_entry_t APPS_ROBOT[] = {
     { &APP_PREFLIGHT, BZ_I_CHECKLIST, "preflight", "go / no-go" },
     { &APP_ALERTS, BZ_I_WARNING, "alerts", "errors, health" },
@@ -483,6 +486,7 @@ static const app_entry_t APPS_TABLET[] = {
     { &APP_ASSIST, BZ_I_AUTO_AWESOME, "assist", "ai technician" },
     { &APP_LINK, BZ_I_COMPUTER, "link", "pc, patches" },
     { &APP_COMPANION, BZ_I_VISIBILITY, "companion", "desk mode" },
+    { &HOME_MODE_TILE, BZ_I_HOME, "home mode", "desk, music, lights" },
     { &APP_TIMER, BZ_I_TIMER, "timer", "match, stopwatch" },
     { &APP_CALC, BZ_I_CALCULATE, "calculator", "ratios, units" },
     { &APP_NOTES, BZ_I_EDIT_NOTE, "notes", "pit notebook" },
@@ -498,6 +502,7 @@ static const app_entry_t APPS_EVERYDAY[] = {
     { &APP_DOCS, BZ_I_DESCRIPTION, "documents", "txt, md" },
     { &APP_PHOTOS, BZ_I_CAMERA, "photos", "pictures" },
     { &APP_STORAGE, BZ_I_SD_CARD, "storage", "card usage" },
+    { &APP_MUSIC, BZ_I_GRAPHIC_EQ, "music", "card, the pc" },
 };
 
 const ui_app_t *ui_app_find(const char *name)
@@ -508,7 +513,9 @@ const ui_app_t *ui_app_find(const char *name)
                       (int)(sizeof APPS_EVERYDAY / sizeof APPS_EVERYDAY[0]) };
     for (int g = 0; g < 4; g++)
         for (int i = 0; i < counts[g]; i++)
-            if (!strcmp(groups[g][i].label, name) || !strcmp(groups[g][i].app->name, name)) return groups[g][i].app;
+            if (groups[g][i].app != &HOME_MODE_TILE &&
+                (!strcmp(groups[g][i].label, name) || !strcmp(groups[g][i].app->name, name)))
+                return groups[g][i].app;
     return NULL;
 }
 
@@ -538,7 +545,8 @@ static void apps_group(lv_obj_t *col, const char *title, const app_entry_t *e, i
         lv_obj_align(lb, LV_ALIGN_BOTTOM_LEFT, 0, -22);
         lv_obj_t *h = bz_label_line(t, e[i].hint, BZ_F_CAPTION, BZ_C_DIM, w - 36);
         lv_obj_align(h, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        bz_on_tap(t, open_app_tap, (void *)e[i].app);
+        if (e[i].app == &HOME_MODE_TILE) bz_on_tap(t, ui_home_mode_tap, NULL);
+        else bz_on_tap(t, open_app_tap, (void *)e[i].app);
     }
 }
 
