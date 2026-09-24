@@ -48,6 +48,8 @@ static struct {
     int tx, ty;
     int owner; /* 0 none, 1 content, 2 glass */
     bool keep_alive;
+    bool swallow_seen; /* the swallowed press has begun */
+    bool swallow; /* the press under way, or the next one, is not the interface's (it wakes the screen) */
     /* motion caches */
     bool frozen, offscreen;
     int thaw;                /* the next band a thaw redraws, or -1 */
@@ -273,6 +275,17 @@ static void poll_touch(void)
 {
     int x = U.tx, y = U.ty;
     bool p = U.cfg.read_touch && U.cfg.read_touch(&x, &y, U.cfg.user);
+    if (U.swallow) {
+        /* counted as a touch (it ends idle) but never delivered; once it lifts, presses are normal again */
+        if (p) {
+            U.last_touch = U.now;
+            U.swallow_seen = true;
+        } else if (U.swallow_seen) {
+            U.swallow = U.swallow_seen = false;
+        }
+        U.pressed = false;
+        return;
+    }
     if (p) {
         U.tx = x;
         U.ty = y;
@@ -565,6 +578,11 @@ void bz_ui_on_frame(bz_frame_fn fn, void *user)
 
 void bz_ui_keep_alive(void) { U.keep_alive = true; }
 double bz_ui_idle_s(void) { return U.now - U.last_touch; }
+void bz_ui_swallow_touch(void)
+{
+    U.swallow = true;
+    U.swallow_seen = false;
+}
 void bz_ui_wake(void) { U.last_touch = U.now; }
 
 double bz_ui_clock(void);

@@ -104,9 +104,8 @@ static void toggle_tap(lv_obj_t *o, void *u)
         break;
     case 2:
         /* the panel goes dark until the next touch; the robot link stays up */
-        C.asleep = true;
-        hal_set_brightness(0);
         cc_to(0, 0);
+        ui_sleep_now();
         break;
     case 3: ui_island_say(BZ_I_POWER, "hold the power button to turn off"); break;
     }
@@ -130,10 +129,6 @@ static void level_cb(lv_obj_t *lv, float v, bool final, void *u)
 static void cc_frame(double now, double dt, void *user)
 {
     (void)dt; (void)user;
-    if (C.asleep && bz_ui_idle_s() < 0.2) {
-        C.asleep = false;
-        hal_set_brightness(S.brightness);
-    }
     if (bz_motion_tick(&C.p) || C.dragging) bz_ui_keep_alive();
     float p = C.p.value < 0 ? 0 : C.p.value;
     bool shown = p > 0.002f || C.dragging;

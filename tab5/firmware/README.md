@@ -16,10 +16,10 @@ Flash settings: DIO, 80 MHz, 16 MB.
 SHA-256:
 
 ```
-7b245dc82de2ba7beaffa2e4441752c4465709f3d93ec2cab6dbdafe34f59ba5  catalyst-tab-merged.bin
+4396488638bf3a4c912affb2b88e05886cb610bc4ae962b4dbdfe4162358079c  catalyst-tab-merged.bin
 1bfccd77e659637b8abc8d44a123c92a873adc72a68726a3c9be39cba348ebd3  bootloader.bin
 a9dd45b38158fe74aca40ab373f015fcc5a0bebe3aabb0f29cad0a2cc8f596eb  partition-table.bin
-3a7cc794c13130a51b9a409bae82d8145af8fdcfcf7d1716dceb11c43be14215  catalyst_tab.bin
+d312f612d2ca587dcbe9577cbdf39f9558edd251b779249e1a54bb9ab07f5850  catalyst_tab.bin
 ```
 
 ## Flash and go

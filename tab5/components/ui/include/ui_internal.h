@@ -33,12 +33,16 @@ typedef struct {
     bool auto_rotate;      /* turn the picture to whichever way up the tablet is held */
     bool flip;             /* which way up now (and the fixed choice when auto_rotate is off) */
     int dim_s;             /* the panel dims after this long untouched (0: never) */
+    int sleep_s;           /* the screen goes off after this long untouched (0: never); a tap wakes it */
     bool clicks;           /* a soft tick on taps */
     int tz;                /* index into the time zones settings offers */
     char wifi_ssid[33];
 } ui_settings_t;
 extern ui_settings_t S;
 void ui_settings_save(void);
+/* The screen off now (the robot link stays up); the next tap wakes it without pressing anything. */
+void ui_sleep_now(void);
+bool ui_asleep(void);
 void ui_set_flip(bool flip); /* turns the picture 180° and redraws everything */
 void ui_apply_addresses(void);
 

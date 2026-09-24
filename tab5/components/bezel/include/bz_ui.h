@@ -50,6 +50,9 @@ bz_comp_t *bz_ui_comp(void);
 bool bz_ui_frame(double now_s);
 /* Seconds since the last touch: the chrome idles away, standby arrives. */
 double bz_ui_idle_s(void);
+/* The next press (or the one under way) still counts as a touch but never reaches the interface: the tap
+ * that wakes a dark screen mustn't also press what was under it. */
+void bz_ui_swallow_touch(void);
 void bz_ui_wake(void);
 
 /* Tone and calm. Applying a tone rebuilds styles (see bz_theme) and redraws everything. */

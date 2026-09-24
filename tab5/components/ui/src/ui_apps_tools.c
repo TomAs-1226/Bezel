@@ -987,12 +987,14 @@ static const char *SS_ICON[SS_COUNT];
 static struct {
     lv_obj_t *nav[SS_COUNT], *pane[SS_COUNT];
     int cur;
-    lv_obj_t *dim_chips[4], *click_chip, *tz_chips[5], *clock, *sd_state, *batt, *off_btn, *link_state, *assist_state;
+    lv_obj_t *sleep_chips[4], *dim_chips[4], *click_chip, *tz_chips[5], *clock, *sd_state, *batt, *off_btn, *link_state, *assist_state;
     double off_armed;
 } SX;
 
 static const int DIM_S[4] = { 30, 90, 300, 0 };
 static const char *const DIM_L[4] = { "30 s", "90 s", "5 min", "never" };
+static const int SLEEP_S[4] = { 60, 300, 900, 0 };
+static const char *const SLEEP_L[4] = { "1 min", "5 min", "15 min", "never" };
 static const char *const TZ_L[5] = { "pacific", "mountain", "central", "eastern", "utc" };
 static const char *const TZ_V[5] = { "PST8PDT,M3.2.0,M11.1.0", "MST7MDT,M3.2.0,M11.1.0", "CST6CDT,M3.2.0,M11.1.0",
                                      "EST5EDT,M3.2.0,M11.1.0", "UTC0" };
@@ -1018,6 +1020,14 @@ static void sx_dim(lv_obj_t *o, void *u)
     (void)o;
     S.dim_s = DIM_S[(int)(intptr_t)u];
     for (int i = 0; i < 4; i++) ui_chip_set(SX.dim_chips[i], S.dim_s == DIM_S[i]);
+    ui_settings_save();
+}
+
+static void sx_sleep_after(lv_obj_t *o, void *u)
+{
+    (void)o;
+    S.sleep_s = SLEEP_S[(int)(intptr_t)u];
+    for (int i = 0; i < 4; i++) ui_chip_set(SX.sleep_chips[i], S.sleep_s == SLEEP_S[i]);
     ui_settings_save();
 }
 
@@ -1068,7 +1078,7 @@ static void sx_clear(lv_obj_t *o, void *u)
 static void sx_sleep(lv_obj_t *o, void *u)
 {
     (void)o; (void)u;
-    hal_set_brightness(0); /* the next touch wakes it: the shell's dim logic puts it back */
+    ui_sleep_now(); /* the next tap wakes it, and presses nothing */
 }
 
 static void sx_off(lv_obj_t *o, void *u)
@@ -1123,6 +1133,7 @@ static void settings_open(void)
 #endif
     ui_chip_set(ST.perf_chip, S.perf);
     for (int i = 0; i < 4; i++) ui_chip_set(SX.dim_chips[i], S.dim_s == DIM_S[i]);
+    for (int i = 0; i < 4; i++) ui_chip_set(SX.sleep_chips[i], S.sleep_s == SLEEP_S[i]);
     ui_chip_set(SX.click_chip, S.clicks);
     for (int i = 0; i < 5; i++) ui_chip_set(SX.tz_chips[i], i == S.tz);
     SX.off_armed = 0;
@@ -1294,6 +1305,12 @@ static void settings_build(lv_obj_t *b)
     r = sx_wrap_row(t, iw);
     ui_button(r, BZ_I_BEDTIME, "screen off", sx_sleep, NULL);
     SX.off_btn = ui_button(r, BZ_I_POWER, "turn off", sx_off, NULL);
+    bz_label(t, "screen off when untouched for", BZ_F_LABEL, BZ_C_DIM);
+    r = sx_wrap_row(t, iw);
+    for (int i = 0; i < 4; i++) SX.sleep_chips[i] = ui_chip(r, SLEEP_L[i], sx_sleep_after, (void *)(intptr_t)i);
+    lv_obj_t *sn = bz_label(t, "Off, the robot link and recording keep running. A tap wakes the screen, and that tap "
+                               "presses nothing.", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(sn, iw);
 
     /* about */
     t = sx_pane(b, SS_ABOUT, px, pw);

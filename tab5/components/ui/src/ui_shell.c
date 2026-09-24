@@ -106,6 +106,15 @@ static struct {
 
 /* ------------------------------------------------------------------ helpers */
 
+/* screen sleep: see the frame hook */
+static struct {
+    bool asleep, dimmed, request;
+    double at;
+} SLP;
+
+void ui_sleep_now(void) { SLP.request = true; }
+bool ui_asleep(void) { return SLP.asleep; }
+
 void ui_text(lv_obj_t *label, const char *fmt, ...)
 {
     char buf[256];
@@ -1202,6 +1211,8 @@ void ui_settings_save(void)
     char n[12];
     snprintf(n, sizeof n, "%d", S.dim_s);
     hal_kv_set("dim", n);
+    snprintf(n, sizeof n, "%d", S.sleep_s);
+    hal_kv_set("sleep", n);
     hal_kv_set("clicks", S.clicks ? "1" : "0");
     snprintf(n, sizeof n, "%d", S.tz);
     hal_kv_set("tzi", n);
@@ -1226,6 +1237,8 @@ static void settings_load(void)
     if (hal_kv_get("autorot", buf, sizeof buf)) S.auto_rotate = buf[0] == '1';
     S.dim_s = 90;
     if (hal_kv_get("dim", buf, sizeof buf)) S.dim_s = atoi(buf);
+    S.sleep_s = 300;
+    if (hal_kv_get("sleep", buf, sizeof buf)) S.sleep_s = atoi(buf);
     S.clicks = true;
     if (hal_kv_get("clicks", buf, sizeof buf)) S.clicks = buf[0] == '1';
     if (hal_kv_get("tzi", buf, sizeof buf)) S.tz = atoi(buf);
@@ -1391,11 +1404,25 @@ static void shell_frame(double now, double dt, void *user)
         hal_set_brightness(S.brightness * k * k * (3 - 2 * k));
         bz_ui_keep_alive();
     }
-    /* after 90 s untouched the panel dims to save the tablet's battery; a touch brings it back */
-    static bool dimmed;
-    bool idle = S.dim_s > 0 && bz_ui_idle_s() > S.dim_s;
-    if (idle != dimmed) {
-        dimmed = idle;
+    /* untouched, the panel dims (settings: display), then goes off; a tap wakes it, and that tap presses
+     * nothing. Asleep, the link to the robot and everything behind the glass keep running. */
+    double idle_s = bz_ui_idle_s();
+    if (!SLP.asleep && (SLP.request || (S.sleep_s > 0 && idle_s > S.sleep_s))) {
+        SLP.asleep = true;
+        SLP.request = false;
+        SLP.at = now;
+        hal_set_brightness(0);
+        bz_ui_swallow_touch();
+    } else if (SLP.asleep && now - idle_s > SLP.at + 0.05) {
+        /* a touch since it went off: back on, and the dim timer starts over */
+        SLP.asleep = false;
+        SLP.dimmed = false;
+        hal_set_brightness(S.brightness);
+        hal_tone(1200, 8, S.volume * 0.3f);
+    }
+    bool idle = !SLP.asleep && S.dim_s > 0 && idle_s > S.dim_s;
+    if (!SLP.asleep && idle != SLP.dimmed) {
+        SLP.dimmed = idle;
         hal_set_brightness(idle ? S.brightness * 0.25f : S.brightness);
     }
     /* the glass's one light leans with how the tablet is held: read at 10 Hz, low-passed and moved only in
