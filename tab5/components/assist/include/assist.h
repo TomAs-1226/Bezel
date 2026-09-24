@@ -89,6 +89,8 @@ void assist_init(void);                        /* once, at boot; starts the work
 /* The UI thread hands over the robot as of each model update (10 Hz); assist copies it under its own
  * lock, so its worker never reads the UI's model while the UI writes it. */
 void assist_feed(const cat_robot_t *r);
+/* The robot as last fed (for the companion's own conversation, whose tools read it too). Any thread. */
+void assist_robot(cat_robot_t *out);
 void assist_configure(const assist_config_t *c);
 /* The configuration as it stands (keys included: never log them, never show more than "saved"). */
 void assist_config(assist_config_t *out);
@@ -124,6 +126,12 @@ void assist_usage(as_usage_t *out);
 
 /* Suggested openers for the current robot state ("Why is Elevator hot?"), for chips under the prompt. */
 int assist_suggestions(const char **out, int max);
+
+/* Keys dropped on the microSD card: /sdcard/CATOS/KEYS/OPENAI.TXT and ANTHROPIC.TXT, read once at boot by
+ * assist_init (whitespace trimmed), stored like a typed key, then overwritten and deleted so they don't
+ * linger on the card. The key is never logged. assist_import_note() hands the UI thread a one-time
+ * message for the island ("OpenAI key imported"), or NULL. */
+const char *assist_import_note(void);
 
 /* Points the direct route at another base URL instead of https://api.anthropic.com (tests use a local
  * fake; "" restores the default). assist_init also reads it from the kv key "ai_base". */

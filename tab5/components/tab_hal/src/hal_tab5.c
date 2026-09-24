@@ -8,7 +8,7 @@
  *
  * Tasks: the UI (LVGL + compositor) runs on core 1; this file's workers — the frame hand-over, tones,
  * camera capture, the clip encoder, CAN — run on core 0 beside the NetworkTables client, so the renderer
- * never waits on a peripheral. The microphones (ES7210) are deliberately left unused.
+ * never waits on a peripheral. Audio (speaker, microphones, wake word) is in hal_tab5_audio.c.
  *
  * Verified by compiling only: this file has not yet run on a Tab5. Items marked UNVERIFIED are the
  * ones most likely to need a correction on first boot. */
@@ -1328,64 +1328,11 @@ void hal_display(hal_display_t *o)
 
 /* ------------------------------------------------------------------ audio */
 
-/* The ES8388 and the speaker amp only. The ES7210 and its microphones are never configured: nothing in
- * Catalyst Tab listens. (The BSP's shared I2S bus still enables its receive channel; with no codec behind
- * it that costs a few DMA interrupts and captures nothing.) */
-static struct {
-    esp_codec_dev_handle_t spk;
-    QueueHandle_t tones;
-} A;
-
-typedef struct { float hz; int ms; float vol; } tone_t;
-
-static void tone_task(void *arg)
-{
-    static int16_t buf[48 * 2 * 20]; /* 20 ms stereo at 48 kHz */
-    tone_t t;
-    for (;;) {
-        if (xQueueReceive(A.tones, &t, portMAX_DELAY) != pdTRUE || !A.spk) continue;
-        int total = 48 * t.ms, done = 0;
-        double ph = 0, step = 2 * M_PI * t.hz / 48000.0;
-        while (done < total) {
-            int n = total - done > 960 ? 960 : total - done;
-            for (int i = 0; i < n; i++) {
-                /* a short raised-cosine envelope: a tick, not a click */
-                int k = done + i, edge = 48 * 3;
-                float env = k < edge ? 0.5f - 0.5f * cosf((float)M_PI * k / edge)
-                          : k > total - edge ? 0.5f - 0.5f * cosf((float)M_PI * (total - k) / edge) : 1;
-                int16_t s = (int16_t)(sin(ph) * 12000 * env * t.vol);
-                ph += step;
-                buf[2 * i] = buf[2 * i + 1] = s;
-            }
-            esp_codec_dev_write(A.spk, buf, n * 4);
-            done += n;
-        }
-    }
-}
-
-static void audio_init(void)
-{
-    A.spk = bsp_audio_codec_speaker_init();
-    esp_codec_dev_sample_info_t fs = { .sample_rate = 48000, .channel = 2, .bits_per_sample = 16 };
-    if (A.spk) {
-        esp_codec_dev_open(A.spk, &fs);
-        esp_codec_dev_set_out_vol(A.spk, 70);
-    }
-    A.tones = xQueueCreate(8, sizeof(tone_t));
-    xTaskCreatePinnedToCore(tone_task, "tone", 4096, NULL, 4, NULL, 0);
-}
-
-void hal_tone(float hz, int ms, float v)
-{
-    if (!A.tones || v <= 0.01f) return;
-    tone_t t = { hz, ms, v };
-    xQueueSend(A.tones, &t, 0);
-}
-
+/* The speaker, the microphones and the wake word live in hal_tab5_audio.c. */
 void hal_set_volume(float v)
 {
     T.volume = v;
-    if (A.spk) esp_codec_dev_set_out_vol(A.spk, (int)(v * 100));
+    hal_audio_volume(v);
 }
 
 /* ------------------------------------------------------------------ camera */
@@ -2037,7 +1984,7 @@ void hal_start(void)
     rtc_init();
     imu_init();
     hal_boot_stage("speaker");
-    audio_init();
+    hal_audio_init();
     hal_boot_stage("microsd");
     T.sd = bsp_sdcard_mount() == ESP_OK;
     boot_report_sd();

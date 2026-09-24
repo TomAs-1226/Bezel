@@ -86,6 +86,8 @@ Two paths, chosen per motion:
 | time | SNTP, RTC | alarms ring with the app closed (`ui_os_boot`) |
 | robot | `components/catalyst` (NT4 model) | see docs/catalyst-integration.md for the library contract |
 | assistant | `components/assist`, Catalyst Link | Claude via the PC or a key; GPT with a key (branch tab5-companion) |
+| audio | `hal_tab5_audio.c` | one speaker task mixing tones and streamed speech (48 kHz); microphones at 16 kHz, on only while the companion is on screen; ESP-SR WakeNet "Hi, ESP" from the `model` partition |
+| voice | `components/assist/src/voice.c` | the companion's own conversation: wake word or tap, energy VAD, OpenAI transcription, a JSON reply with a feeling, OpenAI speech streamed to the speaker |
 
 ### 4. The shell
 

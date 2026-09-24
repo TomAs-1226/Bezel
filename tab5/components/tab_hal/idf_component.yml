@@ -16,3 +16,7 @@ dependencies:
   # Clips (hal_tab5.c): the P4's hardware H.264 encoder. Exactly the version esp_video 2.0.1 (through the
   # BSP) pins, so there is one copy of it.
   espressif/esp_h264: "1.0.4"
+  # The companion's wake word (hal_tab5_audio.c): ESP-SR's WakeNet9 "Hi, ESP" (wn9_hiesp). 2.4.7 is the
+  # newest line without the esp-dl dependency and carries the fix for the ESP32-P4 crash on IDF 5.5.1
+  # (2.4.5). The model goes into the "model" partition (partitions.csv), written by `idf.py flash`.
+  espressif/esp-sr: "~2.4.7"

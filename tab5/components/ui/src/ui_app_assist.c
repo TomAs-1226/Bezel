@@ -19,6 +19,7 @@
 #include "ccwatch.h"
 #include "link.h"
 #include "ui_companion.h"
+#include "voice.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -1073,9 +1074,30 @@ static const char *const REMIND_L[4] = { "once", "every minute", "every 2 min", 
 
 static struct {
     lv_obj_t *route[3], *keys, *orb[2], *desk, *remind[4];
+    lv_obj_t *vout[3], *vwake, *vfollow, *vvoice[6], *vstate;
     ui_kb_t *kb;
-    int editing;
+    int editing;           /* 0-4 the keys (key_typed); 10-13 the companion's voice (VOICE_TITLE) */
 } SA;
+
+/* the companion's voice */
+static const char *const VOUT_L[3] = { "speak and show", "speak only", "show only" };
+static const vo_out_t VOUT[3] = { VO_OUT_BOTH, VO_OUT_SPEAK, VO_OUT_SHOW };
+static const char *const VOICES[6] = { "coral", "sage", "verse", "alloy", "echo", "shimmer" };
+static const char *const VOICE_TITLE[4] = { "the companion's chat model (empty: the openai model above)",
+                                            "speech to text model (empty: " VO_STT_DEFAULT ")",
+                                            "speech model (empty: " VO_TTS_DEFAULT ")",
+                                            "language you speak, e.g. en (empty: detect)" };
+
+static void voice_state_text(char *out, size_t n)
+{
+    voice_config_t c;
+    voice_config(&c);
+    const char *w = voice_wake_word();
+    snprintf(out, n, "chat %s · hears with %s · speaks with %s, voice %s · wake word: %s",
+             c.chat_model[0] ? c.chat_model : "(the openai model)", c.stt_model[0] ? c.stt_model : VO_STT_DEFAULT,
+             c.tts_model[0] ? c.tts_model : VO_TTS_DEFAULT, c.voice[0] ? c.voice : VO_VOICE_DEFAULT,
+             !c.wake ? "off" : w ? w : "loads when the companion opens (none if the model partition wasn't flashed)");
+}
 
 static void sa_show(void)
 {
@@ -1090,6 +1112,17 @@ static void sa_show(void)
     ui_chip_set(SA.orb[1], c->orb_companion);
     ui_chip_set(SA.desk, c->desk_auto);
     for (int i = 0; i < 4; i++) ui_chip_set(SA.remind[i], c->remind_s == REMIND_S[i]);
+    if (SA.vstate) {
+        voice_config_t v;
+        voice_config(&v);
+        for (int i = 0; i < 3; i++) ui_chip_set(SA.vout[i], v.out == VOUT[i]);
+        ui_chip_set(SA.vwake, v.wake);
+        ui_chip_set(SA.vfollow, v.follow);
+        for (int i = 0; i < 6; i++) ui_chip_set(SA.vvoice[i], !strcmp(v.voice[0] ? v.voice : VO_VOICE_DEFAULT, VOICES[i]));
+        char t[256];
+        voice_state_text(t, sizeof t);
+        ui_text(SA.vstate, "%s", t);
+    }
 }
 
 static void sa_route(lv_obj_t *o, void *u)
@@ -1104,7 +1137,65 @@ static void sa_route(lv_obj_t *o, void *u)
 static void sa_typed(const char *text, void *u)
 {
     (void)u;
-    key_typed(SA.editing, text);
+    if (SA.editing >= 10) {
+        voice_config_t v;
+        voice_config(&v);
+        char t[48];
+        snprintf(t, sizeof t, "%s", text);
+        char *p = t;
+        while (*p == ' ') p++;
+        for (size_t l = strlen(p); l && (p[l - 1] == ' ' || p[l - 1] == '\n'); l--) p[l - 1] = 0;
+        switch (SA.editing) {
+        case 10: snprintf(v.chat_model, sizeof v.chat_model, "%s", p); break;
+        case 11: snprintf(v.stt_model, sizeof v.stt_model, "%s", p); break;
+        case 12: snprintf(v.tts_model, sizeof v.tts_model, "%s", p); break;
+        case 13: snprintf(v.lang, sizeof v.lang, "%s", p); break;
+        }
+        voice_set_config(&v);
+    } else {
+        key_typed(SA.editing, text);
+    }
+    sa_show();
+}
+
+static void sa_vedit(lv_obj_t *o, void *u)
+{
+    (void)o;
+    SA.editing = (int)(intptr_t)u;
+    voice_config_t v;
+    voice_config(&v);
+    const char *cur = SA.editing == 10 ? v.chat_model : SA.editing == 11 ? v.stt_model : SA.editing == 12 ? v.tts_model : v.lang;
+    ui_kb_show(SA.kb, VOICE_TITLE[SA.editing - 10], cur, false, true, sa_typed, NULL);
+}
+
+static void sa_vout(lv_obj_t *o, void *u)
+{
+    (void)o;
+    voice_config_t v;
+    voice_config(&v);
+    v.out = VOUT[(int)(intptr_t)u];
+    voice_set_config(&v);
+    sa_show();
+}
+
+static void sa_vwake(lv_obj_t *o, void *u)
+{
+    (void)o;
+    voice_config_t v;
+    voice_config(&v);
+    if ((intptr_t)u) v.follow = !v.follow;
+    else v.wake = !v.wake;
+    voice_set_config(&v);
+    sa_show();
+}
+
+static void sa_vvoice(lv_obj_t *o, void *u)
+{
+    (void)o;
+    voice_config_t v;
+    voice_config(&v);
+    snprintf(v.voice, sizeof v.voice, "%s", VOICES[(int)(intptr_t)u]);
+    voice_set_config(&v);
     sa_show();
 }
 
@@ -1201,6 +1292,29 @@ void ui_assist_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     r = sa_row(col, w);
     SA.desk = ui_chip(r, "open by itself on a stand while charging", sa_desk, NULL);
     ui_button(r, BZ_I_VISIBILITY, "open the companion", sa_open_companion, NULL);
+
+    bz_label(col, "the companion's voice (openai, with the key above)", BZ_F_LABEL, BZ_C_DIM);
+    r = sa_row(col, w);
+    for (int i = 0; i < 3; i++) SA.vout[i] = ui_chip(r, VOUT_L[i], sa_vout, (void *)(intptr_t)i);
+    r = sa_row(col, w);
+    SA.vwake = ui_chip(r, "wake word", sa_vwake, (void *)0);
+    SA.vfollow = ui_chip(r, "listen for a follow-up", sa_vwake, (void *)1);
+    r = sa_row(col, w);
+    for (int i = 0; i < 6; i++) SA.vvoice[i] = ui_chip(r, VOICES[i], sa_vvoice, (void *)(intptr_t)i);
+    r = sa_row(col, w);
+    ui_button(r, BZ_I_EDIT_NOTE, "chat model", sa_vedit, (void *)10);
+    ui_button(r, BZ_I_EDIT_NOTE, "hearing model", sa_vedit, (void *)11);
+    ui_button(r, BZ_I_EDIT_NOTE, "speech model", sa_vedit, (void *)12);
+    ui_button(r, BZ_I_EDIT_NOTE, "language", sa_vedit, (void *)13);
+    SA.vstate = bz_label(col, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(SA.vstate, w);
+    lv_label_set_long_mode(SA.vstate, LV_LABEL_LONG_WRAP);
+    n = bz_label(col, "The microphones are on only while the companion is on screen. The wake word is heard on the tablet "
+                      "itself; what you say after it, or after a tap on the face, goes to OpenAI to be transcribed and answered, "
+                      "and the answer is spoken back. The companion keeps its own conversation, apart from assist's.",
+                 BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(n, w);
+    lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
 
     bz_label(col, "when claude code on the pc finishes or needs you, remind", BZ_F_LABEL, BZ_C_DIM);
     r = sa_row(col, w);

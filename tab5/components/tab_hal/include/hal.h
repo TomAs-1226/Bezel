@@ -70,10 +70,38 @@ typedef struct {
 } hal_battery_t;
 bool hal_battery(hal_battery_t *out);
 
-/* ---- audio: the speaker only (the microphones are deliberately unused) ---- */
-/* A short tone on the speaker: detent ticks, chimes. Non-blocking. */
+/* ---- audio ---- */
+/* A short tone on the speaker: detent ticks, chimes. Non-blocking. Mixed over any speech playing. */
 void hal_tone(float hz, int ms, float volume01);
 void hal_set_volume(float v01);
+
+/* Speech out: 16-bit mono PCM streamed to the speaker, at a rate that divides 48 kHz (8, 12, 16, 24, 48
+ * kHz). start → write… → end, and it plays out by itself (hal_play_busy() turns false); stop cuts it off
+ * at once. Playback begins once ~170 ms is queued (or at end), so a stream that arrives in bursts doesn't
+ * stutter. hal_play_write() blocks up to timeout_ms while the queue (~6 s) is full; returns samples taken.
+ * One stream at a time, one writer. */
+bool hal_play_start(int rate_hz);
+int hal_play_write(const int16_t *pcm, int n, int timeout_ms);
+void hal_play_end(void);
+void hal_play_stop(void);
+bool hal_play_busy(void);
+float hal_play_level(void);               /* loudness of what the speaker is playing now, 0..1 */
+
+/* The microphones: 16 kHz mono, for speech. Off until started; nothing listens unless asked. Blocking reads
+ * (~20 ms of audio each): call from a worker. hal_mic_read returns samples (0 when off, < 0 on error). */
+bool hal_mic_start(void);
+int hal_mic_read(int16_t *out, int max);
+void hal_mic_stop(void);
+bool hal_mic_on(void);
+float hal_mic_level(void);                /* loudness of the last read, 0..1 */
+void hal_mic_channel(int ch);             /* -1 the louder (default), 0 left, 1 right, 2 both mixed */
+
+/* The wake word, on the tablet (ESP-SR WakeNet on the Tab5). hal_wake_ready loads the model on first call
+ * (slow: from a worker) and says which phrase it listens for; false when there is none (tap to talk only).
+ * Feed it what hal_mic_read gives: true the moment the phrase is heard. */
+bool hal_wake_ready(const char **word);
+void hal_wake_reset(void);
+bool hal_wake_feed(const int16_t *pcm, int n);
 
 /* ---- camera ---- */
 bool hal_camera_start(void);
