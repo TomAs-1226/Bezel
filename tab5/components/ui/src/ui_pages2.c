@@ -475,6 +475,9 @@ static const app_entry_t APPS_DIAG[] = {
     { &APP_LOGS, BZ_I_RECEIPT_LONG, "logs", "ds logs, sd" },
     { &APP_LEVEL, BZ_I_STRAIGHTEN, "level", "imu angle" },
     { &APP_LENS, BZ_I_PHOTO_CAMERA, "lens", "camera, clips" },
+    { &APP_GEAR, BZ_I_SPEED, "gearing", "speed, torque" },
+    { &APP_RULER, BZ_I_STRAIGHTEN, "ruler", "mm, inches" },
+    { &APP_REF, BZ_I_HANDYMAN, "reference", "wiring, can" },
 };
 static const app_entry_t APPS_TABLET[] = {
     { &APP_ASSIST, BZ_I_AUTO_AWESOME, "assist", "ai technician" },
@@ -533,7 +536,10 @@ static void apps_group(lv_obj_t *col, const char *title, const app_entry_t *e, i
 void ui_page_tools(lv_obj_t *page)
 {
     lv_obj_t *right = ui_head(page, "Apps", NULL);
-    bz_label_line(right, "25 apps", BZ_F_LABEL, BZ_C_DIM, ui_head_width("Apps"));
+    char n[16];
+    snprintf(n, sizeof n, "%d apps", (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0] + sizeof APPS_DIAG / sizeof APPS_DIAG[0] +
+                                           sizeof APPS_TABLET / sizeof APPS_TABLET[0]));
+    bz_label_line(right, n, BZ_F_LABEL, BZ_C_DIM, ui_head_width("Apps"));
     lv_obj_t *wrap = bz_box(page);
     lv_obj_set_pos(wrap, PAD, BODY_Y);
     lv_obj_t *col = ui_scroller(wrap, W - 2 * PAD, BODY_H);

@@ -91,6 +91,7 @@ extern const ui_app_t APP_SYSTEMCORE, APP_MOTORS, APP_STATES, APP_CONTROLS, APP_
 extern const ui_app_t APP_ASSIST, APP_LINK;
 /* ui_apps_util.c: the tablet's own utilities */
 extern const ui_app_t APP_TIMER, APP_CALC, APP_NOTES, APP_CHECK, APP_LIGHT, APP_SYSMON, APP_FILES;
+extern const ui_app_t APP_GEAR, APP_RULER, APP_REF; /* ui_apps_shop.c */
 
 /* The control center: pulled down from the top edge. */
 void ui_cc_init(void);

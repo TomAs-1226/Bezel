@@ -442,6 +442,59 @@ static in_rect_t in_rect(const void *first, int stride, int bpp, int w, int h)
     return (in_rect_t){ first, (uint32_t)stride, (uint32_t)h, 0 };
 }
 
+/* The PPA's blocking mode waits forever, and twice in ~25 starts a rotation never finished (during the
+ * C6's bring-up): the boot card, then the whole interface, stopped on it. A present's rotations go through
+ * their own client, each waited for with a timeout; a rotation that doesn't come back marks the PPA
+ * wedged, and the CPU turns the picture (slower, but the tablet stays usable) until the late one lands. */
+static struct {
+    ppa_client_handle_t client;
+    SemaphoreHandle_t done;
+    bool wedged;
+    unsigned wedges;
+} ROTQ;
+
+static bool rot_done_cb(ppa_client_handle_t c, ppa_event_data_t *e, void *u)
+{
+    (void)c; (void)e; (void)u;
+    BaseType_t woke = pdFALSE;
+    xSemaphoreGiveFromISR(ROTQ.done, &woke);
+    return woke == pdTRUE;
+}
+
+static void rot_init(void)
+{
+    ROTQ.done = xSemaphoreCreateBinary();
+    ppa_client_config_t pc = { .oper_type = PPA_OPERATION_SRM, .max_pending_trans_num = 1 };
+    if (!ROTQ.done || ppa_register_client(&pc, &ROTQ.client) != ESP_OK) {
+        ROTQ.client = NULL;
+        return;
+    }
+    ppa_event_callbacks_t cbs = { .on_trans_done = rot_done_cb };
+    ppa_client_register_event_callbacks(ROTQ.client, &cbs);
+}
+
+static void rotate_cpu(const bz_present_t *p, uint16_t *fb)
+{
+    const bz_area_t *a = &p->a;
+    const uint16_t *src = p->src;
+    for (int y = a->y1; y <= a->y2; y++, src += p->stride) {
+        const uint16_t *s = src;
+        if (!s_flip) {
+            /* landscape (x, y) lands at portrait (y, W-1-x) */
+            uint16_t *d = fb + (size_t)(HAL_W - 1 - a->x1) * PANEL_W + y;
+            for (int x = a->x1; x <= a->x2; x++, d -= PANEL_W) *d = *s++;
+        } else {
+            uint16_t *d = fb + (size_t)a->x1 * PANEL_W + (HAL_H - 1 - y);
+            for (int x = a->x1; x <= a->x2; x++, d += PANEL_W) *d = *s++;
+        }
+    }
+    /* out of the cache now: a PPA rotation later in the frame invalidates its rows without writing them
+     * back, which would drop these */
+    int r0 = s_flip ? a->x1 : HAL_W - 1 - a->x2, r1 = s_flip ? a->x2 : HAL_W - 1 - a->x1;
+    esp_cache_msync(fb + (size_t)r0 * PANEL_W, (size_t)(r1 - r0 + 1) * PANEL_W * 2,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
+
 /* One area from its own source into the portrait back buffer. true: queued non-blocking (wait for it). */
 static bool rotate_area(const bz_present_t *p, void *fb, bool async)
 {
@@ -472,7 +525,32 @@ static bool rotate_area(const bz_present_t *p, void *fb, bool async)
 #else
     (void)async;
 #endif
-    /* no room in the queue: blocking, which also waits out everything queued before it */
+    /* A sliver never goes to the PPA: a 354×6 rotation hung it on nearly every start (its 2D-DMA doesn't
+     * finish a turned block a few pixels across), and for a few thousand pixels the CPU is quicker than
+     * the PPA's setup anyway. */
+    if (w < 16 || h < 16 || w * h <= 4096) {
+        rotate_cpu(p, fb);
+        return false;
+    }
+    if (ROTQ.client) {
+        /* a wedged PPA that has since finished its late rotation is back in service */
+        if (ROTQ.wedged && xSemaphoreTake(ROTQ.done, 0) == pdTRUE) {
+            ROTQ.wedged = false;
+            ESP_LOGW(TAG, "present: the PPA came back");
+        }
+        if (!ROTQ.wedged) {
+            op.mode = PPA_TRANS_MODE_NON_BLOCKING;
+            if (ppa_do_scale_rotate_mirror(ROTQ.client, &op) == ESP_OK) {
+                if (xSemaphoreTake(ROTQ.done, pdMS_TO_TICKS(300)) == pdTRUE) return false;
+                ROTQ.wedged = true;
+                ESP_LOGE(TAG, "present: a PPA rotation (%dx%d) didn't finish in 300 ms (%u so far): the CPU turns "
+                              "the picture until it does", w, h, ++ROTQ.wedges);
+            }
+        }
+        rotate_cpu(p, fb);
+        return false;
+    }
+    /* no client of its own: blocking, which also waits out everything queued before it */
     op.mode = PPA_TRANS_MODE_BLOCKING;
     ppa_do_scale_rotate_mirror(T.ppa_srm, &op);
     return false;
@@ -1824,6 +1902,7 @@ bool hal_init(void)
     ppa_register_client(&pc, &T.ppa_cam);
     pc.oper_type = PPA_OPERATION_BLEND;
     ppa_register_client(&pc, &T.ppa_blend);
+    rot_init();
     if (T.ink) ppa_blend_selftest();
     par_init();
 

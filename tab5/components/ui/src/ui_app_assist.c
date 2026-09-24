@@ -36,7 +36,7 @@
 /* ================================================================== text */
 
 /* Markdown-light for a label: **bold** and `code` lose their marks (the faces have no bold or mono
- * run inside a label), "- " and "* " become bullets. */
+ * run inside a label), "- " and "* " become dashes. */
 static void plain(char *out, size_t n, const char *in)
 {
     size_t o = 0;
@@ -45,7 +45,7 @@ static void plain(char *out, size_t n, const char *in)
         if (p[0] == '*' && p[1] == '*') { p++; continue; }
         if (*p == '`') continue;
         if (line_start && (p[0] == '-' || p[0] == '*') && p[1] == ' ') {
-            memcpy(out + o, "\xe2\x80\xa2", 3); /* • */
+            memcpy(out + o, "\xe2\x80\x94", 3); /* an em dash: the body face has no bullet or en dash */
             o += 3;
             line_start = false;
             continue;
