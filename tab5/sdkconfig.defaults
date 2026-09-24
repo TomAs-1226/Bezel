@@ -65,7 +65,9 @@ CONFIG_ESP_HOSTED_SDIO_PRIV_PIN_D1_4BIT_BUS=10
 CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
 CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
 CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15
-CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE=y
+# fixed 1.5 KB receive packets from the pool: streaming mode grows one contiguous internal-DMA buffer to
+# whatever is pending, and a scan's results asked for more than internal RAM had (assert in sdio_rx_get_buffer)
+CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_MAX_SIZE=y
 
 # robot.local (Systemcore) and roborio-TEAM-frc.local resolve through mDNS
 CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y

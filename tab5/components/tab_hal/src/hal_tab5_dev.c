@@ -160,6 +160,20 @@ static void run(char *line)
         localtime_r(&tv.tv_sec, &tm);
         hal_rtc_set(&tm);
         say("OK\n");
+    } else if (!strcmp(line, "scan")) {
+        /* a Wi-Fi scan, one "AP rssi ssid" line per network heard */
+        static hal_ap_t ap[20];
+        int n = hal_wifi_scan(ap, 20);
+        char l[64];
+        for (int i = 0; i < n; i++) {
+            snprintf(l, sizeof l, "AP %d %s\n", ap[i].rssi, ap[i].ssid);
+            say(l);
+        }
+        say("OK\n");
+    } else if (sscanf(line, "ant %d", &a) == 1) {
+        void hal_antenna(bool external);
+        hal_antenna(a != 0);
+        say("OK\n");
     } else if (!strcmp(line, "flip")) {
         hal_set_flip(!hal_flip());
         say("OK\n");

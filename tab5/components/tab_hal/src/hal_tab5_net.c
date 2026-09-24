@@ -58,12 +58,30 @@ static struct {
 
 static void tether_promote_all(void);
 
+static volatile bool s_scanning;
+
+/* Whether a network has been saved (hal_wifi_join; the driver keeps it in NVS). Without one there's
+ * nothing to connect to, and a station forever connecting refuses to scan (ESP_ERR_WIFI_STATE). */
+static bool wifi_has_network(void)
+{
+    wifi_config_t wc;
+    /* M5Stack's factory test leaves its line's network in the C6's NVS: that one doesn't count */
+    return esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK && wc.sta.ssid[0] &&
+           strcmp((const char *)wc.sta.ssid, "M5Stack-Production") != 0;
+}
+
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) esp_wifi_connect();
-    else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
+    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
+        if (wifi_has_network()) esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         N.up = false;
-        esp_wifi_connect(); /* keep trying: the pit network comes and goes */
+        wifi_event_sta_disconnected_t *e = data;
+        static uint8_t last;
+        if (e->reason != last) ESP_LOGW(TAG, "wi-fi: '%.32s' dropped, reason %d, rssi %d", e->ssid, e->reason, e->rssi);
+        last = e->reason;
+        /* keep trying: the pit network comes and goes — but not during a scan, and not with nothing saved */
+        if (!s_scanning && wifi_has_network()) esp_wifi_connect();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *e = data;
         snprintf(N.ip, sizeof N.ip, IPSTR, IP2STR(&e->ip_info.ip));
@@ -85,9 +103,13 @@ static void wifi_init(void)
     }
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL);
-    esp_wifi_set_mode(WIFI_MODE_STA);
+    esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_ps(WIFI_PS_NONE); /* latency over battery: a dashboard wants its packets now */
-    esp_wifi_start();
+    esp_err_t s = esp_wifi_start();
+    wifi_country_t cc = { 0 };
+    esp_err_t c = esp_wifi_get_country(&cc);
+    ESP_LOGI(TAG, "wi-fi: mode %s, start %s, country %s %.2s ch %d+%d", esp_err_to_name(m), esp_err_to_name(s),
+             esp_err_to_name(c), cc.cc, cc.schan, cc.nchan);
 }
 
 void hal_wifi_join(const char *ssid, const char *pass)
@@ -103,11 +125,35 @@ void hal_wifi_join(const char *ssid, const char *pass)
 
 int hal_wifi_scan(hal_ap_t *out, int max)
 {
-    if (esp_wifi_scan_start(NULL, true) != ESP_OK) return 0;
-    uint16_t n = (uint16_t)max;
-    wifi_ap_record_t *rec = calloc(n, sizeof *rec);
-    if (!rec) return 0;
-    esp_wifi_scan_get_ap_records(&n, rec);
+    /* a station in the middle of connecting won't scan: stop it for the scan, and resume after */
+    s_scanning = true;
+    if (!N.up) esp_wifi_disconnect();
+    /* an explicit active scan of every channel: NULL (the driver's defaults) crosses the SDIO link to the
+     * C6 as a config it may not fill in */
+    wifi_scan_config_t sc = {
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = { .active = { .min = 80, .max = 200 } },
+    };
+    esp_err_t e = esp_wifi_scan_start(&sc, true);
+    if (e != ESP_OK) {
+        vTaskDelay(pdMS_TO_TICKS(300));
+        e = esp_wifi_scan_start(&sc, true);
+    }
+    /* the results are read before the station reconnects: starting a connect empties the C6's list */
+    uint16_t n = 0;
+    wifi_ap_record_t *rec = NULL;
+    if (e != ESP_OK) {
+        ESP_LOGW(TAG, "wi-fi scan: %s", esp_err_to_name(e));
+    } else {
+        uint16_t found = 0;
+        esp_wifi_scan_get_ap_num(&found);
+        n = found < (uint16_t)max ? found : (uint16_t)max;
+        if (n && (rec = calloc(n, sizeof *rec)) && esp_wifi_scan_get_ap_records(&n, rec) != ESP_OK) n = 0;
+        if (!rec) n = 0;
+    }
+    s_scanning = false;
+    if (!N.up && wifi_has_network()) esp_wifi_connect();
     for (int i = 0; i < n; i++) {
         snprintf(out[i].ssid, sizeof out[i].ssid, "%s", (const char *)rec[i].ssid);
         out[i].rssi = rec[i].rssi;

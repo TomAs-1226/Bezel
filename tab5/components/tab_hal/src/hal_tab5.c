@@ -184,8 +184,16 @@ static void power_init(void)
      * display and touch bring-up use too; its reset at creation is harmless here, before the panel */
     T.e1 = bsp_io_expander_init();
     esp_io_expander_set_dir(T.e1, E1_ANTENNA | E1_EXT5V, IO_EXPANDER_OUTPUT);
-    esp_io_expander_set_level(T.e1, E1_ANTENNA, 0); /* the internal 3D antenna */
+    esp_io_expander_set_level(T.e1, E1_ANTENNA, 0); /* the internal 3D antenna (M5Stack: RF path, low = internal) */
     esp_io_expander_set_level(T.e1, E1_EXT5V, 0);   /* Grove 5 V off until the CAN tap wants it */
+    /* the driver's reset leaves every output high-Z: without this both pins float whatever their level,
+     * and a floating RF switch connects neither antenna (every scan came back empty) */
+    esp_io_expander_set_output_mode(T.e1, E1_ANTENNA | E1_EXT5V, IO_EXPANDER_OUTPUT_MODE_PUSH_PULL);
+}
+
+void hal_antenna(bool external)
+{
+    if (T.e1) esp_io_expander_set_level(T.e1, E1_ANTENNA, external);
 }
 
 static void ext5v(bool on)

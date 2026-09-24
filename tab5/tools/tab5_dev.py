@@ -47,6 +47,9 @@ def reply(s, timeout=20):
                     raise SystemExit("shot: timed out after %d of %d bytes" % (len(data), n))
                 data += chunk
             return ("shot", int(w), int(h), data)
+        if text.startswith("AP "):
+            print(text[3:])  # a network from "scan"
+            continue
         if text == "OK":
             return ("ok",)
         if text.startswith("ERR"):

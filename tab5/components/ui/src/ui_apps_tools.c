@@ -879,11 +879,43 @@ static void st_kb_event(lv_event_t *e)
     if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) lv_obj_add_flag(lv_obj_get_parent(ST.kb), LV_OBJ_FLAG_HIDDEN);
 }
 
-static void st_ap(lv_obj_t *o, void *u)
+/* A scan takes ~3 s on the C6: it runs on a worker, and the settings refresh lists what it heard. */
+#define SCAN_MAX 12
+static struct {
+    volatile int state; /* 0 idle, 1 listening, 2 heard (for the refresh to show) */
+    int n;
+    hal_ap_t ap[SCAN_MAX];
+} SCN;
+
+static void *scan_worker(void *u)
 {
     (void)u;
-    lv_obj_t *lbl = lv_obj_get_child(o, 0);
-    snprintf(ST.join_ssid, sizeof ST.join_ssid, "%s", lv_label_get_text(lbl));
+    hal_ap_t heard[24];
+    int n = hal_wifi_scan(heard, 24), k = 0;
+    /* strongest first (the driver's order); one entry per name, hidden networks left out */
+    for (int i = 0; i < n && k < SCAN_MAX; i++) {
+        if (!heard[i].ssid[0]) continue;
+        bool dup = false;
+        for (int j = 0; j < k && !dup; j++) dup = !strcmp(SCN.ap[j].ssid, heard[i].ssid);
+        if (!dup) SCN.ap[k++] = heard[i];
+    }
+    SCN.n = k;
+    SCN.state = 2;
+    return NULL;
+}
+
+static void st_ap(lv_obj_t *o, void *u)
+{
+    (void)o;
+    const hal_ap_t *ap = &SCN.ap[(intptr_t)u];
+    snprintf(ST.join_ssid, sizeof ST.join_ssid, "%s", ap->ssid);
+    if (!ap->secure) {
+        /* an open network needs no password */
+        hal_wifi_join(ST.join_ssid, "");
+        snprintf(S.wifi_ssid, sizeof S.wifi_ssid, "%s", ST.join_ssid);
+        ui_island_say(BZ_I_WIFI, "joining the network");
+        return;
+    }
     ui_text(ST.kb_title, "password for %s", ST.join_ssid);
     lv_textarea_set_text(ST.ta, "");
     lv_obj_remove_flag(lv_obj_get_parent(ST.kb), LV_OBJ_FLAG_HIDDEN);
@@ -893,11 +925,31 @@ static void st_ap(lv_obj_t *o, void *u)
 static void st_scan(lv_obj_t *o, void *u)
 {
     (void)o; (void)u;
-    hal_ap_t aps[8];
-    int n = hal_wifi_scan(aps, 8);
+    if (SCN.state == 1) return;
     lv_obj_clean(ST.wifi_list);
-    for (int i = 0; i < n; i++) ui_chip(ST.wifi_list, aps[i].ssid, st_ap, NULL);
-    if (!n) bz_label(ST.wifi_list, "nothing in range", BZ_F_CAPTION, BZ_C_DIM);
+    SCN.state = 1;
+    if (!hal_thread("scan", scan_worker, NULL, 4096)) {
+        SCN.state = 0;
+        bz_label(ST.wifi_list, "couldn't start a scan", BZ_F_CAPTION, BZ_C_DIM);
+        return;
+    }
+    bz_label(ST.wifi_list, "listening…", BZ_F_CAPTION, BZ_C_DIM);
+}
+
+static void st_scan_show(void)
+{
+    if (SCN.state != 2) return;
+    SCN.state = 0;
+    lv_obj_clean(ST.wifi_list);
+    for (int i = 0; i < SCN.n; i++) {
+        char t[48];
+        /* four steps of signal, as a phone shows it */
+        int r = SCN.ap[i].rssi, bars = r > -55 ? 4 : r > -67 ? 3 : r > -78 ? 2 : 1;
+        snprintf(t, sizeof t, "%s  %.*s%.*s", SCN.ap[i].ssid, bars * 3, "\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f",
+                 (4 - bars) * 3, "\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b");
+        ui_chip(ST.wifi_list, t, st_ap, (void *)(intptr_t)i);
+    }
+    if (!SCN.n) bz_label(ST.wifi_list, "nothing in range", BZ_F_CAPTION, BZ_C_DIM);
 }
 
 static void settings_refresh_more(void);
@@ -907,7 +959,10 @@ static void settings_refresh(void)
     settings_refresh_more();
     hal_net_t n;
     hal_net(&n);
-    ui_text(ST.wifi_state, "%s%s%s · %d dbm · %s", n.up ? "on " : "off", n.up ? n.ssid : "", "", n.rssi, n.ip);
+    st_scan_show();
+    if (n.up) ui_text(ST.wifi_state, "%s · %d dBm · %s", n.ssid, n.rssi, n.ip);
+    else if (S.wifi_ssid[0]) ui_text(ST.wifi_state, "not connected · looking for %s", S.wifi_ssid);
+    else ui_text(ST.wifi_state, "not connected · scan to pick a network");
     hal_tether_t t;
     hal_tether(&t);
     if (t.up) ui_text(ST.usb_state, "usb %s · %s via %s%s", t.kind, t.ip, t.gw, t.dhcp ? "" : " · fallback address");
