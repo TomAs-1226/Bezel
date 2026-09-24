@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from . import __version__, codeview
 from .files import Files
 from .inbox import Inbox
+from .media import Media
 from .claude_code import ClaudeCodeBackend
 from .proxy import ClaudeProxy, api_error
 from .repo import Patches, repo_root, repo_status
@@ -45,6 +46,7 @@ class Config:
     claude: str = "auto"
     claude_model: str | None = None   # claude-code only; None → Claude Code's own default
     claude_cli: str | None = None     # claude-code only; None → found (see claude_code.find_cli)
+    media: bool = True                # the media remote (media.py): the PC's now-playing for the tablet
 
 
 def pick_backend(cfg: Config, claude_client: Any | None) -> str:
@@ -55,7 +57,7 @@ def pick_backend(cfg: Config, claude_client: Any | None) -> str:
 
 class LinkApp:
     def __init__(self, cfg: Config, state: State, claude_client: Any | None = None,
-                 agent_factory: Any | None = None) -> None:
+                 agent_factory: Any | None = None, media_platform: Any | None = None) -> None:
         self.cfg = cfg
         self.state = state.ensure()
         self.repo = repo_root(cfg.repo)
@@ -65,6 +67,8 @@ class LinkApp:
         # Claude Code on this PC, as its hooks report it (hook.py → POST /v1/claude/events)
         self.claude_sessions = SessionTracker(self.state.home / "claude-turns.jsonl")
         self.claude_backend = pick_backend(cfg, claude_client)
+        # the PC's media session for the tablet's home mode; never fatal (media.py says why when it's absent)
+        self.media = Media(media_platform, enabled=cfg.media)
         self.proxy: ClaudeProxy | ClaudeCodeBackend | None
         if self.claude_backend == "api":
             self.proxy = ClaudeProxy(self.state, claude_client)
@@ -89,7 +93,8 @@ class LinkApp:
         proposed = sum(1 for p in self.patches.list() if p["status"] == "proposed")
         return {**base, **repo_status(self.repo), "claude": self.claude_available,
                 "claude_via": self.claude_backend if self.proxy is not None else None,
-                "inbox_open": counts["open"] + counts["claimed"], "patches": proposed, "files": self.files.count()}
+                "inbox_open": counts["open"] + counts["claimed"], "patches": proposed, "files": self.files.count(),
+                "media": self.media.available}
 
     def run_hook(self, wid: str, path: Path) -> None:
         """--on-work-order: the PC's own command, with the new work order's path, detached."""
@@ -150,12 +155,22 @@ class Handler(BaseHTTPRequestHandler):
         self._write_audit()  # on disk before the tablet hears the outcome
         self.wfile.write(body)
 
+    def _bytes(self, status: int, body: bytes, ctype: str) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self._audit["status"] = status
+        self.wfile.write(body)
+
     def _write_audit(self) -> None:
         """Every write request (and every refused token) goes to log.jsonl once, with its outcome."""
         a = self._audit
         if self._audited:
             return
-        routine = a["path"] == "/v1/messages" or a["path"].startswith("/v1/claude/")  # traffic, not writes
+        # traffic, not writes: Claude, Claude Code's hooks, and the media remote's play/pause
+        routine = a["path"] == "/v1/messages" or a["path"].startswith(("/v1/claude/", "/media/"))
         if (a["method"] == "POST" and not routine) or a.get("error") == "token":
             self._audited = True
             self.app.state.log(a)
@@ -266,6 +281,9 @@ class Handler(BaseHTTPRequestHandler):
         ("POST", r"/v1/claude/events", "cc_event"),
         ("POST", r"/v1/claude/sessions/ack", "cc_ack_all"),
         ("POST", r"/v1/claude/sessions/(?P<id>[^/]+)/ack", "cc_ack"),
+        ("GET", r"/media/now", "media_now"),
+        ("GET", r"/media/art", "media_art"),
+        ("POST", r"/media/control", "media_control"),
     ]
 
     def _known(self, path: str) -> str | None:
@@ -368,6 +386,22 @@ class Handler(BaseHTTPRequestHandler):
     def cc_ack(self, q: dict[str, str]) -> None:
         self._body()
         self._json(200, {"ok": True, "acked": self.app.claude_sessions.ack(self._params["id"])})
+
+    # --- the media remote (media.py) ----------------------------------------------------------------------
+
+    def media_now(self, q: dict[str, str]) -> None:
+        self._json(200, self.app.media.now())
+
+    def media_art(self, q: dict[str, str]) -> None:
+        if q.get("encoding") == "base64":  # for a client that can only read JSON bodies
+            return self._json(200, self.app.media.art_json(q))
+        body, ctype, _ = self.app.media.art(q)
+        self._bytes(200, body, ctype)
+
+    def media_control(self, q: dict[str, str]) -> None:
+        body = self._body()
+        self._audit["action"] = body.get("action")
+        self._json(200, self.app.media.control(body))
 
 
 def make_server(app: LinkApp, quiet: bool = False) -> ThreadingHTTPServer:
