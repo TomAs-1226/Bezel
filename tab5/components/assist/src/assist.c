@@ -22,6 +22,7 @@
 #include "as_tools.h"
 #include "hal.h"
 #include "link.h"
+#include "voice.h"
 
 #define MAX_ENTRIES 400
 #define CONFIRM_S 90.0
@@ -230,6 +231,8 @@ static void refresh(cat_robot_t *r)
     }
     pthread_mutex_unlock(&g_robot_lock);
 }
+
+void assist_robot(cat_robot_t *out) { refresh(out); }
 
 void assist_feed(const cat_robot_t *r)
 {
@@ -838,6 +841,89 @@ static void trim_key(char *k)
         k[i - 1] = 0;
 }
 
+/* ---- keys from the card ---- */
+
+static char g_import_note[64];
+
+/* The first line of the file, without a BOM or whitespace; NULL when there is no file. Caller wipes. */
+static char *read_key_file(const char *path, size_t *filesize)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    char *k = calloc(1, 512);
+    size_t n = k ? fread(k, 1, 511, f) : 0;
+    fclose(f);
+    if (!k) return NULL;
+    *filesize = n;
+    char *p = k;
+    if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) p += 3;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    size_t l = strcspn(p, "\r\n");
+    while (l && (p[l - 1] == ' ' || p[l - 1] == '\t')) l--;
+    memmove(k, p, l);
+    memset(k + l, 0, 512 - l);
+    return k;
+}
+
+/* Overwrites the file's bytes, then deletes it; renamed to .USED if the card won't delete it. */
+static void burn_key_file(const char *path, size_t n)
+{
+    FILE *f = fopen(path, "r+b");
+    if (f) {
+        char z[64] = { 0 };
+        for (size_t done = 0; done < n; done += sizeof z) fwrite(z, 1, n - done < sizeof z ? n - done : sizeof z, f);
+        fclose(f);
+    }
+    if (remove(path) != 0) {
+        char used[160];
+        snprintf(used, sizeof used, "%.150s.USED", path);
+        rename(path, used);
+    }
+}
+
+/* UI thread at boot (it writes NVS: the UI task's stack is internal RAM). */
+static void import_keys(void)
+{
+    const char *sd = hal_sd_root();
+    if (!sd) return;
+    static const char *const FILES[2] = { "OPENAI.TXT", "ANTHROPIC.TXT" };
+    bool got[2] = { false, false };
+    for (int i = 0; i < 2; i++) {
+        char path[128];
+        snprintf(path, sizeof path, "%s/CATOS/KEYS/%s", sd, FILES[i]);
+        size_t n = 0;
+        char *k = read_key_file(path, &n);
+        if (!k) continue;
+        if (strlen(k) >= 20) { /* a key, not an empty or placeholder file */
+            if (i == 0) assist_set_openai(k, NULL);
+            else assist_set_anthropic(k, NULL);
+            got[i] = true;
+        }
+        memset(k, 0, 512);
+        free(k);
+        burn_key_file(path, n);
+    }
+    if (!got[0] && !got[1]) return;
+    /* with no route chosen yet, the same default as a fresh start: a key on the tablet over the Link */
+    char v[16];
+    if (!hal_kv_get("ai_route", v, sizeof v) || !v[0]) {
+        pthread_mutex_lock(&A.lock);
+        A.cfg.route = A.cfg.api_key[0] ? AS_ROUTE_DIRECT : A.cfg.oai_key[0] ? AS_ROUTE_OPENAI : AS_ROUTE_LINK;
+        pthread_mutex_unlock(&A.lock);
+    }
+    snprintf(g_import_note, sizeof g_import_note, "%s imported from the card",
+             got[0] && got[1] ? "OpenAI and Claude keys" : got[0] ? "OpenAI key" : "Claude key");
+}
+
+const char *assist_import_note(void)
+{
+    static char out[64];
+    if (!g_import_note[0]) return NULL;
+    snprintf(out, sizeof out, "%s", g_import_note);
+    g_import_note[0] = 0;
+    return out;
+}
+
 void assist_init(void)
 {
     char v[160];
@@ -867,9 +953,11 @@ void assist_init(void)
         free(k);
     }
     if (!start) return;
+    import_keys();
     snap_init();
     link_init();
     hal_thread("assist", worker, NULL, 48 * 1024); /* TLS plus a tool's buffers */
+    voice_init(); /* the companion's own conversation, spoken (voice.h) */
 }
 
 void assist_configure(const assist_config_t *c)

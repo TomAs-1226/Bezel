@@ -20,7 +20,7 @@ read as raw HTML, **[S]** the Tab5 schematic PDF. Anything not confirmed from on
 | **Display** | 5″ IPS, **720 × 1280 portrait**, 2-lane MIPI-DSI, RGB565, backlight PWM on GPIO22 | Rendered in **landscape 1280 × 720**: exactly Bezel's 720-high design, so Bezel's panel unit is 1. |
 | **Touch** | GT911 @0x14 (ILI9881C units) **or** ST7123 @0x55 (from 2025-10) **or** ST7121 @0x55 (from 2026-04); 5 points; INT on GPIO23 [D][M] | Detected at boot the way both BSPs do it: probe 0x55 and read register 0 (1 = ST7121, 3 = ST7123), else 0x14 = GT911. |
 | **BMI270** IMU @0x68 | 6-axis; no magnetometer; its interrupt goes to the power MCU, not the P4 [D][S] | The **Level** tool (inclinometer to check an arm's reported angle against gravity), Bezel's glass light leaning with tilt, and pick-up-to-wake. |
-| **ES7210** 4-ch ADC @0x40 + dual mics | I2S DIN GPIO28, TDM 4 slots, 48 kHz [M] | **Not used.** Catalyst Tab has no tool that listens; the ES7210 is never configured. (The BSP's shared I2S bus still enables its receive channel, which captures nothing.) |
+| **ES7210** 4-ch ADC @0x40 + dual mics | I2S DIN GPIO28, TDM 4 slots, 48 kHz [M] | The **companion's ears**, only while desk mode is on screen (`hal_tab5_audio.c`): opened in standard I2S at 48 kHz, 16-bit stereo (MIC1/MIC2 on SDOUT1, the BSP's default), one channel kept (the louder, unless `v_mic` says), decimated to 16 kHz mono for ESP-SR's WakeNet ("Hi, ESP") and OpenAI transcription. Closed (ADC powered down) the rest of the time. UNVERIFIED: which inputs carry the two microphones (the M5 demo reads all four in TDM), and the 30 dB gain. |
 | **ES8388** codec @0x10 + NS4150B 1 W amp | I2S DOUT GPIO26, MCLK 30, BCLK 27, LRCK 29; amp enable on expander E1.P1 [M] | Detent ticks for dial detents and alert chimes (brownout, e-stop, a motor over temperature). |
 | **SC2356** 2 MP camera | Driven as SC202CS @0x36 over 1-lane MIPI, 1280×720 RAW8 at 30 fps; CAM_RST E1.P6; 24 MHz XCLK on GPIO36 [M][U] | The **Lens** tool: look into a gearbox or behind a bellypan, freeze, snapshot to SD. |
 | **RX8130CE** RTC @0x32 | Supercap-backed | Timestamps on logs and snapshots when there's no network time; set from the robot's NT server clock when connected. |
@@ -100,7 +100,7 @@ the cart without dropping off the network. That needs the C6 reflashed and a Tab
 | Grove Port A SDA / SCL | 53 / 54 |
 | LCD backlight | 22 |
 | Touch INT | 23 |
-| I2S MCLK / BCLK / LRCK / DOUT / DIN (DIN: the unused ES7210) | 30 / 27 / 29 / 26 / 28 |
+| I2S MCLK / BCLK / LRCK / DOUT / DIN (DIN: the ES7210) | 30 / 27 / 29 / 26 / 28 |
 | Camera XCLK | 36 |
 | C6 SDIO CLK / CMD / D0 / D1 / D2 / D3, RESET | 12 / 13 / 11 / 10 / 9 / 8, 15 |
 | microSD CLK / CMD / D0–D3 | 43 / 44 / 39–42 |

@@ -111,7 +111,9 @@ address and pins, and what this firmware does with it. In short:
 - **INA226** for the tablet's battery; **RX8130** for time on logs and files.
 - **TWAI + Grove.** The CAN tap, with a Grove CAN transceiver unit.
 - **RS-485 connector.** Accepts 6–24 V, so the tablet can run off the robot.
-- **Deliberately unused.** The ES7210 microphones (nothing here needs to listen). BLE (nothing on an
+- **ES7210 microphones**, only while the companion is on screen: its wake word ("Hi, ESP", heard on
+  the tablet) and the questions it sends to OpenAI.
+- **Deliberately unused.** BLE (nothing on an
   FRC robot to talk to). The LP core, which can't see the IMU or RTC interrupts on this board.
   RS-485 serial, which no FRC device speaks.
 
@@ -174,6 +176,9 @@ the rest. A few pins matter and are explained where they're set:
 
 - `esp_hosted ~1.4` with `esp_wifi_remote ~1.1.6`: the Tab5's C6 ships with esp-hosted 1.4.1 slave
   firmware; a 3.x host may not talk to it.
+- `esp-sr ~2.4.7`: the companion's wake word ("Hi, ESP", WakeNet9). Its model goes into the `model`
+  partition as `build/srmodels/srmodels.bin` (at 0xa50000); `idf.py flash` writes it, and a merged image
+  must include it, or the companion falls back to tap-to-talk.
 - `esp_lvgl_port ~2.6.0`: the BSP depends on it; 2.9 needs a DPI callback newer than IDF 5.5.1. The
   renderer drives the panel itself and never uses the port.
 - `CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y`: Tab5 silicon is v1.x; IDF ≥ 5.5.3 targets v3 without it

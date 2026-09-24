@@ -114,3 +114,9 @@ CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
 
 # The log on the USB-C port (USB-Serial/JTAG) as the primary console: UART0 at 115200 busy-waits ~6 ms a line
 CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
+
+# The companion's wake word (ESP-SR WakeNet9, hal_tab5_audio.c): "Hi, ESP" only. No speech-command
+# models (MultiNet): the phrase after the wake word goes to OpenAI.
+CONFIG_SR_WN_WN9_HIESP=y
+CONFIG_SR_MN_CN_NONE=y
+CONFIG_SR_MN_EN_NONE=y

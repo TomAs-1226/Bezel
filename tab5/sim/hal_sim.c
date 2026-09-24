@@ -183,6 +183,22 @@ bool hal_battery(hal_battery_t *o)
  * harmonics, a tooth-mesh sideband and broadband noise. */
 void hal_tone(float hz, int ms, float v) { (void)hz; (void)ms; (void)v; }
 void hal_set_volume(float v) { (void)v; }
+/* no sound card: speech is swallowed at once, and nothing listens */
+bool hal_play_start(int rate) { return rate > 0 && 48000 % rate == 0; }
+int hal_play_write(const int16_t *pcm, int n, int timeout_ms) { (void)pcm; (void)timeout_ms; return n; }
+void hal_play_end(void) {}
+void hal_play_stop(void) {}
+bool hal_play_busy(void) { return false; }
+float hal_play_level(void) { return 0; }
+bool hal_mic_start(void) { return false; }
+int hal_mic_read(int16_t *out, int max) { (void)out; (void)max; return 0; }
+void hal_mic_stop(void) {}
+bool hal_mic_on(void) { return false; }
+float hal_mic_level(void) { return 0; }
+void hal_mic_channel(int ch) { (void)ch; }
+bool hal_wake_ready(const char **word) { if (word) *word = NULL; return false; }
+void hal_wake_reset(void) {}
+bool hal_wake_feed(const int16_t *pcm, int n) { (void)pcm; (void)n; return false; }
 
 #define CAM_W 640
 #define CAM_H 360
