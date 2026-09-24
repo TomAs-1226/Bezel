@@ -142,6 +142,18 @@ settings screen's `fps` chip shows measured frame times.
 | ![](docs/shots/16-recorder.png) | ![](docs/shots/14-states.png) |
 | ![](docs/shots/08-tune.png) | ![](docs/shots/26-pulse-light.png) |
 
+## Flashing the prebuilt image
+
+[firmware/](firmware/README.md) has a ready-to-flash build. With the Tab5's USB-C plugged in:
+
+```sh
+esptool.py --chip esp32p4 -b 921600 write_flash 0x0 firmware/catalyst-tab-merged.bin
+```
+
+You can also flash it from a browser at <https://espressif.github.io/esptool-js/> (address `0x0`).
+[firmware/README.md](firmware/README.md) covers updating without losing your settings, and what to
+do on first boot.
+
 ## Building the firmware
 
 ESP-IDF **5.5.1** (tested) with the esp32p4 toolchain:
@@ -228,6 +240,7 @@ tab5/
   sim/                        the Linux simulator (hal_sim.c, hal_sim_net.c, sim_main.c, tour.txt)
   test/                       unit tests
   tools/                      fake_robot.py, fake_agent.py, fake_claude.py, make_sample_logs.py, make_fonts.py
+  firmware/                   a prebuilt image to flash (see firmware/README.md)
   docs/                       tab5-hardware.md, catalyst-contract.md, systemcore.md, link-api.md,
                               bezel-port.md, shots/
   lv_conf.h                   one LVGL configuration for both builds
