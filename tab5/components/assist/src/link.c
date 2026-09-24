@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "as_json.h"
+#include "ccwatch.h"
 #include "hal.h"
 
 #define POLL_S 3.0
@@ -381,9 +382,11 @@ static void *poller(void *arg)
             if (reachable_now()) {
                 flush_outbox();
                 if (want_lists) refresh_lists();
+                ccw_poll(); /* Claude Code on the PC: the companion's Claude panel and its reminders */
             }
         }
         if (!reachable_now()) {
+            ccw_offline();
             /* keep the count honest while nothing can be sent */
             pthread_mutex_lock(&g_outbox);
             char **names;

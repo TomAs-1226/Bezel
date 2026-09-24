@@ -16,6 +16,7 @@
 #include <unistd.h>
 
 #include "as_conv.h"
+#include "as_oai.h"
 #include "as_snap.h"
 #include "as_sse.h"
 #include "as_tools.h"
@@ -79,6 +80,7 @@ static struct {
     as_usage_t usage;
     assist_config_t cfg;
     char base[128];                /* the direct route's base URL (tests point it at a fake) */
+    char oai_base[128];            /* the OpenAI route's ("oai_base"; "" → https://api.openai.com) */
     char *pending;
     bool busy, stop, started;
     uint32_t gen;                  /* bumps on assist_reset: a stale worker's writes are dropped */
@@ -357,9 +359,19 @@ static bool endpoint(char *url, size_t un, char *hdr, size_t hn, as_route_t *rou
     pthread_mutex_lock(&A.lock);
     assist_config_t cfg = A.cfg;
     char base[128];
-    snprintf(base, sizeof base, "%s", A.base[0] ? A.base : "https://api.anthropic.com");
+    if (cfg.route == AS_ROUTE_OPENAI) snprintf(base, sizeof base, "%s", A.oai_base[0] ? A.oai_base : AS_OAI_DEFAULT_BASE);
+    else snprintf(base, sizeof base, "%s", A.base[0] ? A.base : "https://api.anthropic.com");
     pthread_mutex_unlock(&A.lock);
     *route = cfg.route;
+    if (cfg.route == AS_ROUTE_OPENAI) {
+        size_t l = strlen(base);
+        while (l && base[l - 1] == '/') base[--l] = 0;
+        snprintf(url, un, "%s/v1/chat/completions", base);
+        as_oai_headers(cfg.oai_key, hdr, hn);
+        bool ok = cfg.oai_key[0] != 0;
+        memset(&cfg, 0, sizeof cfg); /* the keys don't linger on the stack */
+        return ok;
+    }
     if (cfg.route == AS_ROUTE_DIRECT) {
         size_t l = strlen(base);
         while (l && base[l - 1] == '/') base[--l] = 0;
@@ -386,20 +398,29 @@ static void error_message(const char *body, char *out, size_t n)
     aj_free(d);
 }
 
+static const char *route_label(as_route_t r)
+{
+    return r == AS_ROUTE_DIRECT ? "the Claude API" : r == AS_ROUTE_OPENAI ? "the OpenAI API" : "Catalyst Link";
+}
+
 static st_t stream_once(wctx_t *c, const char *body, size_t len, as_msg_t *m)
 {
-    char url[256], hdr[400];
+    char url[256], hdr[640];
     as_route_t route;
     if (!endpoint(url, sizeof url, hdr, sizeof hdr, &route)) {
         w_add(c, AS_E_ERROR, route == AS_ROUTE_DIRECT ? "No API key: add one in settings, or use Catalyst Link."
-                                                      : "Catalyst Link isn't set up: add its address in settings.", NULL);
+                             : route == AS_ROUTE_OPENAI ? "No OpenAI key: add one in settings (assistant) or in the link app."
+                                                        : "Catalyst Link isn't set up: add its address in settings.", NULL);
         return ST_FAILED;
     }
+    bool oai = route == AS_ROUTE_OPENAI;
+    as_oai_t ot;
     as_msg_cb_t cb = { .user = c, .start = cb_start, .delta = cb_delta };
     for (int attempt = 0; attempt < 2; attempt++) {
         if (w_stopped(c)) return ST_STOPPED;
         w_phase(c, AS_PHASE_SENDING);
         as_msg_init(m, &cb);
+        as_oai_init(&ot, m);
         for (int i = 0; i < MAX_BLOCKS; i++) c->ent[i] = -1;
         hal_http_req_t rq = { .method = "POST", .url = url, .headers = hdr, .body = body, .body_len = len,
                               .timeout_ms = READ_TIMEOUT_MS };
@@ -409,7 +430,8 @@ static st_t stream_once(wctx_t *c, const char *body, size_t len, as_msg_t *m)
         bool retry = false;
         char msg[320];
         if (!h) {
-            snprintf(msg, sizeof msg, "Couldn't reach %s (%s).", route == AS_ROUTE_DIRECT ? "the Claude API" : "Catalyst Link", err);
+            snprintf(msg, sizeof msg, "Couldn't reach %s (%s).%s", route_label(route), err,
+                     route == AS_ROUTE_LINK ? "" : " Is the Wi-Fi on the internet?");
             retry = true;
         } else if (status != 200) {
             char ebody[4096];
@@ -418,22 +440,35 @@ static st_t stream_once(wctx_t *c, const char *body, size_t len, as_msg_t *m)
             ebody[n] = 0;
             hal_http_close(h);
             h = NULL;
-            char em[240];
-            error_message(ebody, em, sizeof em);
+            char em[240], code[48] = "";
+            if (oai) as_oai_error(ebody, em, sizeof em, code, sizeof code);
+            else error_message(ebody, em, sizeof em);
+            retry = status == 429 || status == 529 || status >= 500;
+            /* never the body on a 401: OpenAI's echoes part of the key */
             if (status == 401)
                 snprintf(msg, sizeof msg, "%s", route == AS_ROUTE_DIRECT ? "The API key was refused (401): check the key in settings."
-                                                                          : "Catalyst Link refused the token (401): check it in settings.");
+                                                : oai ? "OpenAI refused the key (401): check the OpenAI key in settings."
+                                                      : "Catalyst Link refused the token (401): check it in settings.");
+            else if (oai && status == 429 && !strcmp(code, "insufficient_quota")) {
+                snprintf(msg, sizeof msg, "OpenAI says this key's account is out of credit (429): check billing on platform.openai.com.");
+                retry = false; /* waiting won't fix it */
+            } else if (oai && status == 429)
+                snprintf(msg, sizeof msg, "OpenAI is rate-limiting this key (429): %s", em);
+            else if (oai && (status == 404 || !strcmp(code, "model_not_found")))
+                snprintf(msg, sizeof msg, "OpenAI doesn't offer that model to this key (HTTP %d): check the model name in settings.", status);
+            else if (oai) snprintf(msg, sizeof msg, "OpenAI HTTP %d: %s", status, em);
             else snprintf(msg, sizeof msg, "HTTP %d: %s", status, em);
-            retry = status == 429 || status == 529 || status >= 500;
         } else {
             as_sse_t sse;
             as_sse_init(&sse);
             char *buf = malloc(4096);
             int r = -1;
             while (buf && (r = hal_http_read(h, buf, 4096)) > 0) {
-                as_sse_feed(&sse, buf, (size_t)r, as_msg_sse, m);
+                if (oai) as_sse_feed(&sse, buf, (size_t)r, as_oai_sse, &ot);
+                else as_sse_feed(&sse, buf, (size_t)r, as_msg_sse, m);
                 if (m->done || w_stopped(c)) break;
             }
+            if (oai) as_oai_end(&ot);
             free(buf);
             as_sse_free(&sse);
             hal_http_close(h);
@@ -445,7 +480,8 @@ static st_t stream_once(wctx_t *c, const char *body, size_t len, as_msg_t *m)
             }
             /* an overloaded error before any output is as good as a 529 */
             if (m->error && m->n == 0 && attempt == 0 &&
-                (!strcmp(m->error_type, "overloaded_error") || !strcmp(m->error_type, "api_error"))) {
+                (!strcmp(m->error_type, "overloaded_error") || !strcmp(m->error_type, "api_error") ||
+                 !strcmp(m->error_type, "server_error"))) {
                 snprintf(msg, sizeof msg, "%s", m->error_msg);
                 as_msg_free(m);
                 retry = true;
@@ -606,6 +642,8 @@ static void usage_add(wctx_t *c, const as_msg_t *m, const char *requested)
         A.usage.output_tokens += m->output_tokens;
         if (m->model[0]) snprintf(A.usage.model, sizeof A.usage.model, "%s", m->model);
         if (A.cfg.route != AS_ROUTE_LINK) own_model = false;
+        /* OpenAI answers with a dated snapshot of the name asked for ("gpt-4o-mini-2024-07-18"): not a fallback */
+        if (A.cfg.route == AS_ROUTE_OPENAI) own_model = true;
         fell = m->fallback || (!own_model && m->model[0] && strcmp(m->model, requested) != 0);
         if (fell) A.usage.fell_back = true;
     }
@@ -629,7 +667,9 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
 
     pthread_mutex_lock(&A.lock);
     char model[48];
-    snprintf(model, sizeof model, "%s", A.cfg.model[0] ? A.cfg.model : AS_DEFAULT_MODEL);
+    bool oai = A.cfg.route == AS_ROUTE_OPENAI;
+    if (oai) snprintf(model, sizeof model, "%s", A.cfg.oai_model[0] ? A.cfg.oai_model : AS_OAI_DEFAULT_MODEL);
+    else snprintf(model, sizeof model, "%s", A.cfg.model[0] ? A.cfg.model : AS_DEFAULT_MODEL);
     pthread_mutex_unlock(&A.lock);
     as_req_t q = { .model = model, .max_tokens = AS_MAX_TOKENS, .effort = "medium", .system = SYSTEM_PROMPT, .tools = tools };
     if (as_conv_trim(h, &q, AS_TRIM_BYTES)) w_note(c, "The oldest part of the conversation was dropped to keep requests small.");
@@ -639,7 +679,8 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
     ab_init(&body);
     for (int round = 0; round < MAX_ROUNDS; round++) {
         c->fallback_noted = false;
-        as_conv_request(h, &q, &body);
+        if (oai) as_oai_request(h, &q, &body);
+        else as_conv_request(h, &q, &body);
         if (body.oom) {
             w_add(c, AS_E_ERROR, "Out of memory building the request.", NULL);
             w_phase(c, AS_PHASE_ERROR);
@@ -685,8 +726,8 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
                 size_t l = strlen(exs);
                 while (l && (exs[l - 1] == '.' || exs[l - 1] == ' ')) exs[--l] = 0;
             }
-            snprintf(n, sizeof n, "Claude declined this request%s%s%s%s. Nothing from that answer was run.",
-                     cat ? " (" : "", cat ? cat : "", cat ? ")" : "", exs);
+            snprintf(n, sizeof n, "%s declined this request%s%s%s%s. Nothing from that answer was run.",
+                     oai ? "The model" : "Claude", cat ? " (" : "", cat ? cat : "", cat ? ")" : "", exs);
             w_note(c, n);
             as_hist_rollback(h);
             as_msg_free(&m);
@@ -694,7 +735,7 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
         }
         if (nx == AS_NEXT_TRUNCATED) {
             as_msg_free(&m);
-            if (!budget_retried) {
+            if (!budget_retried && !oai) { /* OpenAI already had its model's whole ceiling */
                 budget_retried = true;
                 q.max_tokens = AS_MAX_TOKENS_RETRY;
                 w_note(c, "The answer ran out of room in the middle of a tool call; asking again with more room.");
@@ -787,23 +828,44 @@ static void *worker(void *arg)
 
 /* ---- the UI's side ---- */
 
+/* keys arrive typed or pasted: spaces or a newline around one would be sent in the header */
+static void trim_key(char *k)
+{
+    char *p = k;
+    while (*p == ' ' || *p == '\t') p++;
+    if (p != k) memmove(k, p, strlen(p) + 1);
+    for (size_t i = strlen(k); i && (k[i - 1] == '\n' || k[i - 1] == '\r' || k[i - 1] == ' ' || k[i - 1] == '\t'); i--)
+        k[i - 1] = 0;
+}
+
 void assist_init(void)
 {
     char v[160];
+    char *k = malloc(sizeof A.cfg.oai_key); /* off the caller's stack: the UI task's is internal RAM */
     pthread_mutex_lock(&A.lock);
     bool start = !A.started;
     A.started = true;
     if (hal_kv_get("ai_key", v, sizeof v)) snprintf(A.cfg.api_key, sizeof A.cfg.api_key, "%s", v);
     if (hal_kv_get("ai_model", v, sizeof v)) snprintf(A.cfg.model, sizeof A.cfg.model, "%s", v);
     if (hal_kv_get("ai_base", v, sizeof v)) snprintf(A.base, sizeof A.base, "%s", v);
+    if (k && hal_kv_get("oai_key", k, sizeof A.cfg.oai_key)) snprintf(A.cfg.oai_key, sizeof A.cfg.oai_key, "%s", k);
+    if (hal_kv_get("oai_model", v, sizeof v)) snprintf(A.cfg.oai_model, sizeof A.cfg.oai_model, "%s", v);
+    if (hal_kv_get("oai_base", v, sizeof v)) snprintf(A.oai_base, sizeof A.oai_base, "%s", v);
+    memset(v, 0, sizeof v);
     if (hal_kv_get("team", v, sizeof v)) A.team = atoi(v);
     /* the route: as set, else straight to the API when there's a key, else through the Link */
-    if (hal_kv_get("ai_route", v, sizeof v) && v[0]) A.cfg.route = !strcmp(v, "direct") ? AS_ROUTE_DIRECT : AS_ROUTE_LINK;
-    else A.cfg.route = A.cfg.api_key[0] ? AS_ROUTE_DIRECT : AS_ROUTE_LINK;
-    for (size_t i = strlen(A.cfg.api_key); i && (A.cfg.api_key[i - 1] == '\n' || A.cfg.api_key[i - 1] == ' '); i--)
-        A.cfg.api_key[i - 1] = 0;
+    if (hal_kv_get("ai_route", v, sizeof v) && v[0])
+        A.cfg.route = !strcmp(v, "direct") ? AS_ROUTE_DIRECT : !strcmp(v, "openai") ? AS_ROUTE_OPENAI : AS_ROUTE_LINK;
+    else A.cfg.route = A.cfg.api_key[0] ? AS_ROUTE_DIRECT : A.cfg.oai_key[0] ? AS_ROUTE_OPENAI : AS_ROUTE_LINK;
+    trim_key(A.cfg.api_key);
+    trim_key(A.cfg.oai_key);
+    trim_key(A.cfg.oai_model);
     A.phase = AS_PHASE_IDLE;
     pthread_mutex_unlock(&A.lock);
+    if (k) {
+        memset(k, 0, sizeof A.cfg.oai_key);
+        free(k);
+    }
     if (!start) return;
     snap_init();
     link_init();
@@ -816,8 +878,90 @@ void assist_configure(const assist_config_t *c)
     A.cfg = *c;
     A.cfg.api_key[sizeof A.cfg.api_key - 1] = 0;
     A.cfg.model[sizeof A.cfg.model - 1] = 0;
+    A.cfg.oai_key[sizeof A.cfg.oai_key - 1] = 0;
+    A.cfg.oai_model[sizeof A.cfg.oai_model - 1] = 0;
+    trim_key(A.cfg.api_key);
+    trim_key(A.cfg.oai_key);
     pthread_mutex_unlock(&A.lock);
     bump();
+}
+
+void assist_config(assist_config_t *out)
+{
+    pthread_mutex_lock(&A.lock);
+    *out = A.cfg;
+    pthread_mutex_unlock(&A.lock);
+}
+
+static const char *route_word(as_route_t r) { return r == AS_ROUTE_DIRECT ? "direct" : r == AS_ROUTE_OPENAI ? "openai" : "link"; }
+
+void assist_use(as_route_t route)
+{
+    pthread_mutex_lock(&A.lock);
+    bool changed = A.cfg.route != route;
+    A.cfg.route = route;
+    pthread_mutex_unlock(&A.lock);
+    hal_kv_set("ai_route", route_word(route));
+    if (changed) assist_reset(); /* one model's history (thinking signatures, call ids) isn't another's */
+    bump();
+}
+
+/* hal_kv_set with a copy taken under the lock; the copy is wiped after */
+static void store_key(const char *kv, const char *field, size_t n)
+{
+    char *k = malloc(n);
+    if (!k) return;
+    pthread_mutex_lock(&A.lock);
+    snprintf(k, n, "%s", field);
+    pthread_mutex_unlock(&A.lock);
+    hal_kv_set(kv, k);
+    memset(k, 0, n);
+    free(k);
+}
+
+void assist_set_anthropic(const char *key, const char *model)
+{
+    pthread_mutex_lock(&A.lock);
+    if (key) {
+        snprintf(A.cfg.api_key, sizeof A.cfg.api_key, "%s", key);
+        trim_key(A.cfg.api_key);
+    }
+    if (model) {
+        snprintf(A.cfg.model, sizeof A.cfg.model, "%s", model);
+        trim_key(A.cfg.model);
+    }
+    pthread_mutex_unlock(&A.lock);
+    if (key) store_key("ai_key", A.cfg.api_key, sizeof A.cfg.api_key);
+    if (model) store_key("ai_model", A.cfg.model, sizeof A.cfg.model);
+    bump();
+}
+
+void assist_set_openai(const char *key, const char *model)
+{
+    pthread_mutex_lock(&A.lock);
+    if (key) {
+        snprintf(A.cfg.oai_key, sizeof A.cfg.oai_key, "%s", key);
+        trim_key(A.cfg.oai_key);
+    }
+    if (model) {
+        snprintf(A.cfg.oai_model, sizeof A.cfg.oai_model, "%s", model);
+        trim_key(A.cfg.oai_model);
+    }
+    pthread_mutex_unlock(&A.lock);
+    if (key) store_key("oai_key", A.cfg.oai_key, sizeof A.cfg.oai_key);
+    if (model) store_key("oai_model", A.cfg.oai_model, sizeof A.cfg.oai_model);
+    bump();
+}
+
+const char *assist_provider_name(as_route_t r)
+{
+    static char name[80];
+    if (r == AS_ROUTE_LINK) return "Claude through the PC";
+    if (r == AS_ROUTE_DIRECT) return "Claude, key on the tablet";
+    pthread_mutex_lock(&A.lock);
+    snprintf(name, sizeof name, "OpenAI %s", A.cfg.oai_model[0] ? A.cfg.oai_model : AS_OAI_DEFAULT_MODEL);
+    pthread_mutex_unlock(&A.lock);
+    return name;
 }
 
 void assist_set_base_url(const char *url)
@@ -830,11 +974,19 @@ void assist_set_base_url(const char *url)
 bool assist_ready(char *why, size_t n)
 {
     pthread_mutex_lock(&A.lock);
-    assist_config_t cfg = A.cfg;
+    as_route_t route = A.cfg.route;
+    bool have_key = route == AS_ROUTE_OPENAI ? A.cfg.oai_key[0] != 0 : A.cfg.api_key[0] != 0;
     pthread_mutex_unlock(&A.lock);
-    if (cfg.route == AS_ROUTE_DIRECT) {
-        if (!cfg.api_key[0]) {
-            snprintf(why, n, "no API key: add one in settings, or use Catalyst Link");
+    if (route != AS_ROUTE_LINK) {
+        if (!have_key) {
+            snprintf(why, n, "%s", route == AS_ROUTE_OPENAI ? "no OpenAI key: add one in settings (assistant)"
+                                                              : "no API key: add one in settings, or use Catalyst Link");
+            return false;
+        }
+        hal_net_t net;
+        hal_net(&net);
+        if (!net.up) {
+            snprintf(why, n, "Wi-Fi isn't connected: %s needs the internet", route == AS_ROUTE_OPENAI ? "OpenAI" : "Claude");
             return false;
         }
         if (n) why[0] = 0;

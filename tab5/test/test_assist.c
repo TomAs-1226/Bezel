@@ -4,6 +4,7 @@
  * a server-side fallback, and history trimming. Called from test_main.c. */
 #include "as_conv.h"
 #include "as_json.h"
+#include "as_oai.h"
 #include "as_sse.h"
 #include "as_tools.h"
 
@@ -568,6 +569,164 @@ static void trimming(void)
     as_hist_free(&h);
 }
 
+/* ---- OpenAI: Chat Completions chunks become the same message; the history becomes its request ---- */
+
+static void chunk(ab_t *b, const char *json) { ab_fmt(b, "data: %s\n\n", json); }
+
+static void run_oai(as_msg_t *m, const char *s, size_t step)
+{
+    as_sse_t sse;
+    as_oai_t o;
+    as_sse_init(&sse);
+    as_msg_init(m, NULL);
+    as_oai_init(&o, m);
+    size_t n = strlen(s);
+    if (!step) step = n;
+    for (size_t i = 0; i < n; i += step) as_sse_feed(&sse, s + i, i + step > n ? n - i : step, as_oai_sse, &o);
+    as_oai_end(&o);
+    as_sse_free(&sse);
+}
+
+static void openai(void)
+{
+    /* text, then two parallel tool calls whose arguments arrive in pieces, then usage and [DONE] */
+    ab_t b;
+    ab_init(&b);
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"object\":\"chat.completion.chunk\",\"model\":\"gpt-4o-mini-2024-07-18\","
+              "\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"\",\"refusal\":null},\"finish_reason\":null}],\"usage\":null}");
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Checking \\u00e9\"},\"finish_reason\":null}]}");
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"model\":\"gpt-4o-mini-2024-07-18\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"lan.\"},\"finish_reason\":null}]}");
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_A\",\"type\":\"function\","
+              "\"function\":{\"name\":\"robot_overview\",\"arguments\":\"\"}}]},\"finish_reason\":null}]}");
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"{}\"}}]},\"finish_reason\":null}]}");
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"id\":\"call_B\",\"type\":\"function\","
+              "\"function\":{\"name\":\"read_topics\",\"arguments\":\"{\\\"names\\\": [\\\"/Catalyst/\"}}]},\"finish_reason\":null}]}");
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":1,\"function\":{\"arguments\":\"Arm/State\\\"]}\"}}]},\"finish_reason\":null}]}");
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"tool_calls\"}]}");
+    chunk(&b, "{\"id\":\"chatcmpl-1\",\"choices\":[],\"usage\":{\"prompt_tokens\":1500,\"completion_tokens\":60,"
+              "\"prompt_tokens_details\":{\"cached_tokens\":1024}}}");
+    ab_puts(&b, "data: [DONE]\n\n");
+    char *s = ab_take(&b);
+    size_t steps[] = { 0, 1, 7 };
+    for (int k = 0; k < 3; k++) {
+        as_msg_t m;
+        run_oai(&m, s, steps[k]);
+        CHECK(m.started && m.done && !m.error);
+        CHECK(!strcmp(m.model, "gpt-4o-mini-2024-07-18"));
+        CHECK(!strcmp(m.stop_reason, "tool_use"));
+        CHECK(m.n == 3);
+        CHECK(!strcmp(aj_gets(m.b[0].block, "text"), "Checking \xc3\xa9lan."));
+        as_call_t c[4];
+        int nc = as_conv_calls(&m, c, 4);
+        CHECK(nc == 2);
+        CHECK(nc == 2 && !strcmp(c[0].id, "call_A") && !strcmp(c[0].name, "robot_overview") && c[0].input && c[0].input->n == 0);
+        CHECK(nc == 2 && !strcmp(c[1].name, "read_topics") && c[1].input && !strcmp(aj_at(aj_get(c[1].input, "names"), 0)->s, "/Catalyst/Arm/State"));
+        CHECK(as_conv_next(&m) == AS_NEXT_TOOLS);
+        CHECK(m.input_tokens == 1500 - 1024 && m.cache_read == 1024 && m.output_tokens == 60);
+        as_msg_free(&m);
+    }
+    free(s);
+
+    /* a plain answer ends the turn; a length cut with a call is truncated; no finish_reason is cut off */
+    ab_init(&b);
+    chunk(&b, "{\"id\":\"c2\",\"model\":\"gpt-4o-mini\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"All good.\"},\"finish_reason\":\"stop\"}]}");
+    ab_puts(&b, "data: [DONE]\n\n");
+    s = ab_take(&b);
+    as_msg_t m;
+    run_oai(&m, s, 0);
+    CHECK(m.done && as_conv_next(&m) == AS_NEXT_DONE && !strcmp(m.stop_reason, "end_turn"));
+    as_msg_free(&m);
+    free(s);
+
+    ab_init(&b);
+    chunk(&b, "{\"id\":\"c3\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_Z\",\"function\":{\"name\":\"get_can\",\"arguments\":\"{\\\"x\"}}]},\"finish_reason\":\"length\"}]}");
+    s = ab_take(&b); /* and the body just ends: finish_reason came, [DONE] didn't */
+    run_oai(&m, s, 0);
+    CHECK(m.done && as_conv_next(&m) == AS_NEXT_TRUNCATED);
+    CHECK(m.n == 1 && m.b[0].bad_input);
+    as_msg_free(&m);
+    free(s);
+
+    ab_init(&b);
+    chunk(&b, "{\"id\":\"c4\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"Half an ans\"},\"finish_reason\":null}]}");
+    s = ab_take(&b);
+    run_oai(&m, s, 0);
+    CHECK(!m.done && as_conv_next(&m) == AS_NEXT_ERROR);
+    as_msg_free(&m);
+    free(s);
+
+    ab_init(&b);
+    chunk(&b, "{\"error\":{\"message\":\"The server had an error\",\"type\":\"server_error\",\"code\":null}}");
+    s = ab_take(&b);
+    run_oai(&m, s, 0);
+    CHECK(m.error && !strcmp(m.error_type, "server_error") && as_conv_next(&m) == AS_NEXT_ERROR);
+    as_msg_free(&m);
+    free(s);
+
+    ab_init(&b);
+    chunk(&b, "{\"id\":\"c5\",\"choices\":[{\"index\":0,\"delta\":{\"refusal\":\"I can't help with that.\"},\"finish_reason\":\"stop\"}]}");
+    ab_puts(&b, "data: [DONE]\n\n");
+    s = ab_take(&b);
+    run_oai(&m, s, 0);
+    CHECK(as_conv_next(&m) == AS_NEXT_REFUSED);
+    as_msg_free(&m);
+    free(s);
+
+    /* the request: system first, tools as functions, a tool turn as tool_calls + role "tool" messages,
+     * thinking left out, errors said in the text */
+    as_hist_t h;
+    as_hist_init(&h);
+    as_hist_user(&h, "[context note]", "why did we brown out?");
+    aj_t *a = parse("[{\"type\":\"thinking\",\"thinking\":\"hm\",\"signature\":\"x\"},{\"type\":\"text\",\"text\":\"Looking.\"},"
+                    "{\"type\":\"tool_use\",\"id\":\"call_A\",\"name\":\"get_power\",\"input\":{}},"
+                    "{\"type\":\"tool_use\",\"id\":\"call_B\",\"name\":\"read_topics\",\"input\":{\"names\":[\"/a\"]}}]");
+    as_hist_assistant(&h, a);
+    as_result_t res[2] = { { "call_A", "{\"battery\":11.2}", false }, { "call_B", "{\"error\":\"no such topic\"}", true } };
+    as_hist_results(&h, res, 2);
+    ab_t tools;
+    ab_init(&tools);
+    as_tools_json(&tools);
+    as_req_t q = { .model = "gpt-4o-mini", .system = "You are the pit technician.", .tools = tools.p };
+    ab_t body;
+    ab_init(&body);
+    as_oai_request(&h, &q, &body);
+    aj_t *d = parse(body.p);
+    CHECK(d != NULL);
+    CHECK(!strcmp(aj_gets(d, "model"), "gpt-4o-mini"));
+    CHECK(aj_is(aj_get(d, "stream"), AJ_TRUE));
+    CHECK(aj_is(aj_get(aj_get(d, "stream_options"), "include_usage"), AJ_TRUE));
+    CHECK(!aj_get(d, "thinking") && !aj_get(d, "max_tokens"));
+    const aj_t *tl = aj_get(d, "tools");
+    CHECK(tl && tl->n == AS_NTOOLS);
+    CHECK(!strcmp(aj_gets(aj_at(tl, 0), "type"), "function"));
+    CHECK(aj_get(aj_get(aj_at(tl, 0), "function"), "parameters") != NULL);
+    const aj_t *ms = aj_get(d, "messages");
+    CHECK(ms && ms->n == 5);
+    CHECK(!strcmp(aj_gets(aj_at(ms, 0), "role"), "system"));
+    CHECK(!strcmp(aj_gets(aj_at(ms, 1), "role"), "user"));
+    CHECK(!strcmp(aj_gets(aj_at(ms, 1), "content"), "[context note]\n\nwhy did we brown out?"));
+    const aj_t *am = aj_at(ms, 2);
+    CHECK(!strcmp(aj_gets(am, "role"), "assistant") && !strcmp(aj_gets(am, "content"), "Looking."));
+    const aj_t *tc = aj_get(am, "tool_calls");
+    CHECK(tc && tc->n == 2);
+    CHECK(!strcmp(aj_gets(aj_at(tc, 1), "id"), "call_B"));
+    CHECK(!strcmp(aj_gets(aj_get(aj_at(tc, 1), "function"), "arguments"), "{\"names\":[\"/a\"]}"));
+    CHECK(!strcmp(aj_gets(aj_at(ms, 3), "role"), "tool") && !strcmp(aj_gets(aj_at(ms, 3), "tool_call_id"), "call_A"));
+    CHECK(!strcmp(aj_gets(aj_at(ms, 4), "content"), "ERROR: {\"error\":\"no such topic\"}"));
+    CHECK(!strstr(body.p, "thinking"));
+    aj_free(d);
+    char hdr[400];
+    as_oai_headers("sk-test", hdr, sizeof hdr);
+    CHECK(strstr(hdr, "Authorization: Bearer sk-test\r\n") != NULL);
+    char em[256], code[48];
+    as_oai_error("{\"error\":{\"message\":\"You exceeded your current quota\",\"type\":\"insufficient_quota\",\"code\":\"insufficient_quota\"}}",
+                 em, sizeof em, code, sizeof code);
+    CHECK(!strcmp(code, "insufficient_quota") && strstr(em, "quota"));
+    ab_free(&body);
+    ab_free(&tools);
+    as_hist_free(&h);
+}
+
 void test_assist(int *checks, int *fails)
 {
     g_checks = checks;
@@ -580,4 +739,5 @@ void test_assist(int *checks, int *fails)
     request_shape();
     fallback_echo();
     trimming();
+    openai();
 }

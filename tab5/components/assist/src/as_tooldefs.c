@@ -99,6 +99,11 @@ const as_tooldef_t AS_TOOLS[] = {
       "{\"type\":\"object\",\"properties\":{\"status\":{\"type\":\"string\","
       "\"enum\":[\"open\",\"claimed\",\"done\",\"rejected\",\"all\"]}},\"additionalProperties\":false}",
       AS_T_READ },
+    { "claude_sessions",
+      "What Claude Code is doing on the owner's PC, from Catalyst Link's hooks: each session's folder, state "
+      "(running, waiting_for_input, done, error), current step, elapsed time and an estimate of when it will "
+      "finish with how that estimate was made. Estimates come from the owner's past turns; say they are estimates.",
+      NOARGS, AS_T_READ },
 
     /* ---- changes: each one waits for the technician ---- */
     { "set_tunable",

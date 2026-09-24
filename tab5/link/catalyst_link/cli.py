@@ -233,6 +233,64 @@ def cmd_token(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- Claude Code's hooks ---------------------------------------------------------------------------------
+
+HOOK_EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStop",
+               "SessionStart", "SessionEnd")
+
+
+def hook_settings(command: str) -> dict[str, Any]:
+    """The "hooks" block for Claude Code's settings.json that runs `command` on every event the Link reads."""
+    entry = {"type": "command", "command": command, "timeout": 5}
+    hooks: dict[str, Any] = {}
+    for ev in HOOK_EVENTS:
+        block: dict[str, Any] = {"hooks": [dict(entry)]}
+        if ev in ("PreToolUse", "PostToolUse"):
+            block = {"matcher": "*", **block}
+        hooks[ev] = [block]
+    return {"hooks": hooks}
+
+
+def hook_command() -> str:
+    """This Python running hook.py by its path: works whether or not the package is installed."""
+    from . import hook
+
+    py = Path(sys.executable).resolve().as_posix()
+    return f'"{py}" "{Path(hook.__file__).resolve().as_posix()}"'
+
+
+def cmd_hook(args: argparse.Namespace) -> int:
+    from . import hook
+
+    return hook.main()
+
+
+def cmd_hook_settings(args: argparse.Namespace) -> int:
+    print(json.dumps(hook_settings(args.command or hook_command()), indent=2))
+    return 0
+
+
+def cmd_claude_sessions(args: argparse.Namespace) -> int:
+    """What the running Link knows about Claude Code's sessions (asks it over HTTP, with the token)."""
+    import urllib.request
+
+    state = _state()
+    req = urllib.request.Request(f"{args.url.rstrip('/')}/v1/claude/sessions", headers={"X-Link-Token": state.token()})
+    with urllib.request.urlopen(req, timeout=5) as resp:
+        data = json.loads(resp.read().decode("utf-8"))
+    if args.json:
+        _print_json(data)
+        return 0
+    rows = []
+    for s in data.get("sessions", []):
+        eta = s.get("eta")
+        rows.append({"state": s["state"], "project": s["project"], "elapsed": f"{s['elapsed_s']:.0f}s",
+                     "eta": f"~{eta['remaining_s']:.0f}s" if eta else "-", "step": s["step"], "title": s["title"]})
+    _table(rows, ["state", "project", "elapsed", "eta", "step", "title"])
+    print(f"({data.get('turns_recorded', 0)} finished turns recorded for estimates)")
+    return 0
+
+
 # --- parser ---------------------------------------------------------------------------------------------
 
 def build_parser() -> argparse.ArgumentParser:
@@ -291,6 +349,18 @@ def build_parser() -> argparse.ArgumentParser:
     s = sub.add_parser("claude-token", help="store a `claude setup-token` token for the claude-code backend (read from stdin)")
     s.add_argument("--remove", action="store_true", help="delete the stored token")
     s.set_defaults(fn=cmd_claude_token)
+
+    s = sub.add_parser("hook", help="Claude Code hook: send the event on stdin to the Link (prints nothing)")
+    s.set_defaults(fn=cmd_hook)
+
+    s = sub.add_parser("hook-settings", help="print the hooks block for Claude Code's settings.json")
+    s.add_argument("--command", help='the hook command (default: this Python running hook.py by its path)')
+    s.set_defaults(fn=cmd_hook_settings)
+
+    s = sub.add_parser("claude-sessions", help="what the running Link knows about Claude Code's sessions")
+    s.add_argument("--url", default="http://127.0.0.1:8765")
+    s.add_argument("--json", action="store_true")
+    s.set_defaults(fn=cmd_claude_sessions)
 
     s = sub.add_parser("token", help="print the pairing token")
     s.add_argument("--rotate", action="store_true", help="make a new one (the tablet must be re-paired)")

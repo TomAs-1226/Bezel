@@ -23,6 +23,7 @@ from .inbox import Inbox
 from .claude_code import ClaudeCodeBackend
 from .proxy import ClaudeProxy, api_error
 from .repo import Patches, repo_root, repo_status
+from .sessions import SessionTracker
 from .state import LinkError, State
 
 MAX_JSON = 1024 * 1024            # patches, work orders, status changes
@@ -61,6 +62,8 @@ class LinkApp:
         self.patches = Patches(self.repo, self.state, cfg.check, cfg.check_timeout)
         self.inbox = Inbox(self.state)
         self.files = Files(self.state.files_dir)
+        # Claude Code on this PC, as its hooks report it (hook.py → POST /v1/claude/events)
+        self.claude_sessions = SessionTracker(self.state.home / "claude-turns.jsonl")
         self.claude_backend = pick_backend(cfg, claude_client)
         self.proxy: ClaudeProxy | ClaudeCodeBackend | None
         if self.claude_backend == "api":
@@ -131,7 +134,8 @@ class Handler(BaseHTTPRequestHandler):
     # --- plumbing ----------------------------------------------------------------------------------
 
     def log_message(self, format: str, *args: Any) -> None:
-        if not self.quiet:
+        # Claude Code's hooks post on every tool call, and the tablet polls the sessions: not worth a line each
+        if not self.quiet and not self.path.startswith("/v1/claude/"):
             sys.stderr.write(f"[link] {self.client_address[0]} {format % args}\n")
 
     def _json(self, status: int, obj: dict[str, Any]) -> None:
@@ -151,7 +155,8 @@ class Handler(BaseHTTPRequestHandler):
         a = self._audit
         if self._audited:
             return
-        if (a["method"] == "POST" and a["path"] != "/v1/messages") or a.get("error") == "token":
+        routine = a["path"] == "/v1/messages" or a["path"].startswith("/v1/claude/")  # traffic, not writes
+        if (a["method"] == "POST" and not routine) or a.get("error") == "token":
             self._audited = True
             self.app.state.log(a)
 
@@ -257,6 +262,10 @@ class Handler(BaseHTTPRequestHandler):
         ("GET", r"/files", "files_list"),
         ("POST", r"/files", "files_upload"),
         ("POST", r"/v1/messages", "messages"),
+        ("GET", r"/v1/claude/sessions", "cc_sessions"),
+        ("POST", r"/v1/claude/events", "cc_event"),
+        ("POST", r"/v1/claude/sessions/ack", "cc_ack_all"),
+        ("POST", r"/v1/claude/sessions/(?P<id>[^/]+)/ack", "cc_ack"),
     ]
 
     def _known(self, path: str) -> str | None:
@@ -342,6 +351,23 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return self._json(503, api_error("api_error", "Claude is turned off on this Catalyst Link (--claude off)"))
         self.app.proxy.serve(body, betas, self)
+
+
+    # --- Claude Code on this PC ---------------------------------------------------------------------------
+
+    def cc_sessions(self, q: dict[str, str]) -> None:
+        self._json(200, self.app.claude_sessions.listing())
+
+    def cc_event(self, q: dict[str, str]) -> None:
+        self._json(200, self.app.claude_sessions.event(self._body()))
+
+    def cc_ack_all(self, q: dict[str, str]) -> None:
+        self._body()
+        self._json(200, {"ok": True, "acked": self.app.claude_sessions.ack(None)})
+
+    def cc_ack(self, q: dict[str, str]) -> None:
+        self._body()
+        self._json(200, {"ok": True, "acked": self.app.claude_sessions.ack(self._params["id"])})
 
 
 def make_server(app: LinkApp, quiet: bool = False) -> ThreadingHTTPServer:

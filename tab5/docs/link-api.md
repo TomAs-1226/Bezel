@@ -192,3 +192,106 @@ sanitised to `[A-Za-z0-9._-]` (directories dropped, other characters → `_`, no
 existing name gets a `-2` suffix (then `-3`…), unless the existing file has the very same bytes — a
 re-sent upload — which returns that file with `"duplicate":true`. The answer also carries `sha256`.
 `GET /files` → `{"ok":true,"files":[{"name","bytes","when"}]}`, newest first.
+
+## Claude Code sessions — what Claude Code on the PC is doing
+
+The tablet's companion (desk mode) shows what Claude Code is doing on the owner's PC: which session
+is running, what it's doing, when it will likely finish, and when it has finished or needs input. The
+Link learns this from Claude Code's own hooks, not by polling Claude Code — `link/catalyst_link/hook.py`
+runs on each hook event and posts a trimmed copy here; `link/catalyst_link/sessions.py` keeps the
+state and the finish estimate; the CLI has `hook`, `hook-settings` and `claude-sessions` (the PC-side
+install steps are in `link/README.md`).
+
+`POST /v1/claude/events` (token required; this is what `hook.py` calls) — body:
+
+- `event` — the hook's name (`hook_event_name`): `UserPromptSubmit`, `PreToolUse`, `PostToolUse`,
+  `PostToolUseFailure`, `Notification`, `Stop`, `StopFailure`, `SubagentStop`, `SessionStart`,
+  `SessionEnd`, `PreCompact`. Required.
+- `session_id` — required, at most 100 characters.
+- `cwd` — the session's working folder.
+- `prompt` — `UserPromptSubmit` only: the first non-empty line of what the owner typed, at most 160
+  characters; left out when `CATALYST_LINK_HOOK_PROMPTS=0` (the tablet then shows "turn N" instead).
+- `tool` and `detail` — `PreToolUse` / `PostToolUse` / `PostToolUseFailure`: the tool's name and a few
+  words of what it's doing, e.g. `"editing Shooter.java"`, `"running ./gradlew build"`, `"searching
+  for kArmP"`. Tool inputs and outputs never leave the PC — `detail` is `hook.py`'s own summary.
+- `message` (+ `notification_type`) — `Notification`: the text Claude Code showed.
+- `error` — `StopFailure` (and any event that carries one): what failed.
+- `reason` — `SessionEnd`; `source` — `SessionStart`.
+
+→ `{"ok":true,"state":"running","seq":3}`. 400 without `session_id` or `event`.
+
+### The state machine
+
+| event | state |
+|---|---|
+| `UserPromptSubmit` | `running` — a new turn, the clock starts |
+| `PreToolUse` / `PostToolUse` / `PostToolUseFailure` | `running`; `step` becomes what the tool is doing |
+| `Notification` | `waiting_for_input` — but only while `running` (a permission prompt, or a question); after a `Stop` it's Claude Code's own idle reminder and changes nothing |
+| a tool event while `waiting_for_input` | back to `running` — whatever it was waiting for was answered |
+| `Stop` | `done`; the turn's active time is recorded for future estimates |
+| `StopFailure`, or any event carrying an `error` | `error` |
+| `SubagentStop`, `PreCompact` | still `running`; `step` says so |
+| `SessionEnd` while `running` or `waiting_for_input` | `done`, but the turn is **not** recorded (cut off, not finished) |
+| `SessionEnd` (any state) | the session is also marked `ended` and leaves the list an hour later |
+| `SessionStart` | no state change; `step` becomes "session started" if the session hasn't had a turn yet |
+
+`seq` counts state changes, so a reader can tell "finished again" from "still finished". A session the
+Link hasn't seen before starts in state `done` (nothing to look at yet, `seq` 0).
+
+### `GET /v1/claude/sessions`
+
+```json
+{"ok":true,"now":"2026-09-24T10:03:12-05:00","turns_recorded":214,"events":5301,
+ "sessions":[
+   {"id":"sess-1","title":"Tune the arm's feedforward","cwd":"C:/dev/CatalystX1","project":"CatalystX1",
+    "state":"running","seq":3,"step":"editing Shooter.java","tools":4,"turns":2,
+    "started_at":"2026-09-24T09:41:03-05:00","turn_started_at":"2026-09-24T10:01:40-05:00",
+    "last_activity":"2026-09-24T10:03:10-05:00","finished_at":null,
+    "elapsed_s":90.4,"quiet_s":2.1,"since_s":12.0,
+    "eta":{"remaining_s":140.0,"low_s":70.0,"high_s":260.0,"finish_at":"2026-09-24T10:05:32-05:00",
+           "samples":4,"typical_s":230.0,
+           "basis":"median of the 4 of your last 12 turns (in CatalystX1) that ran past 1m30s"},
+    "eta_basis":"median of the 4 of your last 12 turns (in CatalystX1) that ran past 1m30s",
+    "acked":false,"ended":false,"error":null}]}
+```
+
+Sessions are sorted by `last_activity`, newest first, at most 16. `done` sessions drop out of the list
+24 hours after their last activity, `ended` ones after 1 hour; the list is in memory only (a restarted
+Link starts empty), but the turn history behind the estimates persists in
+`~/.catalyst-link/claude-turns.jsonl` (the last 500 turns). `eta` is `null` when there's no estimate;
+`eta_basis` is the same explanation whether or not `eta` is present (also reachable inside `eta.basis`
+when it is). `acked` is true when the session has been acknowledged since its last state change and
+it isn't currently `running`.
+
+### The estimate, honestly
+
+The estimate only counts Claude's own active time — time spent waiting on the owner (`Notification`
+while `running`, until the next tool call) is excluded, both from a turn's recorded duration and from
+how far into the current turn it looks. For a turn `e` seconds into its active time, the estimate is
+the median of the owner's recorded turns that ran longer than `e`, minus `e` — among turns that were
+still going at this point, when did half of them finish. The low/high are those turns' quartiles.
+Turns from the same folder are used when there are at least 5 of the last 40; otherwise all recent
+turns, and `basis` says which. With fewer than 3 recorded turns to compare against, or fewer than 2
+that ran at least this long, there is no estimate, and `eta_basis` says why (e.g. "no estimate yet: 1
+finished turn recorded, 3 needed" or "no estimate: already longer than all of your last 5 turns").
+Turns under 1 second aren't recorded (a slash command, a hook test, not a real turn). It is an
+estimate from the owner's own history, not a prediction of this turn specifically, and the tablet
+labels it as one.
+
+### Acknowledging
+
+`POST /v1/claude/sessions/<id>/ack` and `POST /v1/claude/sessions/ack` (every session) →
+`{"ok":true,"acked":n}`. 404 for an unknown id.
+
+These routes are routine traffic: unlike the rest of the API, they are not written to
+`~/.catalyst-link/log.jsonl` and not printed per request.
+
+### The tablet side
+
+`components/assist/src/ccwatch.c` polls `GET /v1/claude/sessions` every ~3 seconds while the Link is
+reachable (a 404, from an older Link without this endpoint, backs off to once a minute). When a
+session changes to `done`, `waiting_for_input` or `error`, the tablet raises attention for it: the
+eyes react, a chime plays, the island shows a message, and the reminder repeats — once, or every 1, 2
+or 5 minutes (default 2) — until the owner taps the companion's face or that session's row, which
+posts the acknowledgement back to the Link. The assistant also has a read-only tool, `claude_sessions`,
+that reads this same endpoint.

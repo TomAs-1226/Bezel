@@ -1187,6 +1187,9 @@ static as_tres_t t_code(const char *name, const aj_t *in, ab_t *o, char *s, size
     } else if (!strcmp(name, "list_patches")) {
         snprintf(path, sizeof path, "/code/patches");
         snprintf(b, sizeof b, "patches");
+    } else if (!strcmp(name, "claude_sessions")) {
+        snprintf(path, sizeof path, "/v1/claude/sessions");
+        snprintf(b, sizeof b, "claude code on the pc");
     } else {
         const char *st = aj_gets(in, "status");
         snprintf(path, sizeof path, "/inbox?status=%s", st && strcmp(st, "all") != 0 ? st : st ? "" : "open");
@@ -1664,7 +1667,8 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     else if (!strcmp(name, "summarize_log")) r = t_summarize_log(e, in, o, s, sn);
     else if (!strcmp(name, "systemcore_health")) r = t_systemcore(e, o, s, sn);
     else if (!strcmp(name, "motor_history")) r = t_motor_history(e, o, s, sn);
-    else if (!strncmp(name, "code_", 5) || !strcmp(name, "list_patches") || !strcmp(name, "list_work_orders"))
+    else if (!strncmp(name, "code_", 5) || !strcmp(name, "list_patches") || !strcmp(name, "list_work_orders") ||
+             !strcmp(name, "claude_sessions"))
         r = t_code(name, in, o, s, sn);
     else if (!strcmp(name, "set_tunable")) r = t_set_tunable(e, in, o, s, sn);
     else if (!strcmp(name, "select_auto")) r = t_select_auto(e, in, o, s, sn);

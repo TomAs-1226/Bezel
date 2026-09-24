@@ -23,14 +23,21 @@
 extern "C" {
 #endif
 
-/* Where requests go: straight to api.anthropic.com with a key stored on the tablet, or through
- * Catalyst Link on the PC, which holds the key and forwards the stream (docs/link-api.md). */
-typedef enum { AS_ROUTE_LINK, AS_ROUTE_DIRECT } as_route_t;
+/* Where requests go — the provider:
+ *   AS_ROUTE_LINK    Claude through Catalyst Link on the PC, which holds the key or runs Claude Code on
+ *                    the owner's subscription and forwards the stream (docs/link-api.md);
+ *   AS_ROUTE_DIRECT  Claude straight from the tablet, with an Anthropic key stored on it;
+ *   AS_ROUTE_OPENAI  OpenAI's Chat Completions straight from the tablet, with an OpenAI key stored on it
+ *                    (as_oai.c translates; the tools, cards and transcript are the same).
+ * Stored in the kv key "ai_route" as "link", "direct" or "openai". */
+typedef enum { AS_ROUTE_LINK, AS_ROUTE_DIRECT, AS_ROUTE_OPENAI } as_route_t;
 
 typedef struct {
     as_route_t route;
-    char api_key[160];     /* AS_ROUTE_DIRECT only; "" otherwise */
-    char model[48];        /* "" → "claude-opus-5" */
+    char api_key[160];     /* the Anthropic key (AS_ROUTE_DIRECT) */
+    char model[48];        /* Claude's model; "" → "claude-opus-5" */
+    char oai_key[256];     /* the OpenAI key (AS_ROUTE_OPENAI) */
+    char oai_model[48];    /* "" → "gpt-4o-mini" */
 } assist_config_t;
 
 typedef enum {
@@ -83,6 +90,16 @@ void assist_init(void);                        /* once, at boot; starts the work
  * lock, so its worker never reads the UI's model while the UI writes it. */
 void assist_feed(const cat_robot_t *r);
 void assist_configure(const assist_config_t *c);
+/* The configuration as it stands (keys included: never log them, never show more than "saved"). */
+void assist_config(assist_config_t *out);
+/* Changes one part and stores it in the kv store (UI thread only: it writes NVS). A provider change starts a
+ * new conversation, since one model's history (thinking signatures, tool ids) isn't another's. key/model
+ * NULL leave that part as it is; "" clears a key or restores the default model. */
+void assist_use(as_route_t route);
+void assist_set_anthropic(const char *key, const char *model);
+void assist_set_openai(const char *key, const char *model);
+/* "Claude through the PC", "Claude (key on tablet)", "OpenAI gpt-4o-mini" */
+const char *assist_provider_name(as_route_t r);
 /* false with a reason when it can't run: no Link and no key, Link unreachable… */
 bool assist_ready(char *why, size_t n);
 bool assist_send(const char *text);            /* false while a turn is in flight */

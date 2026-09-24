@@ -115,6 +115,10 @@ works is in [docs/link-api.md](../docs/link-api.md#claude-code-the-owners-claude
 If `ANTHROPIC_API_KEY` is also set, `--claude auto` prefers the API; pass `--claude claude-code` to use
 the subscription anyway (the key is then withheld from Claude Code, so it can't bill the API).
 
+The tablet can also skip the Link and this PC entirely, and use OpenAI directly over Wi-Fi with an
+OpenAI API key — settings → assistant, or the Link app, under "openai key"; the model is a setting
+too, default `gpt-4o-mini`. That route doesn't go through the Link at all, so nothing above applies to it.
+
 ### Letting the PC's agent pick up work orders by itself
 
 `--on-work-order` is off unless you turn it on. With Claude Code installed, this starts a headless
@@ -129,6 +133,53 @@ The command runs in the robot repo, detached, with its output in `~/.catalyst-li
 `{path}` is the work order's file (quoted) and `{id}` its id. Or leave the hook off and ask your agent
 now and then: *"Work the open Catalyst Link inbox items; follow tab5/link/AGENT.md."*
 
+## Claude Code on the tablet
+
+The companion's desk mode can show the tablet what Claude Code is doing on this PC — which session is
+running, what it's doing, and roughly when it'll finish — by way of Claude Code's own hooks. The wire
+contract is in [docs/link-api.md](../docs/link-api.md#claude-code-sessions--what-claude-code-on-the-pc-is-doing).
+
+1. Run the Link as usual. The hook posts to it on `127.0.0.1:8765` with the token from
+   `~/.catalyst-link/token`, so it must run as the same user account as Claude Code.
+2. `catalyst-link hook-settings` prints the `hooks` block for Claude Code's `settings.json`, wired to
+   this PC's Python running `hook.py` by its path (works whether or not the package is pip-installed):
+
+   ```json
+   {
+     "hooks": {
+       "UserPromptSubmit": [{"hooks": [{"type": "command",
+         "command": "\"C:/Users/you/AppData/Local/Programs/Python/Python312/python.exe\" \"C:/.../tab5/link/catalyst_link/hook.py\"",
+         "timeout": 5}]}],
+       "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command",
+         "command": "\"C:/Users/you/AppData/Local/Programs/Python/Python312/python.exe\" \"C:/.../tab5/link/catalyst_link/hook.py\"",
+         "timeout": 5}]}],
+       "PostToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": "...", "timeout": 5}]}],
+       "Notification": [{"hooks": [{"type": "command", "command": "...", "timeout": 5}]}],
+       "Stop": [{"hooks": [{"type": "command", "command": "...", "timeout": 5}]}],
+       "SubagentStop": [{"hooks": [{"type": "command", "command": "...", "timeout": 5}]}],
+       "SessionStart": [{"hooks": [{"type": "command", "command": "...", "timeout": 5}]}],
+       "SessionEnd": [{"hooks": [{"type": "command", "command": "...", "timeout": 5}]}]
+     }
+   }
+   ```
+
+3. Merge that into `~/.claude/settings.json` (every project) or a project's `.claude/settings.json`
+   (that project only). If a `hooks` key is already there, add these events' entries alongside the
+   existing ones rather than replacing them — each event is a list of blocks. Restart your Claude
+   Code sessions (or check `/hooks`) so they pick it up.
+4. Check it: start a Claude Code session, send it a prompt, then run `catalyst-link claude-sessions` —
+   it should show the session `running`. On the tablet, open the companion and tap **claude** for the
+   sessions panel.
+
+The hook (`catalyst_link/hook.py`) never prints anything and always exits 0, so it can never block
+Claude Code or feed anything into its context; each call has a 1.5 s timeout. Environment variables:
+`CATALYST_LINK_URL` (default `http://127.0.0.1:8765`), `CATALYST_LINK_HOME` (default
+`~/.catalyst-link`, for the token), and `CATALYST_LINK_HOOK_PROMPTS=0` to stop sending the prompt's
+first line (the tablet then shows "turn N" instead). What leaves the PC: the session id, the working
+folder, the first line of each prompt, a few words describing each tool call, and notification text.
+What never does: tool inputs and outputs, file contents, or transcripts. Finish estimates need a few
+completed turns in the same folder (or recently, elsewhere) before they show up.
+
 ## The CLI
 
 ```sh
@@ -142,6 +193,9 @@ catalyst-link patches [--json]           # proposed / merged / dropped, and the 
 catalyst-link token [--rotate]           # print it, or make a new one (re-pair the tablet)
 catalyst-link claude-check [--live]      # is the claude-code backend ready? (--live: one tiny turn)
 catalyst-link claude-token [--remove]    # store (from stdin) or delete a `claude setup-token` token
+catalyst-link hook                       # Claude Code hook: reads stdin, posts to the Link, prints nothing
+catalyst-link hook-settings [--command …] # print the "hooks" block for Claude Code's settings.json
+catalyst-link claude-sessions [--json]   # what the running Link knows about Claude Code's sessions
 ```
 
 Ids accept a unique prefix. A patch shows as **merged** once its branch is an ancestor of `HEAD`, and

@@ -482,6 +482,7 @@ static const app_entry_t APPS_DIAG[] = {
 static const app_entry_t APPS_TABLET[] = {
     { &APP_ASSIST, BZ_I_AUTO_AWESOME, "assist", "ai technician" },
     { &APP_LINK, BZ_I_COMPUTER, "link", "pc, patches" },
+    { &APP_COMPANION, BZ_I_VISIBILITY, "companion", "desk mode" },
     { &APP_TIMER, BZ_I_TIMER, "timer", "match, stopwatch" },
     { &APP_CALC, BZ_I_CALCULATE, "calculator", "ratios, units" },
     { &APP_NOTES, BZ_I_EDIT_NOTE, "notes", "pit notebook" },

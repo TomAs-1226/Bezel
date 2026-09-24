@@ -1147,6 +1147,7 @@ static void settings_open(void)
     for (int i = 0; i < 5; i++) ui_chip_set(SX.tz_chips[i], i == S.tz);
     SX.off_armed = 0;
     lv_label_set_text(lv_obj_get_child(SX.off_btn, 1), "turn off");
+    ui_assist_settings_open();
     sx_show(SX.cur);
 }
 
@@ -1288,6 +1289,7 @@ static void settings_build(lv_obj_t *b)
     r = sx_wrap_row(t, iw);
     ui_button(r, BZ_I_AUTO_AWESOME, "open assist", sx_open_app, (void *)&APP_ASSIST);
     ui_button(r, BZ_I_COMPUTER, "pair the pc", sx_open_app, (void *)&APP_LINK);
+    ui_assist_settings(t, b, iw);
 
     /* date and time */
     t = sx_pane(b, SS_TIME, px, pw);

@@ -16,7 +16,9 @@
 #include "ui_internal.h"
 #include "as_snap.h"
 #include "assist.h"
+#include "ccwatch.h"
 #include "link.h"
+#include "ui_companion.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -554,8 +556,17 @@ static void assist_refresh(void)
     assist_usage(&u);
     link_status_t ls;
     link_status(&ls);
-    ui_text(AS.meta, "%s\n%d in · %d out tokens%s", u.model[0] ? u.model : "claude-opus-5", u.input_tokens, u.output_tokens,
-            u.fell_back ? " · fell back" : "");
+    assist_config_t *cfg = malloc(sizeof *cfg); /* it carries the keys: off the stack, wiped after */
+    as_route_t route = AS_ROUTE_LINK;
+    if (cfg) {
+        assist_config(cfg);
+        route = cfg->route;
+        memset(cfg, 0, sizeof *cfg);
+        free(cfg);
+    }
+    ui_text(AS.meta, "%s\n%s%s%d in · %d out tokens%s", assist_provider_name(route),
+            u.model[0] ? u.model : route == AS_ROUTE_OPENAI ? "" : "claude-opus-5", u.model[0] || route != AS_ROUTE_OPENAI ? "\n" : "",
+            u.input_tokens, u.output_tokens, u.fell_back ? " · fell back" : "");
     if (ls.configured)
         ui_text(AS.route, "pc %s · %s%s", ls.name[0] ? ls.name : "link", ls.reachable ? (ls.auth ? "paired" : "wrong token") : "away",
                 ls.outbox ? " · outbox waiting" : "");
@@ -683,7 +694,7 @@ static void assist_build(lv_obj_t *b)
     lv_obj_set_pos(AS.setup, PAD + 40, APP_Y + 150);
     lv_obj_set_flex_flow(AS.setup, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(AS.setup, 8, 0);
-    bz_label(AS.setup, "not connected to claude", BZ_F_LABEL, BZ_C_DIM);
+    bz_label(AS.setup, "the assistant can't answer yet", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *why = bz_label(AS.setup, "", BZ_F_BODY, BZ_C_INK);
     lv_obj_set_width(why, TW - 80 - 2 * BZ_PAD_TILE);
     ui_button(AS.setup, BZ_I_COMPUTER, "pair with the pc", setup_tap, NULL);
@@ -758,12 +769,16 @@ static void orb_tap(lv_obj_t *o, void *u)
 {
     (void)u;
     bz_ui_wake();
-    ui_app_open(&APP_ASSIST, o);
+    /* Claude Code finished or wants something: the companion's panel says what; else as settings say */
+    if (ccw_attention(NULL)) ui_companion_open(true, o);
+    else if (ui_companion_cfg()->orb_companion) ui_companion_open(false, o);
+    else ui_app_open(&APP_ASSIST, o);
 }
 
 static void orb_frame(double now, double dt, void *u)
 {
-    (void)dt; (void)u;
+    (void)u;
+    ui_companion_tick(now, dt); /* Claude Code's reminders, chimes and desk mode, whatever is on screen */
     assist_glass_housekeeping();
     as_phase_t ph = assist_phase();
     bool busy = ph != AS_PHASE_IDLE && ph != AS_PHASE_ERROR;
@@ -786,6 +801,8 @@ static void orb_frame(double now, double dt, void *u)
         bz_ui_keep_alive();
     } else if (ph == AS_PHASE_ERROR) {
         bz_glass_set_tint(ORB.glass, 4, 0.3f);
+    } else if (ccw_attention(NULL)) {
+        bz_glass_set_tint(ORB.glass, 1, 0.35f); /* Claude Code on the PC wants a look */
     } else {
         bz_glass_set_tint(ORB.glass, 3, busy ? 0.3f : 0);
     }
@@ -820,12 +837,62 @@ void ui_orb_init(void)
 /* ================================================================== link */
 
 static struct {
-    lv_obj_t *state, *where, *pc_mark, *route_chips[2], *key_state, *inbox, *patches, *outbox;
+    lv_obj_t *state, *where, *pc_mark, *route_chips[3], *key_state, *inbox, *patches, *outbox;
     ui_kb_t *kb;
     char url[96], token[64];
-    int editing; /* 0 url, 1 token, 2 key */
+    int editing; /* 0 url, 1 token, 2 anthropic key, 3 openai key, 4 openai model */
     uint32_t sig;
 } LK;
+
+/* ---- keys and providers, shared by the link app and settings > assistant ---- */
+
+static const char *const KEY_TITLE[5] = { "the pc's address, e.g. http://192.168.1.20:8765 (empty: find it)",
+                                          "the token catalyst-link printed", "anthropic api key (sk-ant-...)",
+                                          "openai api key (sk-...)", "openai model, e.g. gpt-4o-mini" };
+
+/* A key or model typed on either screen: stored, applied, and never shown again. */
+static void key_typed(int what, const char *text)
+{
+    if (what == 2) {
+        assist_set_anthropic(text, NULL);
+        if (text[0]) assist_use(AS_ROUTE_DIRECT);
+        ui_island_say(BZ_I_AUTO_AWESOME, text[0] ? "claude key saved on the tablet" : "claude key cleared");
+    } else if (what == 3) {
+        assist_set_openai(text, NULL);
+        if (text[0]) assist_use(AS_ROUTE_OPENAI);
+        ui_island_say(BZ_I_AUTO_AWESOME, text[0] ? "openai key saved on the tablet" : "openai key cleared");
+    } else if (what == 4) {
+        assist_set_openai(NULL, text);
+        ui_island_say(BZ_I_AUTO_AWESOME, text[0] ? "openai model set" : "openai model: the default");
+    }
+}
+
+static void keys_state(char *out, size_t n)
+{
+    assist_config_t *c = malloc(sizeof *c);
+    if (!c) {
+        if (n) out[0] = 0;
+        return;
+    }
+    assist_config(c);
+    snprintf(out, n, "claude key: %s · openai key: %s · openai model: %s", c->api_key[0] ? "saved" : "none",
+             c->oai_key[0] ? "saved" : "none", c->oai_model[0] ? c->oai_model : "gpt-4o-mini (default)");
+    memset(c, 0, sizeof *c);
+    free(c);
+}
+
+static as_route_t current_route(void)
+{
+    assist_config_t *c = malloc(sizeof *c);
+    as_route_t r = AS_ROUTE_LINK;
+    if (c) {
+        assist_config(c);
+        r = c->route;
+        memset(c, 0, sizeof *c);
+        free(c);
+    }
+    return r;
+}
 
 static void lk_save_and_apply(void)
 {
@@ -844,23 +911,17 @@ static void lk_typed(const char *text, void *u)
         ui_island_say(BZ_I_COMPUTER, "pairing with the pc");
         return;
     }
-    /* the API key, for going straight to Claude without the PC */
-    hal_kv_set("ai_key", text);
-    assist_config_t c = { .route = AS_ROUTE_DIRECT };
-    snprintf(c.api_key, sizeof c.api_key, "%s", text);
-    hal_kv_set("ai_route", "direct");
-    assist_configure(&c);
-    ui_island_say(BZ_I_AUTO_AWESOME, text[0] ? "key saved on the tablet" : "key cleared");
+    /* a key, for going straight to Claude or OpenAI without the PC */
+    key_typed(LK.editing, text);
+    for (int i = 0; i < 3; i++) ui_chip_set(LK.route_chips[i], (int)current_route() == i);
 }
 
 static void lk_edit(lv_obj_t *o, void *u)
 {
     (void)o;
     LK.editing = (int)(intptr_t)u;
-    static const char *const T[3] = { "the pc's address, e.g. http://192.168.1.20:8765 (empty: find it)",
-                                      "the token catalyst-link printed", "anthropic api key" };
-    ui_kb_show(LK.kb, T[LK.editing], LK.editing == 0 ? LK.url : LK.editing == 1 ? LK.token : "", LK.editing > 0,
-               true, lk_typed, NULL);
+    ui_kb_show(LK.kb, KEY_TITLE[LK.editing], LK.editing == 0 ? LK.url : LK.editing == 1 ? LK.token : "",
+               LK.editing > 0 && LK.editing < 4, true, lk_typed, NULL);
 }
 
 static void lk_find(lv_obj_t *o, void *u)
@@ -874,13 +935,10 @@ static void lk_find(lv_obj_t *o, void *u)
 static void lk_route(lv_obj_t *o, void *u)
 {
     (void)o;
-    bool direct = (intptr_t)u != 0;
-    hal_kv_set("ai_route", direct ? "direct" : "link");
-    assist_config_t c = { .route = direct ? AS_ROUTE_DIRECT : AS_ROUTE_LINK };
-    hal_kv_get("ai_key", c.api_key, sizeof c.api_key);
-    assist_configure(&c);
-    ui_chip_set(LK.route_chips[0], !direct);
-    ui_chip_set(LK.route_chips[1], direct);
+    as_route_t r = (as_route_t)(intptr_t)u;
+    if (r != current_route()) ui_island_say(BZ_I_REFRESH, "new conversation on the new model");
+    assist_use(r);
+    for (int i = 0; i < 3; i++) ui_chip_set(LK.route_chips[i], (int)r == i);
 }
 
 static void lk_list(lv_obj_t *list, const link_item_t *it, int n, bool patches)
@@ -923,8 +981,9 @@ static void link_refresh(void)
     ui_text(LK.where, "%s\n%s%s%s\nclaude through the pc: %s", s.url[0] ? s.url : "no address yet", s.repo[0] ? s.repo : "",
             s.branch[0] ? " on " : "", s.branch, s.claude ? "yes" : "no");
     ui_text(LK.outbox, "%d waiting on the tablet for the pc", s.outbox);
-    char key[8];
-    ui_text(LK.key_state, "%s", hal_kv_get("ai_key", key, sizeof key) && key[0] ? "a key is saved on the tablet" : "no key saved");
+    char keys[160];
+    keys_state(keys, sizeof keys);
+    ui_text(LK.key_state, "%s", keys);
     link_item_t in[8], pa[8];
     int ni = link_inbox(in, 8), np = link_patches(pa, 8);
     uint32_t sig = (uint32_t)(ni * 31 + np) ^ (uint32_t)s.inbox_open * 131u ^ (uint32_t)s.patches * 977u;
@@ -938,11 +997,8 @@ static void link_refresh(void)
 
 static void link_open(void)
 {
-    char v[16] = "";
-    hal_kv_get("ai_route", v, sizeof v);
-    bool direct = !strcmp(v, "direct");
-    ui_chip_set(LK.route_chips[0], !direct);
-    ui_chip_set(LK.route_chips[1], direct);
+    as_route_t r = current_route();
+    for (int i = 0; i < 3; i++) ui_chip_set(LK.route_chips[i], (int)r == i);
     LK.sig = 0xFFFFFFFFu; /* no signature matches: the lists draw, empty ones included */
 }
 
@@ -973,15 +1029,23 @@ static void link_build(lv_obj_t *b)
     ui_button(br, BZ_I_RADAR, "find", lk_find, NULL);
     ui_button(br, BZ_I_LINK, "address", lk_edit, (void *)0);
     ui_button(br, BZ_I_KEYBOARD, "token", lk_edit, (void *)1);
-    bz_label(t, "claude", BZ_F_LABEL, BZ_C_DIM);
+    bz_label(t, "the assistant's model", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *rr = bz_row(t, 8);
     lv_obj_set_flex_flow(rr, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_width(rr, c1 - 2 * BZ_PAD_TILE);
     lv_obj_set_style_pad_row(rr, 8, 0);
-    LK.route_chips[0] = ui_chip(rr, "through the pc", lk_route, (void *)0);
-    LK.route_chips[1] = ui_chip(rr, "key on tablet", lk_route, (void *)1);
+    LK.route_chips[AS_ROUTE_LINK] = ui_chip(rr, "claude via pc", lk_route, (void *)(intptr_t)AS_ROUTE_LINK);
+    LK.route_chips[AS_ROUTE_DIRECT] = ui_chip(rr, "claude key", lk_route, (void *)(intptr_t)AS_ROUTE_DIRECT);
+    LK.route_chips[AS_ROUTE_OPENAI] = ui_chip(rr, "openai key", lk_route, (void *)(intptr_t)AS_ROUTE_OPENAI);
     LK.key_state = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
-    ui_button(t, BZ_I_KEYBOARD, "enter api key", lk_edit, (void *)2);
+    lv_obj_set_width(LK.key_state, c1 - 2 * BZ_PAD_TILE);
+    lv_label_set_long_mode(LK.key_state, LV_LABEL_LONG_WRAP);
+    lv_obj_t *kr = bz_row(t, 8);
+    lv_obj_set_flex_flow(kr, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_width(kr, c1 - 2 * BZ_PAD_TILE);
+    lv_obj_set_style_pad_row(kr, 8, 0);
+    ui_button(kr, BZ_I_KEYBOARD, "claude key", lk_edit, (void *)2);
+    ui_button(kr, BZ_I_KEYBOARD, "openai key", lk_edit, (void *)3);
     LK.outbox = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
 
     lv_obj_t *w1 = bz_box(b);
@@ -1000,6 +1064,161 @@ static void link_build(lv_obj_t *b)
     LK.patches = ui_scroller(s2, c2, APP_H - 28);
 
     LK.kb = ui_kb_create(b, 420);
+}
+
+/* ================================================================== settings > assistant */
+
+static const int REMIND_S[4] = { 0, 60, 120, 300 };
+static const char *const REMIND_L[4] = { "once", "every minute", "every 2 min", "every 5 min" };
+
+static struct {
+    lv_obj_t *route[3], *keys, *orb[2], *desk, *remind[4];
+    ui_kb_t *kb;
+    int editing;
+} SA;
+
+static void sa_show(void)
+{
+    if (!SA.keys) return;
+    as_route_t r = current_route();
+    for (int i = 0; i < 3; i++) ui_chip_set(SA.route[i], (int)r == i);
+    char k[160];
+    keys_state(k, sizeof k);
+    ui_text(SA.keys, "%s", k);
+    ui_companion_cfg_t *c = ui_companion_cfg();
+    ui_chip_set(SA.orb[0], !c->orb_companion);
+    ui_chip_set(SA.orb[1], c->orb_companion);
+    ui_chip_set(SA.desk, c->desk_auto);
+    for (int i = 0; i < 4; i++) ui_chip_set(SA.remind[i], c->remind_s == REMIND_S[i]);
+}
+
+static void sa_route(lv_obj_t *o, void *u)
+{
+    (void)o;
+    as_route_t r = (as_route_t)(intptr_t)u;
+    if (r != current_route()) ui_island_say(BZ_I_REFRESH, "new conversation on the new model");
+    assist_use(r);
+    sa_show();
+}
+
+static void sa_typed(const char *text, void *u)
+{
+    (void)u;
+    key_typed(SA.editing, text);
+    sa_show();
+}
+
+static void sa_edit(lv_obj_t *o, void *u)
+{
+    (void)o;
+    SA.editing = (int)(intptr_t)u;
+    char model[48] = "";
+    if (SA.editing == 4) {
+        assist_config_t *c = malloc(sizeof *c);
+        if (c) {
+            assist_config(c);
+            snprintf(model, sizeof model, "%s", c->oai_model);
+            memset(c, 0, sizeof *c);
+            free(c);
+        }
+    }
+    ui_kb_show(SA.kb, KEY_TITLE[SA.editing], model, SA.editing < 4, true, sa_typed, NULL);
+}
+
+static void sa_orb(lv_obj_t *o, void *u)
+{
+    (void)o;
+    ui_companion_cfg()->orb_companion = (intptr_t)u != 0;
+    ui_companion_cfg_save();
+    sa_show();
+}
+
+static void sa_desk(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    ui_companion_cfg_t *c = ui_companion_cfg();
+    c->desk_auto = !c->desk_auto;
+    ui_companion_cfg_save();
+    sa_show();
+}
+
+static void sa_remind(lv_obj_t *o, void *u)
+{
+    (void)o;
+    ui_companion_cfg()->remind_s = REMIND_S[(int)(intptr_t)u];
+    ui_companion_cfg_save();
+    sa_show();
+}
+
+static void sa_open_companion(lv_obj_t *o, void *u)
+{
+    (void)u;
+    ui_app_close();
+    ui_companion_open(false, o);
+}
+
+static lv_obj_t *sa_row(lv_obj_t *parent, int w)
+{
+    lv_obj_t *r = bz_row(parent, 10);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_row(r, 10, 0);
+    lv_obj_set_width(r, w);
+    return r;
+}
+
+void ui_assist_settings(lv_obj_t *pane, lv_obj_t *body, int w)
+{
+    /* everything below the pane's own lines, in a scroller that takes what's left of the pane */
+    lv_obj_t *col = ui_scroller(pane, w, 200);
+    lv_obj_set_flex_grow(lv_obj_get_parent(col), 1);
+    lv_obj_set_style_pad_row(col, 12, 0);
+    lv_obj_set_style_pad_bottom(col, 16, 0);
+
+    bz_label(col, "the model", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_t *r = sa_row(col, w);
+    SA.route[AS_ROUTE_LINK] = ui_chip(r, "claude through the pc", sa_route, (void *)(intptr_t)AS_ROUTE_LINK);
+    SA.route[AS_ROUTE_DIRECT] = ui_chip(r, "claude, key on tablet", sa_route, (void *)(intptr_t)AS_ROUTE_DIRECT);
+    SA.route[AS_ROUTE_OPENAI] = ui_chip(r, "openai, key on tablet", sa_route, (void *)(intptr_t)AS_ROUTE_OPENAI);
+    SA.keys = bz_label(col, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(SA.keys, w);
+    lv_label_set_long_mode(SA.keys, LV_LABEL_LONG_WRAP);
+    r = sa_row(col, w);
+    ui_button(r, BZ_I_KEYBOARD, "claude key", sa_edit, (void *)2);
+    ui_button(r, BZ_I_KEYBOARD, "openai key", sa_edit, (void *)3);
+    ui_button(r, BZ_I_EDIT_NOTE, "openai model", sa_edit, (void *)4);
+    lv_obj_t *n = bz_label(col, "OpenAI runs straight from the tablet over Wi-Fi, no PC needed; the key stays on the tablet. "
+                                "The default model is gpt-4o-mini: check that your OpenAI account offers it, or set another.",
+                           BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(n, w);
+    lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
+
+    bz_label(col, "the orb opens", BZ_F_LABEL, BZ_C_DIM);
+    r = sa_row(col, w);
+    SA.orb[0] = ui_chip(r, "the assistant", sa_orb, (void *)0);
+    SA.orb[1] = ui_chip(r, "the companion", sa_orb, (void *)1);
+
+    bz_label(col, "desk mode", BZ_F_LABEL, BZ_C_DIM);
+    r = sa_row(col, w);
+    SA.desk = ui_chip(r, "open by itself on a stand while charging", sa_desk, NULL);
+    ui_button(r, BZ_I_VISIBILITY, "open the companion", sa_open_companion, NULL);
+
+    bz_label(col, "when claude code on the pc finishes or needs you, remind", BZ_F_LABEL, BZ_C_DIM);
+    r = sa_row(col, w);
+    for (int i = 0; i < 4; i++) SA.remind[i] = ui_chip(r, REMIND_L[i], sa_remind, (void *)(intptr_t)i);
+    n = bz_label(col, "Needs the Claude Code hooks on the PC: tab5/link/README.md, \"Claude Code on the tablet\". A tap on the "
+                      "companion's face, or on the session, stops the reminder.",
+                 BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(n, w);
+    lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
+
+    SA.kb = ui_kb_create(body, 420);
+    sa_show();
+}
+
+void ui_assist_settings_open(void)
+{
+    if (SA.kb) ui_kb_hide(SA.kb);
+    sa_show();
 }
 
 const ui_app_t APP_LINK = { .name = "link", .icon = BZ_I_COMPUTER, .build = link_build, .open = link_open,
