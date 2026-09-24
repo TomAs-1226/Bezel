@@ -23,7 +23,7 @@
 #define DOCK_PAD 8
 #define DOCK_W (NPAGES * DOCK_ITEM_W + (NPAGES - 1) * DOCK_GAP + 2 * DOCK_PAD)
 #define DOCK_H 92
-#define MAX_APPS 32         /* app windows built so far: every app on the tools page fits, with room */
+#define MAX_APPS 48         /* app windows built so far: every app in the library fits, with room */
 
 cat_robot_t *R;
 ui_settings_t S = { .team = 5805, .brightness = 0.8f, .volume = 0.5f, .dark = true };
@@ -1453,6 +1453,7 @@ void ui_init(const ui_config_t *cfg)
     if (cfg->team > 0 && !hal_kv_get("team", (char[8]){ 0 }, 8)) S.team = cfg->team;
     cat_model_init(cfg->nt);
     ui_sc_boot();
+    ui_os_boot(); /* alarms ring whether or not the clock app has been opened */
     ui_apply_addresses();
     bz_ui_set_mode(S.dark, S.calm);
     hal_set_brightness(S.brightness);
