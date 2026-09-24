@@ -501,7 +501,8 @@ static void rb_refresh(void)
     nt4_status(cat_nt(), &st);
     ui_text(RB.name, "%s", r->have_identity ? r->name : r->connected ? "unnamed robot" : "no robot");
     ui_text(RB.sub, "%s", r->connected ? (r->line2 ? "catalyst 2.x · systemcore" : "catalyst 1.x · roborio") : "looking…");
-    kv(&RB.id[0], "team", "%d", r->team);
+    if (r->have_identity) kv(&RB.id[0], "team", "%d", r->team);
+    else kv(&RB.id[0], "team", "%s", ""); /* not published yet: a dash, not 0 */
     kv(&RB.id[1], "controller", "%s", r->controller);
     kv(&RB.id[2], "mode", "%s", cat_mode_name(r));
     kv(&RB.id[3], "alliance", "%s", r->have_alliance ? (r->red ? "red" : "blue") : "");

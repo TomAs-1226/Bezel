@@ -16,10 +16,10 @@ Flash settings: DIO, 80 MHz, 16 MB.
 SHA-256:
 
 ```
-9aa4ec05a15f8e8804931072159cecec46491058b3a799f33c74e45e66708624  catalyst-tab-merged.bin
-2965e24341f7475c8c440e74447607f2d92e47e167bb157c86f95d8ff22aeed5  bootloader.bin
+7b245dc82de2ba7beaffa2e4441752c4465709f3d93ec2cab6dbdafe34f59ba5  catalyst-tab-merged.bin
+1bfccd77e659637b8abc8d44a123c92a873adc72a68726a3c9be39cba348ebd3  bootloader.bin
 a9dd45b38158fe74aca40ab373f015fcc5a0bebe3aabb0f29cad0a2cc8f596eb  partition-table.bin
-e2218abdafbd6ccacf083c09907a8c81aca55f31e12826695714b70b71c9f38c  catalyst_tab.bin
+3a7cc794c13130a51b9a409bae82d8145af8fdcfcf7d1716dceb11c43be14215  catalyst_tab.bin
 ```
 
 ## Flash and go
@@ -54,7 +54,7 @@ browns out or gets restarted, the next start does two things:
 - It shows the record in amber under the Catalyst card, e.g. `LAST START: CRASH AT WI-FI · SAFE MODE`,
   with the crashing task and address underneath. The same line is appended to
   `catalyst-boot.txt` on the microSD card.
-- It comes up in **safe mode**: solid glass, no frost.
+- It comes up in **safe mode**, the plainest the interface draws.
 
 After three failed starts in a row it also skips Wi-Fi and the USB tether, until one start runs for
 20 seconds.
