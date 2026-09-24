@@ -1474,7 +1474,8 @@ static void shell_frame(double now, double dt, void *user)
     /* untouched, the panel dims (settings: display), then goes off; a tap wakes it, and that tap presses
      * nothing. Asleep, the link to the robot and everything behind the glass keep running. */
     double idle_s = bz_ui_idle_s();
-    if (!SLP.asleep && (SLP.request || (S.sleep_s > 0 && idle_s > S.sleep_s))) {
+    /* the companion on a stand, on power, stays awake (it only dims) */
+    if (!SLP.asleep && (SLP.request || (!ui_companion_keeps_awake() && S.sleep_s > 0 && idle_s > S.sleep_s))) {
         SLP.asleep = true;
         SLP.request = false;
         SLP.at = now;

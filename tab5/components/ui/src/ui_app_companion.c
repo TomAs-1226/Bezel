@@ -557,6 +557,7 @@ static void refresh_chips(void)
     if (same) return;
     lv_obj_clean(CP.chips);
     CP.nsugg = n;
+    lv_obj_update_layout(CP.chips); /* its width, not zero before the first layout */
     int share = (lv_obj_get_width(CP.chips) - 8 * (n - 1)) / n;
     for (int i = 0; i < n; i++) {
         snprintf(CP.sugg_keep[i], sizeof CP.sugg_keep[i], "%s", s[i]);
@@ -565,8 +566,11 @@ static void refresh_chips(void)
         lv_obj_set_style_max_width(c, share, 0);
         lv_obj_t *l = lv_obj_get_child(c, -1);
         if (l && lv_obj_check_type(l, &lv_label_class)) {
+            /* one line, ending in "…": dots only cut a label whose height is set */
             lv_label_set_long_mode(l, LV_LABEL_LONG_MODE_DOTS);
+            lv_obj_set_width(l, LV_SIZE_CONTENT);
             lv_obj_set_style_max_width(l, share - 48, 0);
+            lv_obj_set_height(l, lv_font_get_line_height(lv_obj_get_style_text_font(l, 0)));
         }
     }
 }

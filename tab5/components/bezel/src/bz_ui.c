@@ -80,6 +80,10 @@ static struct {
     int sheet_h, sheet_shown, sheet_lo, sheet_hi, sheet_sh;
     void (*sheet_prep)(bool before, void *u);
     void *sheet_u;
+    /* what LVGL redrew while the sheet moved (not sent then): sent when it comes to rest, or the glass
+     * would keep the picture's stale pixels wherever something animated meanwhile */
+    bz_area_t sheet_dirty[8];
+    int nsheet_dirty;
 #endif
 } U;
 
@@ -755,6 +759,33 @@ bool bz_ui_frame(double now_s)
 
 #if BZ_LEAN
     if (U.sheeting) {
+        for (int i = 0; i < U.nlean; i++) {
+            bz_area_t a = U.lean[i].a;
+            /* only rows of the picture already drawn: rows still to come are drawn later, as they are now
+             * (this frame's band is drawn below, after this) */
+            int r0 = U.sheet_bottom ? 0 : U.sheet_lo, r1 = U.sheet_bottom ? U.sheet_hi - 1 : U.sheet_sh - 1;
+            if (a.y1 < r0) a.y1 = (int16_t)r0;
+            if (a.y2 > r1) a.y2 = (int16_t)r1;
+            if (a.y1 > a.y2) continue;
+            /* joined into what's there when it touches it; a full list folds into its first box */
+            int j = 0;
+            for (; j < U.nsheet_dirty; j++) {
+                bz_area_t *d = &U.sheet_dirty[j];
+                if (a.x1 <= d->x2 + 8 && d->x1 <= a.x2 + 8 && a.y1 <= d->y2 + 8 && d->y1 <= a.y2 + 8) break;
+            }
+            if (j == U.nsheet_dirty) {
+                if (U.nsheet_dirty < 8) {
+                    U.sheet_dirty[U.nsheet_dirty++] = a;
+                    continue;
+                }
+                j = 0;
+            }
+            bz_area_t *d = &U.sheet_dirty[j];
+            if (a.x1 < d->x1) d->x1 = a.x1;
+            if (a.y1 < d->y1) d->y1 = a.y1;
+            if (a.x2 > d->x2) d->x2 = a.x2;
+            if (a.y2 > d->y2) d->y2 = a.y2;
+        }
         U.nlean = 0;
         if (U.sheet_h != U.sheet_shown) {
             int sh = U.sheet_sh, h = U.sheet_h < 0 ? 0 : U.sheet_h > sh ? sh : U.sheet_h;
@@ -1068,6 +1099,7 @@ bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool 
     ESP_LOGI("bz_ui", "sheet %s %s, %d rows", opening ? "opening" : "closing", bottom ? "from the bottom" : "from the top", height);
 #endif
     U.sheeting = true;
+    U.nsheet_dirty = 0;
     U.sheet_open = opening;
     U.sheet_prep = prep;
     U.sheet_u = u;
@@ -1128,6 +1160,16 @@ void bz_ui_sheet_end(void)
     lv_refr_now(U.disp_content);
     U.nlean = 0;
     if (U.cfg.slide->settle) U.cfg.slide->settle();
+    /* and what changed underneath while it moved, from LVGL's buffer (whole again after the refresh) */
+    if (U.nsheet_dirty && U.cfg.present) {
+        bz_present_t p[8];
+        for (int i = 0; i < U.nsheet_dirty; i++) {
+            bz_area_t *a = &U.sheet_dirty[i];
+            p[i] = (bz_present_t){ *a, U.cfg.content + (size_t)a->y1 * U.cfg.w + a->x1, U.cfg.w };
+        }
+        U.cfg.present(p, U.nsheet_dirty, U.cfg.user);
+        U.nsheet_dirty = 0;
+    }
 #endif
 }
 
