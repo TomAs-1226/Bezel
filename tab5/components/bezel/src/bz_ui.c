@@ -1206,8 +1206,13 @@ uint16_t *bz_ui_content_buf(void)
 /* Whether `a` (the list's rect) shows its own pixels and nothing else: every ancestor holds it whole
  * (clear of its rounded corners), none fades or scales it, and nothing drawn later (a later sibling of
  * it or of an ancestor, or the top layer) reaches into it. */
-static bool unobstructed(lv_obj_t *o, const lv_area_t *a)
+/* Nothing between the list and the glass but the top layer's chrome (dock, orb, island), whose pieces
+ * over it are listed in obs: a list moved by the platform carries those pixels along, so they're drawn
+ * again where they were and where they landed. */
+#define SCROLL_OBS 6
+static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *nobs)
 {
+    *nobs = 0;
     for (lv_obj_t *p = lv_obj_get_parent(o); p; o = p, p = lv_obj_get_parent(p)) {
         lv_area_t pc;
         lv_obj_get_coords(p, &pc);
@@ -1231,7 +1236,15 @@ static bool unobstructed(lv_obj_t *o, const lv_area_t *a)
         lv_obj_t *c = lv_obj_get_child(top, (int32_t)i);
         lv_area_t cc;
         lv_obj_get_coords(c, &cc);
-        if (!lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN) && lv_area_is_on(&cc, a)) return false;
+        if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN) || !lv_area_is_on(&cc, a)) continue;
+#if BZ_LEAN
+        if (*nobs == SCROLL_OBS || !U.cfg.slide || !U.cfg.slide->scroll) return false;
+        int32_t ext = lv_obj_get_ext_draw_size(c);
+        lv_area_increase(&cc, ext, ext);
+        lv_area_intersect(&obs[(*nobs)++], &cc, a);
+#else
+        return false;
+#endif
     }
     return true;
 }
@@ -1251,7 +1264,10 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
     lv_obj_get_coords(content, &c1);
     int dy = (int)(c1.y1 - c0.y1), h = (int)lv_area_get_height(&a), w = (int)lv_area_get_width(&a);
     if (!dy) return true;
-    if (U.frozen || U.offscreen || U.thaw >= 0 || abs(dy) >= h || lv_obj_get_style_radius(clip, 0) || !unobstructed(clip, &a)) {
+    lv_area_t obs[SCROLL_OBS];
+    int nobs = 0;
+    if (U.frozen || U.offscreen || U.thaw >= 0 || abs(dy) >= h || lv_obj_get_style_radius(clip, 0) ||
+        !unobstructed(clip, &a, obs, &nobs)) {
         lv_obj_invalidate(clip); /* what a plain move would have: both positions, clipped to the list */
         return false;
     }
@@ -1265,15 +1281,32 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
         m.y2 += dy;
         if (lv_area_intersect(&m, &m, &a)) lv_inv_area(d, &m);
     }
-    uint16_t *px = U.cfg.content + a.x1;
-    size_t W = (size_t)U.cfg.w, row = (size_t)w * 2;
-    if (dy < 0)
-        for (int r = a.y1; r <= a.y2 + dy; r++) memcpy(px + r * W, px + (r - dy) * W, row);
-    else
-        for (int r = a.y2; r >= a.y1 + dy; r--) memcpy(px + r * W, px + (r - dy) * W, row);
     U.shift_px += (uint32_t)(w * (h - abs(dy)));
     bz_area_t b = { (int16_t)a.x1, (int16_t)a.y1, (int16_t)a.x2, (int16_t)a.y2 };
-    damage_content(&b);
+#if BZ_LEAN
+    if (U.cfg.slide && U.cfg.slide->scroll) {
+        /* the platform moves the pixels on the panel itself (DMA2D, from the glass): LVGL's buffer isn't
+         * shifted, since a present only ever reads what LVGL has just drawn */
+        U.cfg.slide->scroll(&b, dy);
+    } else
+#endif
+    {
+        uint16_t *px = U.cfg.content + a.x1;
+        size_t W = (size_t)U.cfg.w, row = (size_t)w * 2;
+        if (dy < 0)
+            for (int r = a.y1; r <= a.y2 + dy; r++) memcpy(px + r * W, px + (r - dy) * W, row);
+        else
+            for (int r = a.y2; r >= a.y1 + dy; r--) memcpy(px + r * W, px + (r - dy) * W, row);
+        damage_content(&b);
+    }
+    /* chrome over the list moved with it: drawn again where it was and where its copy landed */
+    for (int i = 0; i < nobs; i++) {
+        lv_area_t m = obs[i];
+        lv_inv_area(d, &m);
+        m.y1 += dy;
+        m.y2 += dy;
+        if (lv_area_intersect(&m, &m, &a)) lv_inv_area(d, &m);
+    }
     /* LVGL draws only the strip that scrolled into view */
     lv_area_t band = a;
     if (dy < 0) band.y1 = a.y2 + dy + 1;

@@ -477,6 +477,16 @@ static void rotate_cpu(const bz_present_t *p, uint16_t *fb)
 {
     const bz_area_t *a = &p->a;
     const uint16_t *src = p->src;
+    /* The DMA (a scrolled list, a sheet) writes these buffers behind the cache's back: lines cached from
+     * before would be merged with the pixels written here and written back over what the DMA put there.
+     * Dropped first (no line in a frame buffer is ever left dirty: every CPU write below is written back
+     * straight after), so each is read fresh. */
+    {
+        int r0 = s_flip ? a->x1 : HAL_W - 1 - a->x2, r1 = s_flip ? a->x2 : HAL_W - 1 - a->x1;
+        uintptr_t b0 = (uintptr_t)(fb + (size_t)r0 * PANEL_W) & ~(uintptr_t)127;
+        uintptr_t b1 = ((uintptr_t)(fb + (size_t)(r1 + 1) * PANEL_W) + 127) & ~(uintptr_t)127;
+        esp_cache_msync((void *)b0, b1 - b0, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    }
     for (int y = a->y1; y <= a->y2; y++, src += p->stride) {
         const uint16_t *s = src;
         if (!s_flip) {
@@ -635,6 +645,17 @@ static void present_init(void)
  * vsync, so work up to 16.5 ms per frame holds 60 Hz. */
 static bool s_flip_pending; /* a buffer was handed over and the panel hasn't switched to it yet */
 
+/* Lists scrolled since the last present (see scroll_apply): their pixels move in the panel's buffers by
+ * DMA2D, from the picture on the glass; LVGL draws only the strip that came into view. */
+#define SCROLL_MAX 4
+static struct {
+    bz_area_t a;
+    int dy;
+} s_scroll[SCROLL_MAX];
+static int s_nscroll;
+static bool scroll_apply(void *fb);
+static void front_copy(void *fb, const bz_area_t *a);
+
 void hal_present(const bz_present_t *areas, int n, void *user)
 {
     (void)user;
@@ -653,18 +674,30 @@ void hal_present(const bz_present_t *areas, int n, void *user)
     for (int i = 0; i < P.nprev; i++) {
         bool covered = false;
         for (int j = 0; j < n && !covered; j++) covered = covers(&areas[j].a, &P.prev[i].a);
-        if (!covered) {
-            rotate_area(&P.prev[i], fb, false);
-            rows_of(&P.prev[i].a, &y0, &y1);
-        }
+        /* a list that scrolls again this frame is copied from the glass below anyway */
+        for (int j = 0; j < s_nscroll && !covered && !P.prev[i].src; j++) covered = covers(&s_scroll[j].a, &P.prev[i].a);
+        if (covered) continue;
+        if (P.prev[i].src) rotate_area(&P.prev[i], fb, false);
+        else front_copy(fb, &P.prev[i].a); /* the last frame scrolled this: the glass has it right */
+        rows_of(&P.prev[i].a, &y0, &y1);
     }
+    /* scrolled lists before anything drawn over them */
+    int nscroll = s_nscroll;
+    bz_area_t scrolled[SCROLL_MAX];
+    for (int i = 0; i < nscroll; i++) {
+        scrolled[i] = s_scroll[i].a;
+        rows_of(&scrolled[i], &y0, &y1);
+    }
+    scroll_apply(fb);
     for (int i = 0; i < n; i++) {
         rotate_area(&areas[i], fb, false);
         rows_of(&areas[i].a, &y0, &y1);
     }
-    int keep = n < PRESENT_MAX ? n : PRESENT_MAX;
+    int keep = n < PRESENT_MAX - nscroll ? n : PRESENT_MAX - nscroll;
     if (keep < n && !P.overflow++) ESP_LOGW(TAG, "present: %d areas, catch-up keeps %d", n, PRESENT_MAX);
     memcpy(P.prev, areas, sizeof *areas * (size_t)keep);
+    /* and the scrolled lists, for the other buffer: copied from the glass, not turned again */
+    for (int i = 0; i < nscroll; i++) P.prev[keep++] = (bz_present_t){ scrolled[i], NULL, 0 };
     P.nprev = keep;
     if (y1 < y0) { y0 = 0; y1 = PANEL_H - 1; }
     xSemaphoreTake(T.vsync, 0);
@@ -923,6 +956,46 @@ static void sheet_frame(int h, int sh, bool swapped, bool bottom)
     present_flip(fb, 0, PANEL_H - 1);
 }
 
+static void slide_scroll(const bz_area_t *a, int dy)
+{
+    if (!dy) return;
+    for (int i = 0; i < s_nscroll; i++)
+        if (!memcmp(&s_scroll[i].a, a, sizeof *a)) {
+            s_scroll[i].dy += dy; /* twice in a frame: one move */
+            return;
+        }
+    if (s_nscroll < SCROLL_MAX) s_scroll[s_nscroll++] = (typeof(s_scroll[0])){ *a, dy };
+}
+
+/* A landscape rect of the picture on the glass into the back buffer, where it is. */
+static void front_copy(void *fb, const bz_area_t *a)
+{
+    int x, y, w, h;
+    portrait_rect(a, &x, &y, &w, &h);
+    blk_copy(fb, x, y, T.fb[T.back ^ 1], x, y, w, h);
+}
+
+/* Each scrolled rect: the rows that stay in view, from the glass, dy rows further on. In the portrait
+ * buffer a landscape row is a column, so it's one DMA2D rectangle. */
+static bool scroll_apply(void *fb)
+{
+    if (!s_nscroll) return false;
+    const uint16_t *front = T.fb[T.back ^ 1];
+    for (int i = 0; i < s_nscroll; i++) {
+        const bz_area_t *a = &s_scroll[i].a;
+        int dy = s_scroll[i].dy, d0 = a->y1 > a->y1 + dy ? a->y1 : a->y1 + dy, d1 = a->y2 < a->y2 + dy ? a->y2 : a->y2 + dy;
+        if (d1 < d0) continue;
+        bz_area_t dst = { a->x1, (int16_t)d0, a->x2, (int16_t)d1 }, src = { a->x1, (int16_t)(d0 - dy), a->x2, (int16_t)(d1 - dy) };
+        int dx, dyy, sx, sy, w, h;
+        portrait_rect(&dst, &dx, &dyy, &w, &h);
+        portrait_rect(&src, &sx, &sy, &w, &h);
+        blk_copy_async(fb, dx, dyy, front, sx, sy, w, h);
+    }
+    fbcpy_wait(); /* before anything is turned over it */
+    s_nscroll = 0;
+    return true;
+}
+
 static void slide_settle(void)
 {
     /* the glass's buffer copied into the other one: the next present, a few areas, lands on the same picture */
@@ -932,7 +1005,7 @@ static void slide_settle(void)
 }
 
 static const bz_slide_ops_t SLIDE_OPS = { .begin = slide_begin, .patch = slide_patch, .frame = slide_frame, .end = slide_end,
-                                          .sheet = sheet_frame, .settle = slide_settle };
+                                          .sheet = sheet_frame, .settle = slide_settle, .scroll = slide_scroll };
 #endif
 
 static void display_init(void)

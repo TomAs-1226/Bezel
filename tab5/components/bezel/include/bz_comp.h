@@ -61,6 +61,9 @@ typedef struct bz_slide_ops {
     void (*sheet)(int h, int sh, bool swapped, bool bottom);
     /* Both of the panel's buffers made what is on the glass now, so drawing can carry on in areas. */
     void (*settle)(void);
+    /* A list scrolled: the landscape rect's pixels move by dy rows in the next present, copied in the
+     * panel's orientation from the picture on the glass; only what scrolled into view is drawn. */
+    void (*scroll)(const bz_area_t *a, int dy);
 } bz_slide_ops_t;
 
 typedef struct {
