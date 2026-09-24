@@ -621,7 +621,7 @@ static volatile bool s_dev_pending;
 
 static bool dev_handler(const char *line)
 {
-    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close")) return false;
+    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf")) return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
     s_dev_pending = true;
@@ -639,6 +639,16 @@ static void dev_run(void)
         ui_go(atoi(s_dev_cmd + 5));
     } else if (!strcmp(s_dev_cmd, "close")) {
         ui_app_close();
+    } else if (!strcmp(s_dev_cmd, "perf")) {
+        /* where a frame's time has gone since the last "perf": the frame hooks, LVGL's handler, its
+         * refresh (layout + render) and the render alone, per frame; and the presents */
+        float hk, lv, rf, rd;
+        bz_ui_split(&hk, &lv, &rf, &rd);
+        bz_ui_perf_t pf;
+        bz_ui_perf(&pf);
+        printf("perf: hooks %.1f lvgl %.1f refresh %.1f render %.1f ms/frame; present %.1f ms, %.0f fps\n", hk, lv, rf, rd,
+               pf.present_ms, pf.fps);
+        bz_ui_hooks_report();
     }
     s_dev_pending = false;
 }
