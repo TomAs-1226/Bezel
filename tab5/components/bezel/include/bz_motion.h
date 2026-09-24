@@ -20,6 +20,10 @@ extern const bz_spring_t BZ_HOLD, BZ_RELEASE, BZ_SMOOTH, BZ_SETTLE, BZ_DETENT, B
 void bz_motion_set_calm(bool calm);
 bool bz_motion_calm(void);
 bz_spring_t bz_calmed(bz_spring_t s);
+/* Instant: every spring jumps to its target at once, except motions marked keep. The lean renderer's
+ * setting: an animation there is a redraw per frame the tablet can't afford. */
+void bz_motion_set_instant(bool instant);
+bool bz_motion_instant(void);
 
 /* Seconds on the clock every motion reads; the UI loop advances it once per frame. */
 void bz_motion_clock(double now_s);
@@ -33,6 +37,7 @@ typedef struct {
     bz_spring_t spring;
     float eps;          /* settle threshold, absolute: 0.001 default, 0.1 for pixels */
     bool running;
+    bool keep;          /* animates even when motion is instant (bz_motion_set_instant): list scrolling */
 } bz_motion_t;
 
 void bz_motion_init(bz_motion_t *m, float value, float eps);

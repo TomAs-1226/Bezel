@@ -1,4 +1,5 @@
-# The Claude proxy (POST /v1/messages). The Link runs without it, reporting "claude": false.
-anthropic>=1.8
+# Claude through the Link (POST /v1/messages). The Link runs without them, reporting "claude": false.
+anthropic>=1.8                # --claude api: the Messages API with ANTHROPIC_API_KEY
+claude-agent-sdk>=0.2.159     # --claude claude-code: your Claude subscription through Claude Code
 # Optional: advertise _catalyst-link._tcp over mDNS so the tablet finds the Link by itself.
 zeroconf>=0.130

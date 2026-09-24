@@ -26,6 +26,7 @@
 #include <unistd.h>
 
 #include "bmi270.h"
+#include "esp_vfs_fat.h"
 #include "esp_lcd_touch.h"
 #include "bsp/display.h"
 #include "bsp/m5stack_tab5.h"
@@ -64,11 +65,14 @@ static const char *TAG = "hal";
 
 /* Landscape on a portrait panel. The PPA rotates counter-clockwise; 90° puts the USB-C port on the
  * right-hand edge. UNVERIFIED which way a Tab5 is held most naturally — flip with ROTATE_270. */
+/* Which way up is chosen at run time (hal_set_flip): false turns the picture 90° (USB-C on the right),
+ * true 270°. CATALYST_ROTATE_270 only picks the default. */
 #ifndef CATALYST_ROTATE_270
-#define ROT PPA_SRM_ROTATION_ANGLE_90
+static bool s_flip = false;
 #else
-#define ROT PPA_SRM_ROTATION_ANGLE_270
+static bool s_flip = true;
 #endif
+#define ROT (s_flip ? PPA_SRM_ROTATION_ANGLE_270 : PPA_SRM_ROTATION_ANGLE_90)
 
 #define PANEL_W BSP_LCD_H_RES /* 720 */
 #define PANEL_H BSP_LCD_V_RES /* 1280 */
@@ -316,13 +320,11 @@ bool hal_imu(hal_imu_t *o)
      * reaction to gravity, the UI wants gravity's direction. UNVERIFIED against a unit: if the Level
      * tool reads mirrored, flip the signs here. */
     float px = x, py = -y;
-#ifndef CATALYST_ROTATE_270
-    float lx = -py, ly = px;
-#else
-    float lx = py, ly = -px;
-#endif
-    o->ax = -lx;
-    o->ay = -ly;
+    float lx = s_flip ? py : -py, ly = s_flip ? -px : px;
+    /* measured on a unit: the turned axes already point along gravity in the picture's frame (the
+     * negation this comment used to ask for made auto-rotate pick the wrong way up every time) */
+    o->ax = lx;
+    o->ay = ly;
     o->az = -z;
     o->gx = gx;
     o->gy = gy;
@@ -445,14 +447,14 @@ static bool rotate_area(const bz_present_t *p, void *fb, bool async)
         .scale_y = 1,
         .mode = PPA_TRANS_MODE_NON_BLOCKING,
     };
-#ifndef CATALYST_ROTATE_270
-    /* 90° counter-clockwise: landscape (x, y) lands at portrait (y, W-1-x) */
-    op.out.block_offset_x = (uint32_t)a->y1;
-    op.out.block_offset_y = (uint32_t)(HAL_W - 1 - a->x2);
-#else
-    op.out.block_offset_x = (uint32_t)(HAL_H - 1 - a->y2);
-    op.out.block_offset_y = (uint32_t)a->x1;
-#endif
+    if (!s_flip) {
+        /* 90° counter-clockwise: landscape (x, y) lands at portrait (y, W-1-x) */
+        op.out.block_offset_x = (uint32_t)a->y1;
+        op.out.block_offset_y = (uint32_t)(HAL_W - 1 - a->x2);
+    } else {
+        op.out.block_offset_x = (uint32_t)(HAL_H - 1 - a->y2);
+        op.out.block_offset_y = (uint32_t)a->x1;
+    }
 #ifdef CATALYST_ASYNC_PRESENT
     if (async && ppa_do_scale_rotate_mirror(P.ppa, &op) == ESP_OK) return true;
 #else
@@ -463,6 +465,8 @@ static bool rotate_area(const bz_present_t *p, void *fb, bool async)
     ppa_do_scale_rotate_mirror(T.ppa_srm, &op);
     return false;
 }
+
+static void rows_of(const bz_area_t *a, int *y0, int *y1);
 
 static bool covers(const bz_area_t *o, const bz_area_t *a)
 {
@@ -533,28 +537,50 @@ static void present_init(void)
 }
 
 #else
-/* The default: synchronous. Each area (and whatever of the last frame's the back buffer is missing) is
- * turned into the back buffer with blocking PPA calls, the buffer is handed to the DPI controller, and
- * the call returns once the panel has switched to it. The UI waits on the PPA and on vsync, so a frame
- * that misses one waits for the next — 30 Hz rather than 60 when a frame runs long — and there is no
- * second task, no queue and nothing in flight across frames. */
+/* The default. Each area (and whatever of the last frame's the back buffer is missing) is turned into
+ * the back buffer with blocking PPA calls — so the source buffer is free again when this returns — and
+ * the buffer is handed to the DPI controller. The switch to it happens at the panel's next vsync, and
+ * this doesn't wait for it: the UI draws its next frame meanwhile, and only the next present waits (for
+ * the other buffer to leave the glass) before writing into it. A frame no longer rounds up to the next
+ * vsync, so work up to 16.5 ms per frame holds 60 Hz. */
+static bool s_flip_pending; /* a buffer was handed over and the panel hasn't switched to it yet */
+
 void hal_present(const bz_present_t *areas, int n, void *user)
 {
     (void)user;
+    if (s_flip_pending) {
+        if (xSemaphoreTake(T.vsync, pdMS_TO_TICKS(100)) != pdTRUE && !P.late++) ESP_LOGW(TAG, "present: no vsync");
+        s_flip_pending = false;
+    }
     void *fb = T.fb[T.back];
+    int y0 = PANEL_H, y1 = -1;
+    /* areas that tile the whole screen leave nothing of the last frame to catch up (a slide, a full
+     * redraw): skip re-turning it, which was half of every slide frame's work */
+    uint32_t cover = 0;
+    for (int i = 0; i < n; i++)
+        cover += (uint32_t)(areas[i].a.x2 - areas[i].a.x1 + 1) * (uint32_t)(areas[i].a.y2 - areas[i].a.y1 + 1);
+    if (cover >= (uint32_t)HAL_W * HAL_H) P.nprev = 0;
     for (int i = 0; i < P.nprev; i++) {
         bool covered = false;
         for (int j = 0; j < n && !covered; j++) covered = covers(&areas[j].a, &P.prev[i].a);
-        if (!covered) rotate_area(&P.prev[i], fb, false);
+        if (!covered) {
+            rotate_area(&P.prev[i], fb, false);
+            rows_of(&P.prev[i].a, &y0, &y1);
+        }
     }
-    for (int i = 0; i < n; i++) rotate_area(&areas[i], fb, false);
+    for (int i = 0; i < n; i++) {
+        rotate_area(&areas[i], fb, false);
+        rows_of(&areas[i].a, &y0, &y1);
+    }
     int keep = n < PRESENT_MAX ? n : PRESENT_MAX;
     if (keep < n && !P.overflow++) ESP_LOGW(TAG, "present: %d areas, catch-up keeps %d", n, PRESENT_MAX);
     memcpy(P.prev, areas, sizeof *areas * (size_t)keep);
     P.nprev = keep;
+    if (y1 < y0) { y0 = 0; y1 = PANEL_H - 1; }
     xSemaphoreTake(T.vsync, 0);
-    esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, 0, PANEL_W, PANEL_H, fb);
-    if (xSemaphoreTake(T.vsync, pdMS_TO_TICKS(100)) != pdTRUE && !P.late++) ESP_LOGW(TAG, "present: no vsync");
+    /* only the rows that changed: draw_bitmap writes back the cache over exactly these, not 1.8 MB */
+    esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, y0, PANEL_W, y1 + 1, fb);
+    s_flip_pending = true;
     T.back ^= 1;
     if (!T.lit) {
         T.lit = true;
@@ -595,20 +621,41 @@ void hal_set_brightness(float v)
 bool hal_touch(int *x, int *y, void *user)
 {
     (void)user;
+    if (hal_dev_touch(x, y)) return true;
     if (!T.touch) return false;
     esp_lcd_touch_point_data_t p[1];
     uint8_t cnt = 0;
     esp_lcd_touch_read_data(T.touch);
     if (esp_lcd_touch_get_data(T.touch, p, &cnt, 1) != ESP_OK || !cnt) return false;
     /* the inverse of the picture's turn in rotate_area() */
-#ifndef CATALYST_ROTATE_270
-    *x = HAL_W - 1 - p[0].y;
-    *y = p[0].x;
-#else
-    *x = p[0].y;
-    *y = HAL_H - 1 - p[0].x;
-#endif
+    if (!s_flip) {
+        *x = HAL_W - 1 - p[0].y;
+        *y = p[0].x;
+    } else {
+        *x = p[0].y;
+        *y = HAL_H - 1 - p[0].x;
+    }
     return true;
+}
+
+/* The buffer on the glass now (the one handed over last), portrait 720x1280: what the panel shows. */
+const uint16_t *hal_front_fb(void) { return T.fb[T.back ^ 1]; }
+
+void hal_set_flip(bool flip)
+{
+    if (flip == s_flip) return;
+    s_flip = flip;
+    P.nprev = 0; /* last frame's areas are in the old orientation: the caller redraws the whole screen */
+}
+
+bool hal_flip(void) { return s_flip; }
+
+/* The portrait rows a landscape area lands on: all the panel needs written back and shown. */
+static void rows_of(const bz_area_t *a, int *y0, int *y1)
+{
+    int r0 = s_flip ? a->x1 : HAL_W - 1 - a->x2, r1 = s_flip ? a->x2 : HAL_W - 1 - a->x1;
+    if (r0 < *y0) *y0 = r0;
+    if (r1 > *y1) *y1 = r1;
 }
 
 /* ---- the compositor's accelerated primitives ----
@@ -787,7 +834,51 @@ static void ppa_blend_selftest(void)
     ESP_LOGI(TAG, "PPA in-place blend %s (%d of 4096 pixels off)", T.ppa_blend_ok ? "used" : "not trusted: CPU blend", bad);
 }
 
-static const bz_gfx_ops_t OPS = { .copy565 = ppa_copy565, .blend = ppa_blend };
+/* The compositor's rows on both cores: part 1 on a worker pinned to core 0, part 0 on the caller (the UI
+ * task, core 1). Glass, fills and blinds are CPU work per row, so this is close to twice as fast. */
+static struct {
+    SemaphoreHandle_t go, done;
+    void (*job)(void *arg, int part);
+    void *arg;
+} W;
+
+static void par_worker(void *unused)
+{
+    (void)unused;
+    for (;;) {
+        xSemaphoreTake(W.go, portMAX_DELAY);
+        W.job(W.arg, 1);
+        xSemaphoreGive(W.done);
+    }
+}
+
+static void par_run(void (*job)(void *arg, int part), void *arg)
+{
+    if (!W.go) {
+        job(arg, 0);
+        job(arg, 1);
+        return;
+    }
+    W.job = job;
+    W.arg = arg;
+    xSemaphoreGive(W.go);
+    job(arg, 0);
+    xSemaphoreTake(W.done, portMAX_DELAY);
+}
+
+static void par_init(void)
+{
+    W.go = xSemaphoreCreateBinary();
+    W.done = xSemaphoreCreateBinary();
+    if (xTaskCreatePinnedToCore(par_worker, "comp1", 4096, NULL, 7, NULL, 0) != pdPASS) {
+        vSemaphoreDelete(W.go);
+        vSemaphoreDelete(W.done);
+        W.go = W.done = NULL;
+        ESP_LOGW(TAG, "compositor: no second-core worker, one core only");
+    }
+}
+
+static const bz_gfx_ops_t OPS = { .copy565 = ppa_copy565, .blend = ppa_blend, .parallel = par_run };
 
 void hal_display(hal_display_t *o)
 {
@@ -1202,6 +1293,12 @@ bool hal_clip_active(double *seconds)
 
 const char *hal_sd_root(void) { return T.sd ? BSP_SD_MOUNT_POINT : NULL; }
 
+bool hal_sd_space(uint64_t *total, uint64_t *free_b)
+{
+    if (!T.sd) return false;
+    return esp_vfs_fat_info(BSP_SD_MOUNT_POINT, total, free_b) == ESP_OK;
+}
+
 bool hal_kv_get(const char *key, char *buf, size_t n)
 {
     nvs_handle_t h;
@@ -1359,9 +1456,15 @@ static const char *reset_name(esp_reset_reason_t r)
     case ESP_RST_POWERON: return "power on";
     case ESP_RST_EXT: return "reset button";
     case ESP_RST_DEEPSLEEP: return "wake";
+    case ESP_RST_CPU_LOCKUP: return "cpu lockup";
+    case ESP_RST_PWR_GLITCH: return "power glitch";
+    case ESP_RST_USB: return "usb reset";
+    case ESP_RST_JTAG: return "jtag reset";
     default: return "reset";
     }
 }
+
+static void boot_on_restart(void);
 
 static void boot_record_init(void)
 {
@@ -1369,8 +1472,8 @@ static void boot_record_init(void)
     bool valid = B.magic == BOOT_MAGIC;
     /* a crash, a watchdog, a brownout or a restart nobody here asked for (esp-hosted restarts the chip
      * when it loses the C6) — anything but a power-on or the reset button */
-    bool abnormal = r == ESP_RST_PANIC || r == ESP_RST_INT_WDT || r == ESP_RST_TASK_WDT || r == ESP_RST_WDT ||
-                    r == ESP_RST_BROWNOUT || r == ESP_RST_SW;
+    bool abnormal = r != ESP_RST_POWERON && r != ESP_RST_EXT && r != ESP_RST_DEEPSLEEP && r != ESP_RST_USB &&
+                    r != ESP_RST_JTAG;
     memset(&s_prev, 0, sizeof s_prev);
     snprintf(s_prev.reason, sizeof s_prev.reason, "%s", reset_name(r));
     if (valid) snprintf(s_prev.stage, sizeof s_prev.stage, "%.*s", (int)sizeof B.stage - 1, B.stage);
@@ -1395,9 +1498,20 @@ static void boot_record_init(void)
     B.magic = BOOT_MAGIC;
     B.settled = 0;
     snprintf(B.stage, sizeof B.stage, "start");
+    esp_register_shutdown_handler(boot_on_restart);
+    ESP_LOGI(TAG, "reset reason %d (%s), record %s, last stage \"%s\"", (int)r, reset_name(r), valid ? "kept" : "new",
+             s_prev.stage);
     if (s_prev.failed)
         ESP_LOGW(TAG, "last start ended: %s at \"%s\" (%d in a row)%s%s", s_prev.reason, s_prev.stage, s_prev.fails,
                  s_prev.detail[0] ? ", " : "", s_prev.detail);
+}
+
+/* esp_restart() from anywhere (esp-hosted's lost-link restart among them): the stage says so next start */
+static void boot_on_restart(void)
+{
+    char was[sizeof B.stage];
+    snprintf(was, sizeof was, "%s", B.stage);
+    snprintf(B.stage, sizeof B.stage, "restart@%.14s", was);
 }
 
 static void (*s_watch)(const char *stage);
@@ -1440,11 +1554,18 @@ static void boot_report_sd(void)
 bool hal_init(void)
 {
     boot_record_init();
+    hal_dev_init(); /* first: the console carries the log from here on */
     hal_boot_stage("nvs");
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         nvs_flash_erase();
         nvs_flash_init();
+    }
+    /* the time zone the PC or settings chose (the RTC keeps UTC-agnostic local time; TZ turns it back) */
+    char tz[48];
+    if (hal_kv_get("tz", tz, sizeof tz)) {
+        setenv("TZ", tz, 1);
+        tzset();
     }
     hal_boot_stage("power");
     ESP_ERROR_CHECK(bsp_i2c_init());
@@ -1466,6 +1587,7 @@ bool hal_init(void)
     pc.oper_type = PPA_OPERATION_BLEND;
     ppa_register_client(&pc, &T.ppa_blend);
     ppa_blend_selftest();
+    par_init();
 
     hal_boot_stage("display");
     display_init();

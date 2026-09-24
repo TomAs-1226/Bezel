@@ -18,6 +18,7 @@ import os
 import re
 import subprocess
 import sys
+import shutil
 import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -55,6 +56,16 @@ TEXT_FONTS = [
     ("bz_font_body_17", "flex400.ttf", 17, ASCII + "," + EXTRA, True),
     ("bz_font_mono_16", "code400.ttf", 16, ASCII + "," + EXTRA, False),
     ("bz_font_mono_13", "code400.ttf", 13, ASCII + "," + EXTRA, False),
+    # the tablet's type scale, 1.25x Bezel's reference (the 5" panel is dense: 294 ppi against Bezel's 255,
+    # and it's read at arm's length in a pit). The sizes above stay for the boot screen, which is drawn to
+    # the banner's own measurements.
+    ("bz_font_display_92", "flex_display300.ttf", 92, DIGITS + ",0x41-0x5A,0x61-0x7A", True),
+    ("bz_font_display_56", "flex_display300.ttf", 56, ASCII + "," + EXTRA, True),
+    ("bz_font_title_44", "flex600.ttf", 44, ASCII + "," + EXTRA, True),
+    ("bz_font_name_30", "flex600.ttf", 30, ASCII + "," + EXTRA, True),
+    ("bz_font_body_24", "flex400.ttf", 24, ASCII + "," + EXTRA, True),
+    ("bz_font_body_21", "flex400.ttf", 21, ASCII + "," + EXTRA, True),
+    ("bz_font_mono_19", "code400.ttf", 19, ASCII + "," + EXTRA, False),
     # the Catalyst wordmark on the boot screen: "Catalyst" light, the product bold (the family's banners)
     ("bz_font_brand_light_72", "flex250.ttf", 72, BRAND, False),
     ("bz_font_brand_bold_72", "flex700.ttf", 72, BRAND, False),
@@ -77,9 +88,12 @@ undo psychology code terminal call_split cloud_upload cloud_off cloud_done stora
 restart_alt schedule gamepad insights query_stats local_fire_department stop_circle keyboard chat
 upload_file description rule difference assignment task_alt pending bookmark swap_horiz neurology
 network_check signal_cellular_alt usb_off conversion_path schema videocam_off movie
+calculate edit_note folder folder_open draft flashlight_on flashlight_off home notifications grid_view
+monitoring screen_rotation screen_lock_rotation lock bedtime palette avg_pace timer_off laps checklist_rtl
+backspace percent memory_alt display_settings volume_off info_i
 """.split()
 
-ICON_SIZES = [("outline", "sym_outline.ttf", [24, 32, 40]), ("fill", "sym_fill.ttf", [32])]
+ICON_SIZES = [("outline", "sym_outline.ttf", [24, 30, 32, 40, 48]), ("fill", "sym_fill.ttf", [32, 40])]
 
 
 def fetch(fonts_dir):
@@ -98,7 +112,7 @@ def fetch(fonts_dir):
 def tnum(src, fonts_dir):
     dst = os.path.join(fonts_dir, src.replace(".ttf", "_tnum.ttf"))
     if not os.path.exists(dst):
-        subprocess.run(["pyftfeatfreeze", "-f", "tnum", os.path.join(fonts_dir, src), dst], check=True)
+        subprocess.run([shutil.which("pyftfeatfreeze") or "pyftfeatfreeze", "-f", "tnum", os.path.join(fonts_dir, src), dst], check=True)
     return dst
 
 
@@ -119,7 +133,7 @@ def conv(name, path, size, ranges, extra_symbols=None, fallback=None):
     out = os.path.join(OUT, name + ".c")
     wanted = ranges
     ranges = available(path, ranges)
-    args = ["lv_font_conv", "--no-compress", "--no-prefilter", "--bpp", "4", "--size", str(size), "--format", "lvgl",
+    args = [shutil.which("lv_font_conv") or "lv_font_conv", "--no-compress", "--no-prefilter", "--bpp", "4", "--size", str(size), "--format", "lvgl",
             "--lv-font-name", name, "--lv-include", "lvgl.h", "-o", out, "--font", path]
     if ranges:
         args += ["-r", ranges]

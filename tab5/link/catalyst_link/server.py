@@ -20,6 +20,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 from . import __version__, codeview
 from .files import Files
 from .inbox import Inbox
+from .claude_code import ClaudeCodeBackend
 from .proxy import ClaudeProxy, api_error
 from .repo import Patches, repo_root, repo_status
 from .state import LinkError, State
@@ -37,17 +38,41 @@ class Config:
     check_timeout: float = 300.0
     on_work_order: str | None = None  # likewise
     name: str = field(default_factory=socket.gethostname)
+    # How /v1/messages reaches Claude: "api" (ANTHROPIC_API_KEY, proxy.py), "claude-code" (the owner's
+    # Claude subscription through Claude Code, claude_code.py), "off", or "auto": api when a key is set,
+    # else claude-code.
+    claude: str = "auto"
+    claude_model: str | None = None   # claude-code only; None → Claude Code's own default
+    claude_cli: str | None = None     # claude-code only; None → found (see claude_code.find_cli)
+
+
+def pick_backend(cfg: Config, claude_client: Any | None) -> str:
+    if cfg.claude != "auto":
+        return cfg.claude
+    return "api" if claude_client is not None or os.environ.get("ANTHROPIC_API_KEY") else "claude-code"
 
 
 class LinkApp:
-    def __init__(self, cfg: Config, state: State, claude_client: Any | None = None) -> None:
+    def __init__(self, cfg: Config, state: State, claude_client: Any | None = None,
+                 agent_factory: Any | None = None) -> None:
         self.cfg = cfg
         self.state = state.ensure()
         self.repo = repo_root(cfg.repo)
         self.patches = Patches(self.repo, self.state, cfg.check, cfg.check_timeout)
         self.inbox = Inbox(self.state)
         self.files = Files(self.state.files_dir)
-        self.proxy = ClaudeProxy(self.state, claude_client)
+        self.claude_backend = pick_backend(cfg, claude_client)
+        self.proxy: ClaudeProxy | ClaudeCodeBackend | None
+        if self.claude_backend == "api":
+            self.proxy = ClaudeProxy(self.state, claude_client)
+        elif self.claude_backend == "claude-code":
+            self.proxy = ClaudeCodeBackend(self.state, cfg.claude_model, cfg.claude_cli, agent_factory)
+        else:
+            self.proxy = None
+
+    @property
+    def claude_available(self) -> bool:
+        return self.proxy is not None and self.proxy.available
 
     def check_token(self, given: str | None) -> bool:
         expected = self.state.token()
@@ -59,7 +84,8 @@ class LinkApp:
             return base
         counts = self.inbox.counts()
         proposed = sum(1 for p in self.patches.list() if p["status"] == "proposed")
-        return {**base, **repo_status(self.repo), "claude": self.proxy.available,
+        return {**base, **repo_status(self.repo), "claude": self.claude_available,
+                "claude_via": self.claude_backend if self.proxy is not None else None,
                 "inbox_open": counts["open"] + counts["claimed"], "patches": proposed, "files": self.files.count()}
 
     def run_hook(self, wid: str, path: Path) -> None:
@@ -312,6 +338,9 @@ class Handler(BaseHTTPRequestHandler):
             etype = "request_too_large" if exc.status == 413 else "invalid_request_error"
             return self._json(exc.status, api_error(etype, exc.message))
         betas = [b.strip() for h in self.headers.get_all("anthropic-beta") or [] for b in h.split(",") if b.strip()]
+        if self.app.proxy is None:
+            self.close_connection = True
+            return self._json(503, api_error("api_error", "Claude is turned off on this Catalyst Link (--claude off)"))
         self.app.proxy.serve(body, betas, self)
 
 

@@ -476,7 +476,7 @@ static lv_obj_t *kv_tile(lv_obj_t *parent, int w, int h, const char *title, kv_t
         lv_obj_t *r = bz_row(t, 10);
         lv_obj_set_width(r, w - 2 * BZ_PAD_TILE);
         rows[i].k = bz_label(r, "", BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_set_width(rows[i].k, 110);
+        lv_obj_set_width(rows[i].k, 156);
         rows[i].v = bz_label_line(r, "", BZ_F_BODY_S, BZ_C_INK, w - 2 * BZ_PAD_TILE - 120);
     }
     return t;

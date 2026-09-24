@@ -145,6 +145,10 @@ bool hal_touch(int *x, int *y, void *user)
 }
 
 void hal_set_brightness(float v) { g_bright = v; }
+static bool g_flip;
+void hal_set_flip(bool flip) { g_flip = flip; }
+bool hal_flip(void) { return g_flip; }
+void hal_dev_set_handler(bool (*fn)(const char *line)) { (void)fn; }
 const char *hal_panel_name(void) { return "simulator"; }
 
 void sim_tilt(float x, float y) { g_tilt_x = x; g_tilt_y = y; }
@@ -240,6 +244,7 @@ bool hal_rtc_get(struct tm *out)
 void hal_rtc_set(const struct tm *t) { (void)t; }
 
 const char *hal_sd_root(void) { return "sim_sd"; }
+bool hal_sd_space(uint64_t *total, uint64_t *free_bytes) { *total = 32ull << 30; *free_bytes = 30ull << 30; return true; }
 
 bool hal_kv_get(const char *key, char *buf, size_t n)
 {

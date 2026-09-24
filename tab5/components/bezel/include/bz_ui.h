@@ -10,6 +10,17 @@
  * One physical touch is routed to whichever layer it lands on first: a press that starts on a
  * clickable glass object belongs to the glass layer until release, anything else to the content. */
 #pragma once
+
+/* Lean: the tablet's renderer. One RGB565 display and no compositor — the glass parent is that display's
+ * top layer, its shapes drawn as solid rounded surfaces; LVGL's dirty areas go straight to the panel;
+ * springs are instant (bz_motion_set_instant) except list scrolling. The simulator keeps full glass. */
+#ifndef BZ_LEAN
+#ifdef ESP_PLATFORM
+#define BZ_LEAN 1
+#else
+#define BZ_LEAN 0
+#endif
+#endif
 #include "bz_comp.h"
 #include "bz_motion.h"
 #include "lvgl.h"
@@ -87,6 +98,21 @@ typedef struct {
     bz_comp_stats_t comp;      /* last frame */
 } bz_ui_perf_t;
 void bz_ui_perf(bz_ui_perf_t *out);
+/* LVGL's time since the last call, ms: content layout/render/flush, glass layout/render/flush, handler */
+void bz_ui_prof_take(float out[8]);
+/* Lean page slide: a snapshot of the screen taken at begin is shown shifted by dx (the gap filled with
+ * ground) until end, straight to the panel with no LVGL drawing; end redraws the whole screen. */
+void bz_ui_slide_begin(void);
+void bz_ui_slide(int dx);
+void bz_ui_slide_end(void);
+/* The page beside it during a slide: a screen-sized buffer to draw it into (bz_ui_render_offscreen), and
+ * which side it shows on once drawn — +1 to the right (the next page), -1 left, 0 none: ground. */
+uint16_t *bz_ui_slide_nb_buf(void);
+void bz_ui_slide_nb(int side);
+double bz_ui_clock(void);    /* monotonic seconds, for timing */
+void bz_ui_hooks_report(void); /* logs each frame hook's time since the last call */
+/* Per-frame averages since the last call: frame hooks, lv_timer_handler, display refreshes, renders. */
+void bz_ui_split(float *hooks_ms, float *lvgl_ms, float *refr_ms, float *render_ms);
 
 /* Frame hooks, run every frame before LVGL renders. */
 typedef void (*bz_frame_fn)(double now_s, double dt, void *user);
@@ -133,6 +159,7 @@ void bz_drag_attach(lv_obj_t *obj, const bz_drag_t *d);
 /* A click that isn't the release of a drag. */
 typedef void (*bz_tap_fn)(lv_obj_t *obj, void *user);
 void bz_on_tap(lv_obj_t *obj, bz_tap_fn cb, void *user);
+void bz_ui_on_any_tap(void (*fn)(void)); /* called before every tap's own callback: a click sound */
 /* True while a drag owns the pointer (a click handler may check it). */
 bool bz_drag_active(void);
 bool bz_drag_recent(void);

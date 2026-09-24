@@ -67,9 +67,13 @@ screen that you approve or decline (a card declines itself after 90 s):
 - **a work order** in the Link's inbox, for the PC's own coding agent to pick up asynchronously. It
   carries the diagnosis, the robot snapshot and the relevant files.
 
-Requests go through the Link, which keeps the API key on the PC, or straight to the API with a key
-stored on the tablet. Server-side fallbacks are enabled (`fallbacks: "default"`), so an overloaded
-model falls back instead of failing mid-diagnosis. When the Link is away, patches, work orders and
+Requests go through the Link or straight to the API with a key stored on the tablet. The Link reaches
+Claude one of two ways: with no API key at all, through **Claude Code on the PC, logged in with the
+owner's Claude subscription** (the default when the PC has no key; the tablet's tools are handed to
+Claude Code and still run, and still ask, on the tablet), or with an `ANTHROPIC_API_KEY` that stays on
+the PC. Setup is in [link/README.md](link/README.md#claude-with-your-claude-subscription-no-api-key).
+On the API routes server-side fallbacks are enabled (`fallbacks: "default"`), so an overloaded model
+falls back instead of failing mid-diagnosis. When the Link is away, patches, work orders and
 uploads wait in a store-and-forward outbox on microSD.
 
 **Catalyst Link** ([link/](link/README.md)) is the PC side: a small Python server beside the robot

@@ -249,11 +249,15 @@ static lv_obj_t *tile_head(lv_obj_t *tile, const char *label, lv_obj_t **mark, l
 
 static lv_obj_t *empty_tile(lv_obj_t *parent, int w, int h, const char *title, const char *text)
 {
-    lv_obj_t *t = bz_tile(parent, w, h);
+    /* a column that grows with its text: at the tablet's type size a fixed height let the explanation
+     * run up into the title */
+    lv_obj_t *t = bz_tile(parent, w, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(t, h, 0);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(t, 12, 0);
     bz_label(t, title, BZ_F_NAME, BZ_C_INK);
     lv_obj_t *l = bz_label(t, text, BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(l, IN(w));
-    lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     return t;
 }
 
@@ -292,7 +296,7 @@ static void sc_common(void)
 
 /* ================================================================== systemcore */
 
-#define SC_H 320
+#define SC_H 380 /* the tiles at the tablet's type size; the page scrolls */
 #define SC_CORES 4
 #define SC_PROCS 6
 #define SC_NICS 5
@@ -362,13 +366,13 @@ static void sc_build_cpu(void)
         lv_obj_set_pos(r, 0, 90 + i * 30);
         SC.core_row[i] = r;
         SC.core_name[i] = bz_label(r, "", BZ_F_LABEL, BZ_C_DIM);
-        lv_obj_set_width(SC.core_name[i], 30);
-        SC.core_bar[i] = sbar(r, IN(COL3) - 30 - 52 - 84 - 30, 10);
+        lv_obj_set_width(SC.core_name[i], 44);
+        SC.core_bar[i] = sbar(r, IN(COL3) - 44 - 64 - 100 - 30, 10);
         SC.core_val[i] = bz_label(r, "", BZ_F_LABEL, BZ_C_INK);
-        lv_obj_set_width(SC.core_val[i], 52);
+        lv_obj_set_width(SC.core_val[i], 64);
         lv_obj_set_style_text_align(SC.core_val[i], LV_TEXT_ALIGN_RIGHT, 0);
         SC.core_mhz[i] = bz_label(r, "", BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_set_width(SC.core_mhz[i], 84);
+        lv_obj_set_width(SC.core_mhz[i], 100);
         lv_obj_set_style_text_align(SC.core_mhz[i], LV_TEXT_ALIGN_RIGHT, 0);
     }
     /* with only the summary, the room the cores would take shows the last two minutes of it */
@@ -2342,7 +2346,9 @@ static void rc_runs(void)
     RC.nruns = cat_runs_list(RC.list, RC_RUNS);
     if (RC.nruns < 0) {
         ui_text(RC.runs_title, "no microSD card");
-        bz_label(RC.runs, "Runs are written to runs/ on the card.", BZ_F_CAPTION, BZ_C_DIM);
+        lv_obj_t *rn = bz_label(RC.runs, "Runs are written to runs/ on the card.", BZ_F_CAPTION, BZ_C_DIM);
+        lv_obj_set_width(rn, lv_pct(100));
+        lv_label_set_long_mode(rn, LV_LABEL_LONG_WRAP);
         return;
     }
     ui_text(RC.runs_title, "%d run%s on the card", RC.nruns, RC.nruns == 1 ? "" : "s");

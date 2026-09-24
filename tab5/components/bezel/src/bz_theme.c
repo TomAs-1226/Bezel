@@ -1,6 +1,7 @@
 #include "bz_theme.h"
 #include "bz_motion.h"
 #include "bz_ui.h"
+#include "lvgl_private.h" /* obj->styles: which shared style an object already wears */
 
 #include <math.h>
 #include <stdio.h>
@@ -12,8 +13,14 @@ static lv_style_t st_plain, st_tile, st_tile_pressed, st_mark, st_track, st_caps
 static bool inited;
 
 static const lv_font_t *const FONTS[BZ_F_COUNT] = {
+#if BZ_LEAN
+    /* the tablet's scale: every role 1.25x Bezel's reference, read at arm's length on a 294 ppi panel */
+    &bz_font_clock_118, &bz_font_display_92, &bz_font_display_56, &bz_font_title_44, &bz_font_name_30,
+    &bz_font_body_24, &bz_font_body_21, &bz_font_mono_19, &bz_font_mono_16,
+#else
     &bz_font_clock_118, &bz_font_display_76, &bz_font_display_46, &bz_font_title_36, &bz_font_name_24,
     &bz_font_body_20, &bz_font_body_17, &bz_font_mono_16, &bz_font_mono_13,
+#endif
 };
 
 uint32_t bz_color(bz_color_role_t r)
@@ -207,8 +214,19 @@ lv_obj_t *bz_col(lv_obj_t *parent, int gap)
 
 /* Each object carries its colour and face as one of the shared styles; replacing them keeps it
  * restylable by tone. */
+/* Whether `o` already wears the shared style `st` on its main part. Every remove/add of a style makes LVGL
+ * recompute the object's styles and redraw it, so the setters below do nothing when nothing changes: the
+ * 10 Hz refreshes call them with the same value almost every time. */
+static bool wears(lv_obj_t *o, const lv_style_t *st)
+{
+    for (uint32_t i = 0; i < o->style_cnt; i++)
+        if (o->styles[i].style == st && o->styles[i].selector == 0) return true;
+    return false;
+}
+
 static void swap_style(lv_obj_t *o, lv_style_t *set, int count, lv_style_t *want)
 {
+    if (wears(o, want)) return;
     for (int i = 0; i < count; i++) lv_obj_remove_style(o, &set[i], 0);
     lv_obj_add_style(o, want, 0);
 }
@@ -236,10 +254,19 @@ lv_obj_t *bz_label_line(lv_obj_t *parent, const char *text, bz_font_role_t f, bz
 
 static const lv_font_t *icon_font(int size, bool filled)
 {
+#if BZ_LEAN
+    /* sizes are asked for in Bezel's reference px and scaled like the type */
+    size = size * 5 / 4;
+    if (filled) return size <= 36 ? &bz_icons_fill_32 : &bz_icons_fill_40;
+    if (size <= 30) return &bz_icons_outline_30;
+    if (size <= 40) return &bz_icons_outline_40;
+    return &bz_icons_outline_48;
+#else
     if (filled) return &bz_icons_fill_32;
     if (size <= 24) return &bz_icons_outline_24;
     if (size <= 32) return &bz_icons_outline_32;
     return &bz_icons_outline_40;
+#endif
 }
 
 lv_obj_t *bz_icon(lv_obj_t *parent, const char *glyph, int size, bz_color_role_t c)
@@ -273,6 +300,7 @@ lv_obj_t *bz_tile(lv_obj_t *parent, int w, int h)
 
 void bz_tile_set_fill(lv_obj_t *t, bz_color_role_t fill)
 {
+    if (wears(t, &st_fill[fill])) return;
     for (int i = 0; i < BZ_C_COUNT; i++) lv_obj_remove_style(t, &st_fill[i], 0);
     lv_obj_add_style(t, &st_fill[fill], 0);
 }
@@ -292,6 +320,7 @@ lv_obj_t *bz_mark(lv_obj_t *parent, bz_status_t s, int size)
 
 void bz_mark_set(lv_obj_t *m, bz_status_t s)
 {
+    if (wears(m, &st_fill[bz_status_color(s)])) return; /* same colour: same status, same shape */
     int size = lv_obj_get_style_width(m, 0);
     for (int i = 0; i < BZ_C_COUNT; i++) lv_obj_remove_style(m, &st_fill[i], 0);
     lv_obj_add_style(m, &st_fill[bz_status_color(s)], 0);
@@ -352,7 +381,8 @@ void bz_meter_set(lv_obj_t *t, float v, bz_color_role_t fill)
     if (v > 1) v = 1;
     /* the fill reaches past its start so its leading edge is always a capsule end, never a sliver */
     int fw = v <= 0 ? 0 : h + (int)((w - h) * v);
-    lv_obj_set_width(f, fw);
+    if (lv_obj_get_style_width(f, 0) != fw) lv_obj_set_width(f, fw);
+    if (wears(f, &st_fill[fill])) return;
     for (int i = 0; i < BZ_C_COUNT; i++) lv_obj_remove_style(f, &st_fill[i], 0);
     lv_obj_add_style(f, &st_fill[fill], 0);
 }
@@ -490,7 +520,7 @@ lv_obj_t *bz_level(lv_obj_t *parent, int w, int h, float min, float max, float s
     lv_obj_add_style(o, &st_track, 0);
     lv_obj_set_style_radius(o, h >= 96 ? BZ_R_TILE : h / 3, 0);
     lv_obj_set_size(o, w, h);
-    level_t *L = calloc(1, sizeof *L);
+    level_t *L = lv_malloc_zeroed(sizeof *L);
     L->min = min;
     L->max = max;
     L->step = step;
@@ -610,8 +640,8 @@ lv_obj_t *bz_spark(lv_obj_t *parent, int w, int h, int n)
     lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(o, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_set_size(o, w, h);
-    spark_t *S = calloc(1, sizeof *S);
-    S->v = calloc((size_t)n, sizeof(float));
+    spark_t *S = lv_malloc_zeroed(sizeof *S);
+    S->v = lv_malloc_zeroed((size_t)n * sizeof(float));
     S->n = n;
     S->color = BZ_C_INK;
     lv_obj_set_user_data(o, S);
@@ -655,6 +685,7 @@ void bz_spark_color(lv_obj_t *o, bz_color_role_t c)
 void bz_spark_clear(lv_obj_t *o)
 {
     spark_t *S = lv_obj_get_user_data(o);
+    if (!S->count) return; /* already empty: called every refresh while offline */
     S->count = S->head = 0;
     lv_obj_invalidate(o);
 }

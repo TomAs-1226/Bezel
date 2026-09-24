@@ -5,10 +5,11 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "catalyst-link"
 version = "1.0.0"
-description = "Catalyst Link: the PC-side companion of Catalyst Tab (read-only code, patch branches, a work-order inbox, a Claude proxy)"
+description = "Catalyst Link: the PC-side companion of Catalyst Tab (read-only code, patch branches, a work-order inbox, Claude through the PC)"
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["anthropic>=1.8"]
+# anthropic: the api backend; claude-agent-sdk (bundles the Claude Code CLI): the claude-code backend
+dependencies = ["anthropic>=1.8", "claude-agent-sdk>=0.2.159"]
 
 [project.optional-dependencies]
 mdns = ["zeroconf>=0.130"]

@@ -1,6 +1,7 @@
 /* Apps that use the tablet's own hardware: level (IMU), lens (camera), can tap (TWAI),
  * logs (microSD) and settings. */
 #include "ui_internal.h"
+#include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
 #include "cat_can.h"
 #include "cat_logs.h"
 #include "link.h"
@@ -9,6 +10,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <sys/stat.h>
 
 #define APP_Y 104
@@ -754,7 +756,7 @@ const ui_app_t APP_LOGS = { .name = "logs", .icon = BZ_I_RECEIPT_LONG, .build = 
 /* ================================================================== settings */
 
 static struct {
-    lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *calm_chip, *perf_chip, *about, *wifi_list,
+    lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *calm_chip, *flip_chip, *perf_chip, *about, *wifi_list,
         *wifi_state, *usb_state;
     lv_obj_t *kb, *ta, *kb_title;
     char entry[8];
@@ -829,6 +831,24 @@ static void st_tone(lv_obj_t *o, void *u)
     ui_settings_save();
 }
 
+static void st_autorot(lv_obj_t *o, void *u)
+{
+    (void)u;
+    S.auto_rotate = !S.auto_rotate;
+    ui_chip_set(o, S.auto_rotate);
+    ui_settings_save();
+}
+
+static void st_flip(lv_obj_t *o, void *u)
+{
+    (void)u;
+    S.auto_rotate = false; /* a hand-picked way up stays */
+    ui_set_flip(!S.flip);
+    ui_chip_set(o, S.flip);
+    ui_chip_set(ST.calm_chip, false);
+    ui_settings_save();
+}
+
 static void st_calm(lv_obj_t *o, void *u)
 {
     (void)u;
@@ -880,8 +900,11 @@ static void st_scan(lv_obj_t *o, void *u)
     if (!n) bz_label(ST.wifi_list, "nothing in range", BZ_F_CAPTION, BZ_C_DIM);
 }
 
+static void settings_refresh_more(void);
+
 static void settings_refresh(void)
 {
+    settings_refresh_more();
     hal_net_t n;
     hal_net(&n);
     ui_text(ST.wifi_state, "%s%s%s · %d dbm · %s", n.up ? "on " : "off", n.up ? n.ssid : "", "", n.rssi, n.ip);
@@ -899,6 +922,135 @@ static void settings_refresh(void)
             b.charging ? " · charging" : "", hal_sd_root() ? hal_sd_root() : "not mounted");
 }
 
+/* ---- the settings app: a list of sections on the left, the chosen one on the right ---- */
+
+enum { SS_DISPLAY, SS_SOUND, SS_ROBOT, SS_NETWORK, SS_LINK, SS_ASSIST, SS_TIME, SS_STORAGE, SS_POWER, SS_ABOUT, SS_COUNT };
+static const char *const SS_NAME[SS_COUNT] = { "display", "sound", "robot", "network", "pc link",
+                                               "assistant", "date and time", "storage", "power", "about" };
+static const char *SS_ICON[SS_COUNT];
+
+static struct {
+    lv_obj_t *nav[SS_COUNT], *pane[SS_COUNT];
+    int cur;
+    lv_obj_t *dim_chips[4], *click_chip, *tz_chips[5], *clock, *sd_state, *batt, *off_btn, *link_state, *assist_state;
+    double off_armed;
+} SX;
+
+static const int DIM_S[4] = { 30, 90, 300, 0 };
+static const char *const DIM_L[4] = { "30 s", "90 s", "5 min", "never" };
+static const char *const TZ_L[5] = { "pacific", "mountain", "central", "eastern", "utc" };
+static const char *const TZ_V[5] = { "PST8PDT,M3.2.0,M11.1.0", "MST7MDT,M3.2.0,M11.1.0", "CST6CDT,M3.2.0,M11.1.0",
+                                     "EST5EDT,M3.2.0,M11.1.0", "UTC0" };
+
+static void sx_show(int i)
+{
+    SX.cur = i;
+    for (int k = 0; k < SS_COUNT; k++) {
+        ui_chip_set(SX.nav[k], k == i);
+        if (k == i) lv_obj_remove_flag(SX.pane[k], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(SX.pane[k], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void sx_nav(lv_obj_t *o, void *u)
+{
+    (void)o;
+    sx_show((int)(intptr_t)u);
+}
+
+static void sx_dim(lv_obj_t *o, void *u)
+{
+    (void)o;
+    S.dim_s = DIM_S[(int)(intptr_t)u];
+    for (int i = 0; i < 4; i++) ui_chip_set(SX.dim_chips[i], S.dim_s == DIM_S[i]);
+    ui_settings_save();
+}
+
+static void sx_clicks(lv_obj_t *o, void *u)
+{
+    (void)u;
+    S.clicks = !S.clicks;
+    ui_chip_set(o, S.clicks);
+    ui_settings_save();
+}
+
+static void sx_chime(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    hal_tone(880, 120, S.volume);
+}
+
+static void sx_tz(lv_obj_t *o, void *u)
+{
+    (void)o;
+    S.tz = (int)(intptr_t)u;
+    setenv("TZ", TZ_V[S.tz], 1);
+    tzset();
+    hal_kv_set("tz", TZ_V[S.tz]);
+    for (int i = 0; i < 5; i++) ui_chip_set(SX.tz_chips[i], i == S.tz);
+    ui_settings_save();
+}
+
+static void sx_open_app(lv_obj_t *o, void *u)
+{
+    (void)o;
+    ui_app_close();
+    ui_app_open((const ui_app_t *)u, NULL);
+}
+
+static void sx_clear(lv_obj_t *o, void *u)
+{
+    (void)o;
+    if ((intptr_t)u == 0) {
+        hal_kv_set("notes", "");
+        ui_island_say(BZ_I_EDIT_NOTE, "notes cleared");
+    } else {
+        hal_kv_set("checklist", "0");
+        ui_island_say(BZ_I_CHECKLIST_RTL, "checklist reset");
+    }
+}
+
+static void sx_sleep(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    hal_set_brightness(0); /* the next touch wakes it: the shell's dim logic puts it back */
+}
+
+static void sx_off(lv_obj_t *o, void *u)
+{
+    (void)u;
+    /* two taps within three seconds: a power-off is never one stray touch */
+    double now = hal_seconds();
+    if (now - SX.off_armed < 3) {
+        hal_power_off();
+    } else {
+        SX.off_armed = now;
+        lv_label_set_text(lv_obj_get_child(o, 1), "tap again to turn off");
+    }
+}
+
+static lv_obj_t *sx_pane(lv_obj_t *b, int i, int x, int w)
+{
+    lv_obj_t *t = bz_tile(b, w, APP_H);
+    lv_obj_set_pos(t, x, APP_Y);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(t, 14, 0);
+    lv_obj_t *h = bz_row(t, 12);
+    bz_icon(h, SS_ICON[i], 32, BZ_C_INK);
+    bz_label(h, SS_NAME[i], BZ_F_NAME, BZ_C_INK);
+    SX.pane[i] = t;
+    return t;
+}
+
+static lv_obj_t *sx_wrap_row(lv_obj_t *parent, int w)
+{
+    lv_obj_t *r = bz_row(parent, 10);
+    lv_obj_set_flex_flow(r, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_row(r, 10, 0);
+    lv_obj_set_width(r, w);
+    return r;
+}
+
 static void settings_open(void)
 {
     ST.entry[0] = 0;
@@ -908,74 +1060,192 @@ static void settings_open(void)
     bz_level_set(ST.vol, S.volume, false);
     ui_chip_set(ST.dark_chip, S.dark);
     ui_chip_set(ST.light_chip, !S.dark);
+#if BZ_LEAN
+    ui_chip_set(ST.calm_chip, S.auto_rotate);
+    ui_chip_set(ST.flip_chip, S.flip);
+#else
     ui_chip_set(ST.calm_chip, S.calm);
+#endif
     ui_chip_set(ST.perf_chip, S.perf);
+    for (int i = 0; i < 4; i++) ui_chip_set(SX.dim_chips[i], S.dim_s == DIM_S[i]);
+    ui_chip_set(SX.click_chip, S.clicks);
+    for (int i = 0; i < 5; i++) ui_chip_set(SX.tz_chips[i], i == S.tz);
+    SX.off_armed = 0;
+    lv_label_set_text(lv_obj_get_child(SX.off_btn, 1), "turn off");
+    sx_show(SX.cur);
+}
+
+static void settings_refresh_more(void)
+{
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char d[64];
+    if (tm.tm_year > 120) strftime(d, sizeof d, "%A %B %e · %H:%M:%S", &tm);
+    else snprintf(d, sizeof d, "not set yet");
+    ui_text(SX.clock, "%s", d);
+    uint64_t total, fr;
+    if (hal_sd_space(&total, &fr))
+        ui_text(SX.sd_state, "microSD · %.1f gb free of %.1f gb", fr / 1073741824.0, total / 1073741824.0);
+    else ui_text(SX.sd_state, "no microSD card");
+    hal_battery_t b;
+    if (hal_battery(&b) && b.ok)
+        ui_text(SX.batt, "%d %% · %.2f v%s%s", b.percent, b.volts, b.charging ? " · charging" : "",
+                b.external ? " · external power" : "");
+    const cat_robot_t *r = R;
+    ui_text(SX.link_state, "%s", r->connected ? "the robot is connected" : "the robot isn't connected");
 }
 
 static void settings_build(lv_obj_t *b)
 {
-    int c1 = 380, c2 = 440, c3 = W - 2 * PAD - c1 - c2 - 2 * BZ_GAP;
-    /* team */
-    lv_obj_t *t = bz_tile(b, c1, APP_H);
-    lv_obj_set_pos(t, PAD, APP_Y);
-    bz_label(t, "team", BZ_F_LABEL, BZ_C_DIM);
-    ST.team = bz_label(t, "", BZ_F_DISPLAY, BZ_C_INK);
-    lv_obj_set_pos(ST.team, -4, 20);
-    lv_obj_t *pad = bz_row(t, 10);
+    SS_ICON[SS_DISPLAY] = BZ_I_BRIGHTNESS_6;
+    SS_ICON[SS_SOUND] = BZ_I_VOLUME_UP;
+    SS_ICON[SS_ROBOT] = BZ_I_SMART_TOY;
+    SS_ICON[SS_NETWORK] = BZ_I_WIFI;
+    SS_ICON[SS_LINK] = BZ_I_COMPUTER;
+    SS_ICON[SS_ASSIST] = BZ_I_AUTO_AWESOME;
+    SS_ICON[SS_TIME] = BZ_I_SCHEDULE;
+    SS_ICON[SS_STORAGE] = BZ_I_SD_CARD;
+    SS_ICON[SS_POWER] = BZ_I_POWER;
+    SS_ICON[SS_ABOUT] = BZ_I_INFO;
+
+    int nav_w = 300, px = PAD + nav_w + BZ_GAP, pw = W - 2 * PAD - nav_w - BZ_GAP, iw = pw - 2 * BZ_PAD_TILE;
+    /* the sections */
+    lv_obj_t *nav = bz_tile(b, nav_w, APP_H);
+    lv_obj_set_pos(nav, PAD, APP_Y);
+    lv_obj_set_style_pad_all(nav, 12, 0);
+    lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(nav, 4, 0);
+    for (int i = 0; i < SS_COUNT; i++) {
+        lv_obj_t *n = ui_button(nav, SS_ICON[i], SS_NAME[i], sx_nav, (void *)(intptr_t)i);
+        lv_obj_set_size(n, nav_w - 24, 52);
+        lv_obj_set_style_radius(n, 16, 0);
+        lv_obj_set_flex_align(n, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        SX.nav[i] = n;
+    }
+
+    /* display */
+    lv_obj_t *t = sx_pane(b, SS_DISPLAY, px, pw);
+    bz_label(t, "brightness", BZ_F_LABEL, BZ_C_DIM);
+    ST.bright = bz_level(t, iw, 52, 0.05f, 1, 0.01f);
+    bz_level_on_change(ST.bright, st_level, (void *)(intptr_t)0);
+    bz_label(t, "look", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_t *r = sx_wrap_row(t, iw);
+    ST.dark_chip = ui_chip(r, "dark", st_tone, (void *)(intptr_t)0);
+    ST.light_chip = ui_chip(r, "light", st_tone, (void *)(intptr_t)1);
+    ST.perf_chip = ui_chip(r, "frame-rate overlay", st_perf, NULL);
+    bz_label(t, "turn the picture", BZ_F_LABEL, BZ_C_DIM);
+    r = sx_wrap_row(t, iw);
+#if BZ_LEAN
+    ST.calm_chip = ui_chip(r, "auto-rotate", st_autorot, NULL);
+    ST.flip_chip = ui_chip(r, "upside down", st_flip, NULL);
+#else
+    ST.calm_chip = ui_chip(r, "calm", st_calm, NULL);
+#endif
+    bz_label(t, "dim when untouched for", BZ_F_LABEL, BZ_C_DIM);
+    r = sx_wrap_row(t, iw);
+    for (int i = 0; i < 4; i++) SX.dim_chips[i] = ui_chip(r, DIM_L[i], sx_dim, (void *)(intptr_t)i);
+
+    /* sound */
+    t = sx_pane(b, SS_SOUND, px, pw);
+    bz_label(t, "volume", BZ_F_LABEL, BZ_C_DIM);
+    ST.vol = bz_level(t, iw, 52, 0, 1, 0.01f);
+    bz_level_on_change(ST.vol, st_level, (void *)(intptr_t)1);
+    r = sx_wrap_row(t, iw);
+    SX.click_chip = ui_chip(r, "tick on taps", sx_clicks, NULL);
+    ui_button(r, BZ_I_VOLUME_UP, "play a chime", sx_chime, NULL);
+
+    /* robot: the team and how to reach it */
+    t = sx_pane(b, SS_ROBOT, px, pw);
+    lv_obj_t *tr = bz_row(t, 24);
+    lv_obj_set_flex_align(tr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_t *tc = bz_col(tr, 6);
+    bz_label(tc, "team", BZ_F_LABEL, BZ_C_DIM);
+    ST.team = bz_label(tc, "", BZ_F_DISPLAY, BZ_C_INK);
+    lv_obj_t *pad = bz_row(tr, 10);
+    int kpw = 330;
     lv_obj_set_flex_flow(pad, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_width(pad, c1 - 2 * BZ_PAD_TILE);
-    lv_obj_align(pad, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_set_style_pad_row(pad, 10, 0);
+    lv_obj_set_width(pad, kpw);
     static const int keys[12] = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0, 11 };
     for (int i = 0; i < 12; i++) {
         int k = keys[i];
         char s[4];
         snprintf(s, sizeof s, "%d", k);
-        lv_obj_t *btn = ui_button(pad, k == 10 ? BZ_I_ARROW_BACK : k == 11 ? BZ_I_CHECK_CIRCLE : NULL, k < 10 ? s : NULL, st_key,
+        lv_obj_t *btn = ui_button(pad, k == 10 ? BZ_I_BACKSPACE : k == 11 ? BZ_I_CHECK_CIRCLE : NULL, k < 10 ? s : NULL, st_key,
                                   (void *)(intptr_t)k);
-        lv_obj_set_size(btn, (c1 - 2 * BZ_PAD_TILE - 20) / 3, 60);
-        lv_obj_set_style_radius(btn, 20, 0);
+        lv_obj_set_size(btn, (kpw - 20) / 3, 54);
+        lv_obj_set_style_radius(btn, 18, 0);
+        lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         if (k == 11) ui_chip_set(btn, true);
     }
-    /* link */
-    lv_obj_t *l = bz_tile(b, c2, APP_H);
-    lv_obj_set_pos(l, PAD + c1 + BZ_GAP, APP_Y);
-    lv_obj_set_flex_flow(l, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(l, 12, 0);
-    bz_label(l, "robot address", BZ_F_LABEL, BZ_C_DIM);
-    lv_obj_t *ar = bz_row(l, 8);
-    lv_obj_set_flex_flow(ar, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_width(ar, c2 - 2 * BZ_PAD_TILE);
-    for (int i = 0; i < 5; i++) ST.addr_chips[i] = ui_chip(ar, ADDR_LABEL[i], st_addr, (void *)(intptr_t)i);
-    bz_label(l, "wi-fi", BZ_F_LABEL, BZ_C_DIM);
-    ST.wifi_state = bz_label(l, "", BZ_F_CAPTION, BZ_C_DIM);
-    ui_button(l, BZ_I_WIFI, "scan", st_scan, NULL);
-    ST.wifi_list = bz_row(l, 8);
-    lv_obj_set_flex_flow(ST.wifi_list, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_width(ST.wifi_list, c2 - 2 * BZ_PAD_TILE);
-    bz_label(l, "usb tether", BZ_F_LABEL, BZ_C_DIM);
-    ST.usb_state = bz_label(l, "", BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_set_width(ST.usb_state, c2 - 2 * BZ_PAD_TILE);
-    lv_obj_t *note = bz_label(l, "At events Wi-Fi to the robot isn't allowed: an A-to-C cable into Systemcore, or a USB-Ethernet "
+    bz_label(t, "robot address", BZ_F_LABEL, BZ_C_DIM);
+    r = sx_wrap_row(t, iw);
+    for (int i = 0; i < 5; i++) ST.addr_chips[i] = ui_chip(r, ADDR_LABEL[i], st_addr, (void *)(intptr_t)i);
+
+    /* network */
+    t = sx_pane(b, SS_NETWORK, px, pw);
+    bz_label(t, "wi-fi", BZ_F_LABEL, BZ_C_DIM);
+    ST.wifi_state = bz_label_line(t, "", BZ_F_BODY, BZ_C_INK, iw);
+    ui_button(t, BZ_I_WIFI, "scan for networks", st_scan, NULL);
+    ST.wifi_list = sx_wrap_row(t, iw);
+    bz_label(t, "usb tether", BZ_F_LABEL, BZ_C_DIM);
+    ST.usb_state = bz_label(t, "", BZ_F_BODY, BZ_C_INK);
+    lv_obj_set_width(ST.usb_state, iw);
+    lv_obj_t *note = bz_label(t, "At events Wi-Fi to the robot isn't allowed: an A-to-C cable into Systemcore, or a USB-Ethernet "
                                  "adapter into the radio, on the USB-A port.",
                               BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_set_width(note, c2 - 2 * BZ_PAD_TILE);
-    /* display */
-    lv_obj_t *d = bz_tile(b, c3, APP_H);
-    lv_obj_set_pos(d, PAD + c1 + c2 + 2 * BZ_GAP, APP_Y);
-    lv_obj_set_flex_flow(d, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(d, 12, 0);
-    bz_label(d, "brightness", BZ_F_LABEL, BZ_C_DIM);
-    ST.bright = bz_level(d, c3 - 2 * BZ_PAD_TILE, 52, 0.05f, 1, 0.01f);
-    bz_level_on_change(ST.bright, st_level, (void *)(intptr_t)0);
-    bz_label(d, "volume", BZ_F_LABEL, BZ_C_DIM);
-    ST.vol = bz_level(d, c3 - 2 * BZ_PAD_TILE, 52, 0, 1, 0.01f);
-    bz_level_on_change(ST.vol, st_level, (void *)(intptr_t)1);
-    lv_obj_t *tr = bz_row(d, 8);
-    ST.dark_chip = ui_chip(tr, "dark", st_tone, (void *)(intptr_t)0);
-    ST.light_chip = ui_chip(tr, "light", st_tone, (void *)(intptr_t)1);
-    ST.calm_chip = ui_chip(tr, "calm", st_calm, NULL);
-    ST.perf_chip = ui_chip(tr, "fps", st_perf, NULL);
-    ST.about = bz_label(d, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(note, iw);
+
+    /* pc link and the assistant: their own apps hold the detail */
+    t = sx_pane(b, SS_LINK, px, pw);
+    lv_obj_t *lt = bz_label(t, "Catalyst Link runs on the PC: code, patch branches, work orders for the PC's coding agent, "
+                               "and the way the assistant reaches Claude.",
+                            BZ_F_BODY, BZ_C_DIM);
+    lv_obj_set_width(lt, iw);
+    ui_button(t, BZ_I_COMPUTER, "open link", sx_open_app, (void *)&APP_LINK);
+    t = sx_pane(b, SS_ASSIST, px, pw);
+    lv_obj_t *at = bz_label(t, "The assistant runs on your Claude subscription through Claude Code on the PC (Catalyst Link), "
+                               "or on an API key. It reads everything the tablet sees and changes nothing without your ok.",
+                            BZ_F_BODY, BZ_C_DIM);
+    lv_obj_set_width(at, iw);
+    SX.link_state = bz_label(t, "", BZ_F_LABEL, BZ_C_DIM);
+    r = sx_wrap_row(t, iw);
+    ui_button(r, BZ_I_AUTO_AWESOME, "open assist", sx_open_app, (void *)&APP_ASSIST);
+    ui_button(r, BZ_I_COMPUTER, "pair the pc", sx_open_app, (void *)&APP_LINK);
+
+    /* date and time */
+    t = sx_pane(b, SS_TIME, px, pw);
+    SX.clock = bz_label(t, "", BZ_F_NAME, BZ_C_INK);
+    bz_label(t, "time zone", BZ_F_LABEL, BZ_C_DIM);
+    r = sx_wrap_row(t, iw);
+    for (int i = 0; i < 5; i++) SX.tz_chips[i] = ui_chip(r, TZ_L[i], sx_tz, (void *)(intptr_t)i);
+    lv_obj_t *tn = bz_label(t, "The clock sets itself from the network whenever Wi-Fi reaches the internet, and from the PC "
+                               "with tools/tab5_dev.py settime. The real-time clock keeps it through power-offs.",
+                            BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(tn, iw);
+
+    /* storage */
+    t = sx_pane(b, SS_STORAGE, px, pw);
+    SX.sd_state = bz_label(t, "", BZ_F_BODY, BZ_C_INK);
+    r = sx_wrap_row(t, iw);
+    ui_button(r, BZ_I_FOLDER, "browse the card", sx_open_app, (void *)&APP_FILES);
+    ui_button(r, BZ_I_EDIT_NOTE, "clear notes", sx_clear, (void *)0);
+    ui_button(r, BZ_I_CHECKLIST_RTL, "reset checklist", sx_clear, (void *)1);
+
+    /* power */
+    t = sx_pane(b, SS_POWER, px, pw);
+    SX.batt = bz_label(t, "", BZ_F_BODY, BZ_C_INK);
+    r = sx_wrap_row(t, iw);
+    ui_button(r, BZ_I_BEDTIME, "screen off", sx_sleep, NULL);
+    SX.off_btn = ui_button(r, BZ_I_POWER, "turn off", sx_off, NULL);
+
+    /* about */
+    t = sx_pane(b, SS_ABOUT, px, pw);
+    ST.about = bz_label(t, "", BZ_F_BODY, BZ_C_DIM);
+    lv_obj_set_width(ST.about, iw);
+    lv_label_set_long_mode(ST.about, LV_LABEL_LONG_WRAP);
+    ui_button(t, BZ_I_MONITORING, "system monitor", sx_open_app, (void *)&APP_SYSMON);
 
     /* the Wi-Fi password sheet: LVGL's keyboard in Bezel's tokens */
     lv_obj_t *sheet = bz_tile(b, W - 2 * PAD, 420);
@@ -1007,6 +1277,7 @@ static void settings_build(lv_obj_t *b)
     lv_obj_set_style_shadow_width(ST.kb, 0, LV_PART_ITEMS);
     lv_obj_add_event_cb(ST.kb, st_kb_event, LV_EVENT_ALL, NULL);
     lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
+    sx_show(SS_DISPLAY);
 }
 
 const ui_app_t APP_SETTINGS = { .name = "settings", .icon = BZ_I_SETTINGS, .build = settings_build, .open = settings_open,

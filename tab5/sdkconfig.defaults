@@ -13,14 +13,24 @@ CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 CONFIG_COMPILER_OPTIMIZATION_PERF=y
 
-# 32 MB PSRAM in the package: hex mode at 80 MHz. 200 MHz is faster but ESP-IDF 5.5 marks it
-# experimental; a tablet that boots every time matters more than frame rate. Code executes from it too.
+# 32 MB PSRAM in the package: hex mode at 200 MHz, as the Tab5 BSP and M5Stack's firmware run it. At
+# 80 MHz the DPI controller can't fetch the frame buffer in time on a real unit ("underrun happens"
+# every frame): a stuttering, cyan-flashing picture and a UI that never gets a frame out. Code executes
+# from it too.
+CONFIG_IDF_EXPERIMENTAL_FEATURES=y
 CONFIG_SPIRAM=y
 CONFIG_SPIRAM_MODE_HEX=y
-CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_SPEED_200M=y
 CONFIG_SPIRAM_XIP_FROM_PSRAM=y
 CONFIG_SPIRAM_USE_MALLOC=y
-CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=2048
+# the 32 MB memory test takes most of a second at every start
+CONFIG_SPIRAM_MEMTEST=n
+# Internal SRAM (768 KB) is the scarce memory, PSRAM (32 MB) the plentiful one: anything over 512 bytes
+# that doesn't ask for DMA or internal memory goes to PSRAM, lwIP's buffers go there, and static buffers
+# may be placed there (EXT_RAM_BSS_ATTR)
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=512
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=65536
 CONFIG_CACHE_L2_CACHE_256KB=y
 CONFIG_CACHE_L2_CACHE_LINE_128B=y
@@ -34,6 +44,8 @@ CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8192
 
 # LVGL reads tab5/lv_conf.h (passed as LV_CONF_PATH), not Kconfig
 CONFIG_LV_CONF_SKIP=n
+# LVGL's PPA draw unit checks the Kconfig value (lv_conf.h sets the one LVGL uses): the L2 cache line
+CONFIG_LV_DRAW_BUF_ALIGN=128
 
 # The Tab5 BSP: two DPI frame buffers so the renderer flips on vsync instead of tearing; the
 # renderer drives the panel itself, so the BSP's LVGL port stays unused
@@ -96,3 +108,6 @@ CONFIG_FATFS_VFS_FSTAT_BLKSIZE=4096
 CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH=y
 CONFIG_ESP_COREDUMP_DATA_FORMAT_ELF=y
 CONFIG_ESP_COREDUMP_CHECKSUM_CRC32=y
+
+# The log on the USB-C port (USB-Serial/JTAG) as the primary console: UART0 at 115200 busy-waits ~6 ms a line
+CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y

@@ -7,10 +7,12 @@
  * cores (two draw units, lv_conf.h). */
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "bz_theme.h"
 #include "bz_ui.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_pthread.h"
 #include "freertos/FreeRTOS.h"
@@ -29,14 +31,63 @@ static void *nt_thread(void *arg)
     return NULL;
 }
 
+static SemaphoreHandle_t s_ui_go;
+static hal_boot_t s_prev; /* how the last start ended, repeated in the heartbeat: USB comes up after boot */
+
 static void ui_task(void *arg)
 {
     (void)arg;
+    /* created first thing, so its 16 KB stack comes from internal RAM before Wi-Fi and USB take it (the UI
+     * saves settings to NVS, so its stack can't live in PSRAM); it waits here until start-up is done */
+    xSemaphoreTake(s_ui_go, portMAX_DELAY);
     double t0 = hal_seconds();
     bool settled = false, ok = false;
+    unsigned frames = 0;
+    bool first = true;
+    double beat = t0;
     for (;;) {
         bool busy = bz_ui_frame(hal_seconds());
         double up = hal_seconds() - t0;
+        /* a heartbeat in the log: a UI that stops drawing shows as the beats stopping */
+        if (first) {
+            first = false;
+            ESP_LOGI(TAG, "ui: first frame after %.2f s", up);
+        }
+        frames++;
+        if (hal_seconds() - beat >= 2) {
+            bz_ui_perf_t pf;
+            bz_ui_perf(&pf);
+            ESP_LOGI(TAG, "ui: %u loops in %.1f s, %.1f fps; ms lvgl %.1f compose %.1f present %.1f; px lvgl %u",
+                     frames, hal_seconds() - beat, pf.fps, pf.lvgl_ms, pf.compose_ms, pf.present_ms,
+                     (unsigned)pf.lvgl_px);
+            if (s_prev.failed && up < 30)
+                ESP_LOGW(TAG, "last start ended: %s at \"%s\" (%d in a row) %s", s_prev.reason, s_prev.stage,
+                         s_prev.fails, s_prev.detail);
+            float pr[8];
+            bz_ui_prof_take(pr);
+            ESP_LOGI(TAG, "lvgl ms/2s: content layout %.0f render %.0f flush %.0f | glass layout %.0f render %.0f "
+                     "flush %.0f | handler %.0f", pr[0], pr[1], pr[2], pr[3], pr[4], pr[5], pr[6]);
+            bz_ui_hooks_report();
+            float sh, sl, sr, sn;
+            bz_ui_split(&sh, &sl, &sr, &sn);
+            ESP_LOGI(TAG, "ui split per loop: hooks %.1f, lv_timer_handler %.1f = refresh %.1f (render %.1f) + timers %.1f ms",
+                     sh, sl, sr, sn, sl - sr);
+            static int beats;
+            if (++beats % 5 == 1) {
+                hal_boot_t pb;
+                hal_boot_prev(&pb);
+                ESP_LOGI(TAG, "last start: %s at \"%s\", %d failed in a row %s", pb.reason, pb.stage, pb.fails, pb.detail);
+                /* in PSRAM: internal RAM has no 2 KB to spare (the DMA reserve at start-up fails without it) */
+                char *stats = heap_caps_malloc(2048, MALLOC_CAP_SPIRAM);
+                if (stats) {
+                    vTaskGetRunTimeStats(stats);
+                    ESP_LOGI(TAG, "cpu per task since boot:\n%s", stats);
+                    free(stats);
+                }
+            }
+            frames = 0;
+            beat = hal_seconds();
+        }
         /* the USB-A port and the tether come last, once the UI has been drawing for a moment */
         if (!settled && up > 1.5) {
             settled = true;
@@ -62,16 +113,30 @@ static void boot_task(void *arg)
 {
     uint16_t *buf = arg;
     double t0 = hal_seconds();
+    int frames = 0;
+    double worst = 0, last = t0, draw = 0, pres = 0;
+    uint32_t px = 0;
     for (;;) {
         bz_area_t a;
+        double f0 = hal_seconds();
         bool more = ui_boot_frame(s_boot, hal_seconds() - t0, &a);
+        double now = hal_seconds();
+        draw += now - f0;
+        if (now - last > worst) worst = now - last;
+        last = now;
+        frames++;
         if (a.x2 >= a.x1 && a.y2 >= a.y1) {
             bz_present_t p = { a, buf + (size_t)a.y1 * HAL_W + a.x1, HAL_W };
             hal_present(&p, 1, NULL);
+            pres += hal_seconds() - now;
+            px += (uint32_t)(a.x2 - a.x1 + 1) * (uint32_t)(a.y2 - a.y1 + 1);
         }
         if (!more) break;
         vTaskDelay(1);
     }
+    ESP_LOGI(TAG, "boot: %d frames in %.2f s, %.1f fps, worst gap %.0f ms; per frame draw %.1f ms, present %.1f ms, %u px",
+             frames, hal_seconds() - t0, frames / (hal_seconds() - t0), worst * 1000, draw * 1000 / frames,
+             pres * 1000 / frames, (unsigned)(px / (frames ? frames : 1)));
     xSemaphoreGive(s_boot_done);
     vTaskDelete(NULL);
 }
@@ -92,8 +157,13 @@ void app_main(void)
         ESP_LOGE(TAG, "hardware init failed");
         return;
     }
+    s_ui_go = xSemaphoreCreateBinary();
+    if (xTaskCreatePinnedToCore(ui_task, "ui", 16384, NULL, 6, NULL, 1) != pdPASS)
+        ESP_LOGE(TAG, "no internal RAM for the UI task's stack (largest block %u bytes)",
+                 (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     hal_boot_t prev;
     hal_boot_prev(&prev);
+    s_prev = prev;
     bool safe = prev.fails >= 1;
     if (prev.failed)
         ESP_LOGW(TAG, "last start: %s at %s (%d in a row) %s%s", prev.reason, prev.stage, prev.fails, prev.detail,
@@ -143,5 +213,7 @@ void app_main(void)
     ui_boot_destroy(s_boot);
     s_boot = NULL;
     bz_comp_damage_all(bz_ui_comp());
-    xTaskCreatePinnedToCore(ui_task, "ui", 16384, NULL, 6, NULL, 1);
+    ESP_LOGI(TAG, "internal RAM free %u, largest block %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+             (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    xSemaphoreGive(s_ui_go);
 }

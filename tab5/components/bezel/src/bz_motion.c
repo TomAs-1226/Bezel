@@ -36,6 +36,9 @@ static bool g_calm;
 static double g_now;
 
 void bz_motion_set_calm(bool calm) { g_calm = calm; }
+static bool g_instant;
+void bz_motion_set_instant(bool instant) { g_instant = instant; }
+bool bz_motion_instant(void) { return g_instant; }
 bool bz_motion_calm(void) { return g_calm; }
 void bz_motion_clock(double now_s) { g_now = now_s; }
 double bz_motion_now(void) { return g_now; }
@@ -89,6 +92,10 @@ static void sample(bz_motion_t *m)
 
 void bz_motion_to_v(bz_motion_t *m, float target, bz_spring_t spring, float vel)
 {
+    if (g_instant && !m->keep) {
+        bz_motion_set(m, target, 0);
+        return;
+    }
     if (m->running) sample(m);
     m->t0 = g_now;
     m->target = target;

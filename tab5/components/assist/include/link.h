@@ -18,7 +18,7 @@ extern "C" {
 typedef struct {
     bool configured;       /* an address is set (or found by mDNS) */
     bool reachable;        /* answered /link/status in the last 10 s */
-    bool claude;           /* it forwards the Messages API (holds a key) */
+    bool claude;           /* it serves the Messages API (with a key, or through Claude Code) */
     char url[96];          /* "http://192.168.1.20:8765" */
     char name[48];         /* the PC's name */
     char repo[64];         /* the robot project's folder name */
@@ -28,6 +28,10 @@ typedef struct {
     int outbox;            /* items waiting on microSD */
     double last_ok;        /* hal_seconds() of the last good answer */
     bool auth;             /* the Link accepted the token (reachable with auth false: the token is wrong) */
+    /* How the Link reaches Claude: "api" (its ANTHROPIC_API_KEY) or "claude-code" (the owner's Claude
+     * subscription through Claude Code on the PC; the model is Claude Code's, not the one the tablet
+     * asks for). "" when the Link is older or has Claude off. */
+    char claude_via[16];
 } link_status_t;
 
 typedef struct {

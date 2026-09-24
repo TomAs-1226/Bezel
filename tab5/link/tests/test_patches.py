@@ -6,7 +6,7 @@ import subprocess
 import sys
 import unittest
 
-from helpers import LinkCase, git
+from helpers import SYMLINK_NAMES, LinkCase, git
 
 CONST = "src/main/java/frc/robot/Constants.java"
 PATCH = {
@@ -149,7 +149,7 @@ class PatchRejectionTest(PatchCase):
         self.assertRejected(413, [{"path": CONST, "old": "kArmP = 0.8;", "new": "x" * 70000}])
         for denied in (".env", "config/secrets.json", "deploy.key", "build/libs.txt", "build/new.txt",
                        ".gradle/x", "bin/x", ".git/config", ".git/hooks/pre-commit", "../outside.txt",
-                       "/etc/passwd", "escape.txt", "gitconfig-link"):
+                       "/etc/passwd", *SYMLINK_NAMES):
             self.assertRejected(403, [{"path": denied, "old": "", "new": "x"}], "path")
         self.assertRejected(400, [{"path": CONST, "old": "a"}])
         self.assertEqual(self.patch(title="")[0], 400)
@@ -192,7 +192,9 @@ class CheckPassTest(PatchCase):
 
 
 class CheckFailTest(PatchCase):
-    check = "echo compiling; echo 'Constants.java:4: error: bad'; exit 3"
+    # Python rather than `echo …; exit 3`, which only a POSIX shell understands (the check runs via cmd on Windows).
+    check = (f"{sys.executable} -c \"import sys; print('compiling'); print('Constants.java:4: error: bad'); "
+             "sys.exit(3)\"")
 
     def test_failed_check_keeps_the_branch(self) -> None:
         status, body = self.patch()
@@ -204,7 +206,7 @@ class CheckFailTest(PatchCase):
 
 
 class CheckTimeoutTest(PatchCase):
-    check = "echo starting; sleep 30"
+    check = f"{sys.executable} -c \"import time; print('starting', flush=True); time.sleep(30)\""
     check_timeout = 1.0
 
     def test_check_times_out(self) -> None:

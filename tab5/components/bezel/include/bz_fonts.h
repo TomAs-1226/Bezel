@@ -11,12 +11,22 @@ LV_FONT_DECLARE(bz_font_body_20)
 LV_FONT_DECLARE(bz_font_body_17)
 LV_FONT_DECLARE(bz_font_mono_16)
 LV_FONT_DECLARE(bz_font_mono_13)
+LV_FONT_DECLARE(bz_font_display_92)
+LV_FONT_DECLARE(bz_font_display_56)
+LV_FONT_DECLARE(bz_font_title_44)
+LV_FONT_DECLARE(bz_font_name_30)
+LV_FONT_DECLARE(bz_font_body_24)
+LV_FONT_DECLARE(bz_font_body_21)
+LV_FONT_DECLARE(bz_font_mono_19)
 LV_FONT_DECLARE(bz_font_brand_light_72)
 LV_FONT_DECLARE(bz_font_brand_bold_72)
 LV_FONT_DECLARE(bz_icons_outline_24)
+LV_FONT_DECLARE(bz_icons_outline_30)
 LV_FONT_DECLARE(bz_icons_outline_32)
 LV_FONT_DECLARE(bz_icons_outline_40)
+LV_FONT_DECLARE(bz_icons_outline_48)
 LV_FONT_DECLARE(bz_icons_fill_32)
+LV_FONT_DECLARE(bz_icons_fill_40)
 
 /* Material Symbols Rounded codepoints, as UTF-8 */
 #define BZ_I_MONITOR_HEART "\xee\xaa\xa2"
@@ -163,3 +173,26 @@ LV_FONT_DECLARE(bz_icons_fill_32)
 #define BZ_I_SCHEMA "\xee\x93\xbd"
 #define BZ_I_VIDEOCAM_OFF "\xee\x81\x8c"
 #define BZ_I_MOVIE "\xee\x80\xac"
+#define BZ_I_CALCULATE "\xee\xa9\x9f"
+#define BZ_I_EDIT_NOTE "\xee\x9d\x85"
+#define BZ_I_FOLDER "\xee\x8b\x87"
+#define BZ_I_FOLDER_OPEN "\xee\x8b\x88"
+#define BZ_I_FLASHLIGHT_ON "\xef\x80\x8b"
+#define BZ_I_FLASHLIGHT_OFF "\xef\x80\x8a"
+#define BZ_I_HOME "\xee\xa2\x8a"
+#define BZ_I_NOTIFICATIONS "\xee\x9f\xb4"
+#define BZ_I_GRID_VIEW "\xee\xa6\xb0"
+#define BZ_I_MONITORING "\xef\x86\x90"
+#define BZ_I_LOCK "\xee\xa2\x8d"
+#define BZ_I_BEDTIME "\xee\x87\xb9"
+#define BZ_I_PALETTE "\xee\x8e\xb7"
+#define BZ_I_AVG_PACE "\xef\x9a\xbb"
+#define BZ_I_TIMER_OFF "\xee\x90\xa6"
+#define BZ_I_LAPS "\xef\x9a\xb9"
+#define BZ_I_CHECKLIST_RTL "\xee\x9a\xb3"
+#define BZ_I_BACKSPACE "\xee\x85\x8a"
+#define BZ_I_PERCENT "\xee\xad\x98"
+#define BZ_I_MEMORY_ALT "\xef\x9e\xa3"
+#define BZ_I_DISPLAY_SETTINGS "\xee\xae\x97"
+#define BZ_I_VOLUME_OFF "\xee\x81\x8f"
+#define BZ_I_INFO_I "\xef\x96\x9b"

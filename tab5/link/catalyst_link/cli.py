@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -39,7 +40,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from .server import Config, LinkApp, make_server
 
     cfg = Config(repo=Path(args.repo).expanduser(), port=args.port, bind=args.bind, check=args.check,
-                 check_timeout=args.check_timeout, on_work_order=args.on_work_order)
+                 check_timeout=args.check_timeout, on_work_order=args.on_work_order,
+                 claude=args.claude, claude_model=args.claude_model, claude_cli=args.claude_cli)
     if args.name:
         cfg.name = args.name
     state = _state()
@@ -53,7 +55,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     for a in addrs:
         print(f"  url      http://{a}:{port}")
     print(f"  token    {state.token()}   (type this into the tablet's settings once)")
-    print(f"  claude   {'on' if app.proxy.available else 'off (no ANTHROPIC_API_KEY or no anthropic SDK)'}")
+    print(f"  claude   {_claude_line(app)}")
     print(f"  check    {cfg.check or 'off'}" + (f"  (timeout {cfg.check_timeout:g} s)" if cfg.check else ""))
     print(f"  on-work-order  {cfg.on_work_order or 'off'}")
     print(f"  state    {state.home}")
@@ -73,6 +75,81 @@ def cmd_serve(args: argparse.Namespace) -> int:
         server.server_close()
         if stop_mdns:
             stop_mdns()
+    return 0
+
+
+def _claude_line(app: Any) -> str:
+    from .claude_code import ClaudeCodeBackend
+
+    proxy = app.proxy
+    if proxy is None:
+        return "off (--claude off)"
+    if isinstance(proxy, ClaudeCodeBackend):
+        auth = proxy.auth() if proxy.installed else None
+        if not proxy.installed or not (auth or {}).get("loggedIn"):
+            return f"claude-code, NOT READY: {proxy.why_not()}"
+        plan = (auth or {}).get("subscriptionType") or (auth or {}).get("authMethod") or "logged in"
+        return f"claude-code via your Claude login ({plan}); model {proxy.model or 'Claude Code default'}; cli {proxy.cli}"
+    return "api (ANTHROPIC_API_KEY)" if proxy.available else "api, NOT READY: no ANTHROPIC_API_KEY or no anthropic SDK"
+
+
+# --- Claude Code: checking it, and storing a setup-token -------------------------------------------
+
+def cmd_claude_check(args: argparse.Namespace) -> int:
+    """Where the claude-code backend stands, without a model call (or with one, --live)."""
+    from .claude_code import TOKEN_ENV, TOKEN_FILE, ClaudeCodeBackend, oauth_token, sdk
+
+    state = _state()
+    backend = ClaudeCodeBackend(state, args.claude_model, args.claude_cli)
+    print(f"agent sdk  {'claude-agent-sdk ' + getattr(sdk, '__version__', '?') if sdk else 'NOT INSTALLED (pip install claude-agent-sdk)'}")
+    print(f"cli        {backend.cli or 'NOT FOUND (pass --claude-cli PATH)'}")
+    tok = oauth_token(state.home)
+    if not tok:
+        source = "none: Claude Code's own login (claude login)"
+    else:
+        source = f"${TOKEN_ENV}" if os.environ.get(TOKEN_ENV, "").strip() else str(state.home / TOKEN_FILE)
+    print(f"token      {source}")
+    if not backend.installed:
+        return 1
+    auth = backend.auth() or {}
+    print(f"login      {json.dumps(auth)}")
+    if not auth.get("loggedIn"):
+        print()
+        print("Not logged in. On this PC run once:  claude setup-token   (then: catalyst-link claude-token)")
+        print("or:  claude login   (for the same Windows/macOS/Linux user the Link runs as)")
+        return 1
+    if args.live:
+        from .claude_code import live_check
+        ok, text = live_check(backend)
+        print(f"live       {'ok' if ok else 'FAILED'}: {text}")
+        return 0 if ok else 1
+    return 0
+
+
+def cmd_claude_token(args: argparse.Namespace) -> int:
+    """Store the token `claude setup-token` printed, read from stdin (so it stays out of shell history)."""
+    from .claude_code import TOKEN_FILE
+
+    state = _state()
+    path = state.home / TOKEN_FILE
+    if args.remove:
+        path.unlink(missing_ok=True)
+        print(f"removed {path}")
+        return 0
+    if sys.stdin.isatty():
+        import getpass
+        tok = getpass.getpass("Paste the token from `claude setup-token` (input hidden): ").strip()
+    else:
+        tok = sys.stdin.read().strip()
+    if not tok or any(c.isspace() for c in tok):
+        print("catalyst-link: that doesn't look like a token", file=sys.stderr)
+        return 1
+    path.write_text(tok + "\n", encoding="utf-8")
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        pass
+    print(f"saved to {path} (readable only by you); restart the Link to use it")
     return 0
 
 
@@ -172,6 +249,11 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--check-timeout", type=float, default=300.0, metavar="SECONDS")
     s.add_argument("--on-work-order", metavar="COMMAND",
                    help="run this (detached) for each new work order; {path} and {id} are substituted")
+    s.add_argument("--claude", choices=("auto", "api", "claude-code", "off"), default="auto",
+                   help="how the tablet reaches Claude: api (ANTHROPIC_API_KEY), claude-code (your Claude "
+                        "subscription through Claude Code on this PC), off; auto: api when a key is set, else claude-code")
+    s.add_argument("--claude-model", help="claude-code: the model (default: Claude Code's own default)")
+    s.add_argument("--claude-cli", metavar="PATH", help="claude-code: the Claude Code CLI to run (default: found)")
     s.add_argument("--no-mdns", action="store_true", help="don't advertise over mDNS")
     s.add_argument("--quiet", action="store_true", help="no per-request log lines")
     s.set_defaults(fn=cmd_serve)
@@ -199,6 +281,16 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--repo", help="the robot repo (default: the one each patch was made in)")
     s.add_argument("--json", action="store_true")
     s.set_defaults(fn=cmd_patches)
+
+    s = sub.add_parser("claude-check", help="is the claude-code backend ready? (no model call unless --live)")
+    s.add_argument("--claude-model")
+    s.add_argument("--claude-cli", metavar="PATH")
+    s.add_argument("--live", action="store_true", help="also run one tiny turn through Claude Code")
+    s.set_defaults(fn=cmd_claude_check)
+
+    s = sub.add_parser("claude-token", help="store a `claude setup-token` token for the claude-code backend (read from stdin)")
+    s.add_argument("--remove", action="store_true", help="delete the stored token")
+    s.set_defaults(fn=cmd_claude_token)
 
     s = sub.add_parser("token", help="print the pairing token")
     s.add_argument("--rotate", action="store_true", help="make a new one (the tablet must be re-paired)")

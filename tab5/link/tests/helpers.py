@@ -31,6 +31,21 @@ ROBOT = "package frc.robot;\n\npublic class Robot {\n" + "".join(
     f"  // line {i}: TimedRobot bookkeeping\n" for i in range(4, 500)) + "}\n"
 
 
+def _can_symlink() -> bool:
+    """Windows makes symlinks only with Developer Mode (or as admin); the symlink cases skip without it."""
+    with tempfile.TemporaryDirectory() as d:
+        try:
+            os.symlink(Path(d) / "target", Path(d) / "link")
+        except (OSError, NotImplementedError):
+            return False
+    return True
+
+
+SYMLINKS = _can_symlink()
+# The repo's symlinks that point outside it (or into .git): refused like any escape, when they exist.
+SYMLINK_NAMES = ("escape.txt", "gitconfig-link") if SYMLINKS else ()
+
+
 def git(repo: Path, *args: str) -> str:
     env = {**os.environ, "GIT_AUTHOR_NAME": "Team", "GIT_AUTHOR_EMAIL": "team@example.com",
            "GIT_COMMITTER_NAME": "Team", "GIT_COMMITTER_EMAIL": "team@example.com"}
@@ -43,8 +58,8 @@ def make_repo(root: Path) -> Path:
     repo = root / "CatalystX1"
     java = repo / "src/main/java/frc/robot"
     java.mkdir(parents=True)
-    (java / "Constants.java").write_text(CONSTANTS)
-    (java / "Robot.java").write_text(ROBOT)
+    (java / "Constants.java").write_text(CONSTANTS, newline="")  # LF on Windows too
+    (java / "Robot.java").write_text(ROBOT, newline="")
     (java / "Dupes.java").write_text("int x = 1;\nint x = 1;\n")
     (java / "Crlf.java").write_text("class Crlf {\r\n  int a = 1;\r\n  int b = 2;\r\n}\r\n", newline="")
     (repo / "vendordeps").mkdir()
@@ -58,9 +73,11 @@ def make_repo(root: Path) -> Path:
     (repo / "logo.bin.dat").write_bytes(b"\x89PNG\x00\x00binary")
     outside = root / "outside.txt"
     outside.write_text("not the robot's\n")
-    os.symlink(outside, repo / "escape.txt")
-    os.symlink(repo / ".git" / "config", repo / "gitconfig-link")
+    if SYMLINKS:
+        os.symlink(outside, repo / "escape.txt")
+        os.symlink(repo / ".git" / "config", repo / "gitconfig-link")
     git(root, "init", "-q", "-b", "main", str(repo))
+    git(repo, "config", "core.autocrlf", "false")  # a global autocrlf=true would rewrite the CRLF fixture
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "initial")
     return repo
@@ -126,6 +143,10 @@ class LinkCase(unittest.TestCase):
     check_timeout: float = 300.0
     on_work_order: str | None = None
     claude_client: Any = None
+    # The API-key proxy unless a test says otherwise: "auto" would pick claude-code on a PC without a key,
+    # and the tests must not depend on whether this PC is logged in to Claude Code.
+    claude: str = "api"
+    agent_factory: Any = None
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="link-test-")).resolve()
@@ -133,14 +154,17 @@ class LinkCase(unittest.TestCase):
         self.state = State(self.tmp / "home").ensure()
         self.token = self.state.token()
         cfg = Config(repo=self.repo, port=0, bind="127.0.0.1", check=self.check,
-                     check_timeout=self.check_timeout, on_work_order=self.on_work_order, name="test-pc")
-        self.app = LinkApp(cfg, self.state, claude_client=self.claude_client)
+                     check_timeout=self.check_timeout, on_work_order=self.on_work_order, name="test-pc",
+                     claude=self.claude)
+        self.app = LinkApp(cfg, self.state, claude_client=self.claude_client, agent_factory=self.agent_factory)
         self.server = make_server(self.app, quiet=True)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True)
         self.thread.start()
 
     def tearDown(self) -> None:
+        if hasattr(self.app.proxy, "shutdown"):
+            self.app.proxy.shutdown()  # the claude-code backend's sessions
         self.server.shutdown()
         self.server.server_close()
         shutil.rmtree(self.tmp, ignore_errors=True)

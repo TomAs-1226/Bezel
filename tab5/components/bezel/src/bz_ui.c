@@ -1,4 +1,9 @@
 #include "bz_ui.h"
+#ifdef ESP_PLATFORM
+#include "esp_debug_helpers.h"
+#include "esp_log.h"
+#endif
+#include "bz_theme.h"
 #include "bz_tokens.h"
 #include "lvgl_private.h" /* the pending invalidations and area helpers, for bz_ui_scroll */
 
@@ -22,6 +27,8 @@ struct bz_glass {
     bool use_rect;
     float rx, ry, rw, rh;
     bool alive, solo;
+    int lite_opa;      /* calm: the solid background last given to obj (-1: none) */
+    bool lite_dark;
 };
 
 static struct {
@@ -48,6 +55,23 @@ static struct {
     /* performance */
     uint32_t lvgl_px, shift_px;
     bz_ui_perf_t perf;
+#if BZ_LEAN
+    bz_present_t lean[BZ_COMP_MAX_PRESENT]; /* this frame's dirty areas, straight from the content buffer */
+    int nlean;
+    uint16_t *snap, *ground; /* the slide's snapshot, and a screen of ground for the gap it opens */
+    uint16_t *chrome_src;    /* the screen as it was, chrome included: where the fixed chrome is shown from */
+    lv_draw_buf_t spare_db;  /* LVGL's other content buffer: at a slide's start the two swap, no copy */
+    lv_draw_buf_t *bufs[2];
+    uint16_t *bufpx[2];
+    int cur_buf;
+    uint16_t *nb;            /* the neighbouring page, drawn offscreen during the slide */
+    int nb_side;
+    bz_area_t chrome[8];     /* the top layer's visible pieces (dock, island…): they stay put while pages slide */
+    int nchrome;
+    uint32_t ground_color;
+    bool sliding;
+    int slide_dx, slide_shown;
+#endif
 } U;
 
 void bz_theme_changed(void); /* bz_theme.c */
@@ -65,7 +89,127 @@ static bz_velocity_t g_vx, g_vy;     /* the pointer's velocity, shared by every 
 
 /* ------------------------------------------------------------------ displays */
 
+/* ---- where LVGL's time goes, per display: layout (refresh start to render start), render (drawing,
+ * including the flush callbacks), flush (the callbacks alone) and the rest of lv_timer_handler ---- */
+static double prof_wall(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec + ts.tv_nsec * 1e-9;
+}
+static struct { double t_refr, t_render, layout, render, flush; } PROF[2];
+static double prof_handler;
+
+static void prof_event(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    double t = prof_wall();
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_REFR_START: PROF[i].t_refr = t; PROF[i].t_render = 0; break;
+    case LV_EVENT_RENDER_START: PROF[i].t_render = t; PROF[i].layout += t - PROF[i].t_refr; break;
+    case LV_EVENT_RENDER_READY: if (PROF[i].t_render > 0) PROF[i].render += t - PROF[i].t_render; break;
+    case LV_EVENT_REFR_READY: if (PROF[i].t_render == 0) PROF[i].layout += t - PROF[i].t_refr; break;
+    default: break;
+    }
+}
+
+/* Who asks for (nearly) the whole screen to be redrawn: a backtrace at most every 3 s, decoded with
+ * addr2line against the ELF. */
+static double s_hook_ms[16];
+static void big_inv(lv_event_t *e)
+{
+    const lv_area_t *a = lv_event_get_param(e);
+    static double last;
+    if (!a || lv_area_get_size(a) < 300000 || U.offscreen) return;
+    double t = prof_wall();
+    if (t - last < 3) return;
+    last = t;
+#ifdef ESP_PLATFORM
+    ESP_LOGW("bz_ui", "full-screen invalidate %d,%d-%d,%d", (int)a->x1, (int)a->y1, (int)a->x2, (int)a->y2);
+    esp_backtrace_print(14);
+#endif
+}
+
+void bz_ui_hooks_report(void)
+{
+#ifdef ESP_PLATFORM
+    for (int i = 0; i < U.nhooks && i < 16; i++) {
+        ESP_LOGI("bz_ui", "hook %d fn %p: %.0f ms/2s", i, (void *)U.hooks[i].fn, s_hook_ms[i]);
+        s_hook_ms[i] = 0;
+    }
+#endif
+}
+
+static void prof_attach(lv_display_t *d, int i)
+{
+    lv_display_add_event_cb(d, big_inv, LV_EVENT_INVALIDATE_AREA, NULL);
+    lv_display_add_event_cb(d, prof_event, LV_EVENT_REFR_START, (void *)(intptr_t)i);
+    lv_display_add_event_cb(d, prof_event, LV_EVENT_RENDER_START, (void *)(intptr_t)i);
+    lv_display_add_event_cb(d, prof_event, LV_EVENT_RENDER_READY, (void *)(intptr_t)i);
+    lv_display_add_event_cb(d, prof_event, LV_EVENT_REFR_READY, (void *)(intptr_t)i);
+}
+
+void bz_ui_prof_take(float out[8])
+{
+    /* ms accumulated since the last call: content layout, render, flush; glass layout, render, flush;
+     * the whole of lv_timer_handler */
+    for (int i = 0; i < 2; i++) {
+        out[i * 3 + 0] = (float)(PROF[i].layout * 1e3);
+        out[i * 3 + 1] = (float)(PROF[i].render * 1e3);
+        out[i * 3 + 2] = (float)(PROF[i].flush * 1e3);
+        PROF[i].layout = PROF[i].render = PROF[i].flush = 0;
+    }
+    out[6] = (float)(prof_handler * 1e3);
+    out[7] = 0;
+    prof_handler = 0;
+}
+
+/* Pixels of the content buffer that changed: the compositor's damage, or in lean straight onto the list
+ * of areas to present (merged into their bounding box once the list is full). */
+static void damage_content(const bz_area_t *b)
+{
+#if BZ_LEAN
+    if (U.nlean == BZ_COMP_MAX_PRESENT) {
+        bz_area_t *m = &U.lean[0].a;
+        for (int i = 1; i < U.nlean; i++) {
+            bz_area_t *o = &U.lean[i].a;
+            if (o->x1 < m->x1) m->x1 = o->x1;
+            if (o->y1 < m->y1) m->y1 = o->y1;
+            if (o->x2 > m->x2) m->x2 = o->x2;
+            if (o->y2 > m->y2) m->y2 = o->y2;
+        }
+        U.nlean = 1;
+        if (b->x1 < m->x1) m->x1 = b->x1;
+        if (b->y1 < m->y1) m->y1 = b->y1;
+        if (b->x2 > m->x2) m->x2 = b->x2;
+        if (b->y2 > m->y2) m->y2 = b->y2;
+    } else {
+        U.lean[U.nlean++].a = *b;
+    }
+#else
+    bz_comp_damage_content(U.comp, b);
+#endif
+}
+
+static void flush_glass_body(lv_display_t *d, const lv_area_t *a, uint8_t *px);
+static void split_cb(lv_event_t *e);
+static void flush_content_body(lv_display_t *d, const lv_area_t *a, uint8_t *px);
+
 static void flush_content(lv_display_t *d, const lv_area_t *a, uint8_t *px)
+{
+    double t = prof_wall();
+    flush_content_body(d, a, px);
+    PROF[0].flush += prof_wall() - t;
+}
+
+static void flush_glass(lv_display_t *d, const lv_area_t *a, uint8_t *px)
+{
+    double t = prof_wall();
+    flush_glass_body(d, a, px);
+    PROF[1].flush += prof_wall() - t;
+}
+
+static void flush_content_body(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 {
     (void)px;
     U.lvgl_px += (uint32_t)lv_area_get_size(a);
@@ -75,7 +219,7 @@ static void flush_content(lv_display_t *d, const lv_area_t *a, uint8_t *px)
             fprintf(stderr, "flush content %d,%d-%d,%d\n", (int)a->x1, (int)a->y1, (int)a->x2, (int)a->y2);
 #endif
         bz_area_t b = { (int16_t)a->x1, (int16_t)a->y1, (int16_t)a->x2, (int16_t)a->y2 };
-        bz_comp_damage_content(U.comp, &b);
+        damage_content(&b);
     }
     lv_display_flush_ready(d);
 }
@@ -90,7 +234,7 @@ static void debug_inv(lv_event_t *e)
 }
 #endif
 
-static void flush_glass(lv_display_t *d, const lv_area_t *a, uint8_t *px)
+static void flush_glass_body(lv_display_t *d, const lv_area_t *a, uint8_t *px)
 {
     (void)px;
     U.lvgl_px += (uint32_t)lv_area_get_size(a);
@@ -135,7 +279,11 @@ static void poll_touch(void)
         U.ty = y;
         U.last_touch = U.now;
         if (!U.pressed) {
+#if BZ_LEAN
+            U.owner = 1; /* one display: LVGL finds the top layer (the chrome) before the page itself */
+#else
             U.owner = clickable_at(lv_display_get_screen_active(U.disp_glass), x, y) ? 2 : 1;
+#endif
             g_press_claimed = false;
             g_claimed = NULL;
             bz_velocity_reset(&g_vx);
@@ -148,7 +296,11 @@ static void poll_touch(void)
 }
 
 lv_obj_t *bz_ui_content(void) { return lv_display_get_screen_active(U.disp_content); }
+#if BZ_LEAN
+lv_obj_t *bz_ui_glass(void) { return lv_display_get_layer_top(U.disp_content); }
+#else
 lv_obj_t *bz_ui_glass(void) { return lv_display_get_screen_active(U.disp_glass); }
+#endif
 bz_comp_t *bz_ui_comp(void) { return U.comp; }
 
 static uint32_t tick_ms(void) { return (uint32_t)(U.now * 1000.0); }
@@ -172,16 +324,62 @@ void bz_ui_init(const bz_ui_config_t *cfg)
     lv_display_set_buffers(U.disp_content, cfg->content, NULL, (uint32_t)(cfg->w * cfg->h * 2),
                            LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_flush_cb(U.disp_content, flush_content);
+    lv_display_add_event_cb(U.disp_content, split_cb, LV_EVENT_ALL, NULL);
     U.own_buf = lv_display_get_buf_active(U.disp_content);
 #ifndef ESP_PLATFORM
     if (getenv("SIM_DEBUG_FLUSH")) lv_display_add_event_cb(U.disp_content, debug_inv, LV_EVENT_INVALIDATE_AREA, NULL);
 #endif
 
+#if BZ_LEAN
+    prof_attach(U.disp_content, 0);
+    lv_obj_remove_flag(lv_display_get_screen_active(U.disp_content), LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *top = lv_display_get_layer_top(U.disp_content);
+    lv_obj_remove_flag(top, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(top, LV_OBJ_FLAG_SCROLLABLE);
+    U.in_content = lv_indev_create();
+    lv_indev_set_type(U.in_content, LV_INDEV_TYPE_POINTER);
+    lv_indev_set_read_cb(U.in_content, read_content);
+    lv_indev_set_display(U.in_content, U.disp_content);
+    lv_indev_set_mode(U.in_content, LV_INDEV_MODE_EVENT);
+    U.calm = true;
+    bz_motion_set_calm(true);
+    bz_motion_set_instant(true);
+    /* the slide's pictures up front: a first swipe mustn't wait on allocating 7 MB */
+    {
+        size_t px = (size_t)cfg->w * cfg->h * 2;
+        uint16_t *spare = aligned_alloc(128, px);
+        uint32_t stride_b = (uint32_t)cfg->w * 2;
+        if (spare) lv_draw_buf_init(&U.spare_db, (uint32_t)cfg->w, (uint32_t)cfg->h, LV_COLOR_FORMAT_RGB565, stride_b,
+                                    spare, (uint32_t)px);
+        U.bufs[0] = U.own_buf;
+        U.bufpx[0] = cfg->content;
+        U.bufs[1] = spare ? &U.spare_db : NULL;
+        U.bufpx[1] = spare;
+        U.snap = aligned_alloc(128, px);
+        U.ground = aligned_alloc(128, px);
+        if (U.ground) {
+            /* the gap a slide opens, in the dark ground (re-filled if the tone changes) */
+            uint32_t g = bz_color(BZ_C_GROUND);
+            uint16_t c = (uint16_t)(((g >> 19) & 31) << 11 | ((g >> 10) & 63) << 5 | ((g >> 3) & 31));
+            for (size_t i = 0; i < px / 2; i++) U.ground[i] = c;
+            U.ground_color = g;
+        }
+        U.chrome_src = aligned_alloc(128, px);
+        U.nb = aligned_alloc(128, px);
+    }
+    bz_motion_init(&U.lx, -0.42f, 0.002f);
+    bz_motion_init(&U.ly, -0.91f, 0.002f);
+    lv_display_set_default(U.disp_content);
+    return;
+#endif
     U.disp_glass = lv_display_create(cfg->w, cfg->h);
     lv_display_set_color_format(U.disp_glass, LV_COLOR_FORMAT_ARGB8888);
     lv_display_set_buffers(U.disp_glass, cfg->ink, NULL, (uint32_t)(cfg->w * cfg->h * 4),
                            LV_DISPLAY_RENDER_MODE_DIRECT);
     lv_display_set_flush_cb(U.disp_glass, flush_glass);
+    prof_attach(U.disp_content, 0);
+    prof_attach(U.disp_glass, 1);
+    lv_display_add_event_cb(U.disp_glass, split_cb, LV_EVENT_ALL, NULL);
     memset(cfg->ink, 0, (size_t)cfg->w * cfg->h * 4);
 
     lv_obj_t *gs = lv_display_get_screen_active(U.disp_glass);
@@ -240,6 +438,7 @@ bz_glass_t *bz_glass_attach(lv_obj_t *obj, uint8_t group, float radius)
         g->radius = radius;
         g->press_scale = BZ_GLASS_PRESS_SCALE;
         g->tint = -1;
+        g->lite_opa = -1;
         bz_motion_init(&g->strength, 0, 0.002f);
         bz_motion_init(&g->press, 0, 0.002f);
         bz_motion_init(&g->scale, 1, 0.0005f);
@@ -307,6 +506,25 @@ static bool update_glass(void)
         moving |= bz_motion_tick(&g->press);
         moving |= bz_motion_tick(&g->scale);
         moving |= bz_motion_tick(&g->tint_amt);
+        /* Calm is also the fast path: no glass pass at all. The shape becomes an ordinary LVGL rounded
+         * surface on the glass layer, which the compositor only blends like any other ink; strength
+         * drives its opacity (in 16 steps, so a fade doesn't restyle every frame). */
+        if (U.calm) {
+            float st = g->strength.value < 0 ? 0 : g->strength.value > 1 ? 1 : g->strength.value;
+            int opa = (int)(st * 16 + 0.5f) * 255 / 16;
+            if (opa != g->lite_opa || g->lite_dark != U.dark) {
+                g->lite_opa = opa;
+                g->lite_dark = U.dark;
+                lv_obj_set_style_bg_color(g->obj, bz_lv(BZ_C_SURFACE2), 0);
+                lv_obj_set_style_bg_opa(g->obj, (lv_opa_t)opa, 0);
+                lv_obj_set_style_radius(g->obj, (int32_t)g->radius, 0);
+            }
+            continue;
+        }
+        if (g->lite_opa >= 0) {
+            g->lite_opa = -1;
+            lv_obj_set_style_bg_opa(g->obj, LV_OPA_TRANSP, 0);
+        }
         if (g->strength.value < 0.002f || !visible(g->obj)) continue;
         bz_glass_shape_t *s = &shapes[n++];
         if (g->use_rect) {
@@ -348,6 +566,7 @@ void bz_ui_keep_alive(void) { U.keep_alive = true; }
 double bz_ui_idle_s(void) { return U.now - U.last_touch; }
 void bz_ui_wake(void) { U.last_touch = U.now; }
 
+double bz_ui_clock(void);
 static double wall(void)
 {
     struct timespec ts;
@@ -421,6 +640,33 @@ static void thaw_finish(void)
 bool bz_ui_thawing(void) { return U.thaw >= 0; }
 void bz_ui_thaw_cancel(void) { U.thaw = -1; }
 
+/* Where LVGL's time goes, summed since the last bz_ui_split(): hooks before it, refresh (layout plus
+ * render) per display, and the render alone. lv_timer_handler minus refresh is LVGL's own timers and
+ * animations. */
+static struct { double hooks, lvgl, refr, render, t_refr, t_render; int frames; } SP;
+
+static void split_cb(lv_event_t *e)
+{
+    double t = wall();
+    switch (lv_event_get_code(e)) {
+    case LV_EVENT_REFR_START: SP.t_refr = t; break;
+    case LV_EVENT_RENDER_START: SP.t_render = t; break;
+    case LV_EVENT_RENDER_READY: if (SP.t_render > 0) SP.render += t - SP.t_render; SP.t_render = 0; break;
+    case LV_EVENT_REFR_READY: if (SP.t_refr > 0) SP.refr += t - SP.t_refr; SP.t_refr = 0; break;
+    default: break;
+    }
+}
+
+void bz_ui_split(float *hooks_ms, float *lvgl_ms, float *refr_ms, float *render_ms)
+{
+    int n = SP.frames > 0 ? SP.frames : 1;
+    *hooks_ms = (float)(SP.hooks * 1000 / n);
+    *lvgl_ms = (float)(SP.lvgl * 1000 / n);
+    *refr_ms = (float)(SP.refr * 1000 / n);
+    *render_ms = (float)(SP.render * 1000 / n);
+    memset(&SP, 0, sizeof SP);
+}
+
 bool bz_ui_frame(double now_s)
 {
     double dt = U.last > 0 ? now_s - U.last : 0.016;
@@ -428,33 +674,87 @@ bool bz_ui_frame(double now_s)
     bz_motion_clock(now_s);
     U.keep_alive = false;
     U.lvgl_px = U.shift_px = 0;
+#if BZ_LEAN
+    U.nlean = 0; /* before the hooks and touch: a list scroll records its move here */
+#endif
     double t0 = wall();
 
     poll_touch();
     lv_indev_read(U.in_content);
-    lv_indev_read(U.in_glass);
+    if (U.in_glass) lv_indev_read(U.in_glass);
 
-    for (int i = 0; i < U.nhooks; i++) U.hooks[i].fn(now_s, dt, U.hooks[i].user);
+    for (int i = 0; i < U.nhooks; i++) {
+        double th = prof_wall();
+        U.hooks[i].fn(now_s, dt, U.hooks[i].user);
+        if (i < 16) s_hook_ms[i] += (prof_wall() - th) * 1e3;
+    }
 
+#if BZ_LEAN
+    bool moving = false;
+#else
     bool moving = bz_motion_tick(&U.lx) | bz_motion_tick(&U.ly);
     bz_comp_set_light(U.comp, U.lx.value, U.ly.value);
+#endif
 
     thaw_step();
 
     double t1 = wall();
     lv_timer_handler();
     double t2 = wall();
+    prof_handler += t2 - t1;
+    SP.hooks += t1 - t0;
+    SP.lvgl += t2 - t1;
+    SP.frames++;
     moving |= update_glass();
 
+#if BZ_LEAN
+    if (U.sliding) {
+        /* LVGL's drawing waits: what it drew goes on screen, whole, when the slide ends */
+        U.nlean = 0;
+        if (U.slide_dx != U.slide_shown) {
+            int W = U.cfg.w, H = U.cfg.h, d = U.slide_dx;
+            if (d > W) d = W;
+            if (d < -W) d = -W;
+            U.slide_shown = U.slide_dx;
+            bz_present_t *o = U.lean;
+            /* the gap shows the neighbour where it has been drawn, else ground */
+            if (d >= 0) {
+                if (d < W) o[U.nlean++] = (bz_present_t){ { (int16_t)d, 0, (int16_t)(W - 1), (int16_t)(H - 1) }, U.snap, W };
+                const uint16_t *gap = U.nb_side < 0 ? U.nb + (W - d) : U.ground;
+                if (d > 0) o[U.nlean++] = (bz_present_t){ { 0, 0, (int16_t)(d - 1), (int16_t)(H - 1) }, gap, W };
+            } else {
+                o[U.nlean++] = (bz_present_t){ { 0, 0, (int16_t)(W - 1 + d), (int16_t)(H - 1) }, U.snap - d, W };
+                const uint16_t *gap = U.nb_side > 0 ? U.nb : U.ground + W + d;
+                o[U.nlean++] = (bz_present_t){ { (int16_t)(W + d), 0, (int16_t)(W - 1), (int16_t)(H - 1) }, gap, W };
+            }
+            /* the chrome over it, unshifted, from the snapshot: presented last, it lands on top */
+            for (int i = 0; i < U.nchrome && U.nlean < BZ_COMP_MAX_PRESENT; i++) {
+                bz_area_t c = U.chrome[i];
+                o[U.nlean++] = (bz_present_t){ c, U.chrome_src + (size_t)c.y1 * W + c.x1, W };
+            }
+        }
+    } else {
+        for (int i = 0; i < U.nlean; i++) {
+            bz_area_t *a = &U.lean[i].a;
+            U.lean[i].src = U.cfg.content + (size_t)a->y1 * U.cfg.w + a->x1;
+            U.lean[i].stride = U.cfg.w;
+        }
+    }
+    bz_present_t *areas = U.lean;
+    int n = U.nlean;
+#else
     bz_present_t areas[BZ_COMP_MAX_PRESENT];
     int n = bz_comp_compose(U.comp, areas, BZ_COMP_MAX_PRESENT);
+#endif
     double t3 = wall();
     if (n && U.cfg.present) U.cfg.present(areas, n, U.cfg.user);
     double t4 = wall();
 
     if (n) {
         bz_ui_perf_t *p = &U.perf;
+#if !BZ_LEAN
         bz_comp_stats(U.comp, &p->comp);
+#endif
         p->lvgl_px = U.lvgl_px;
         static double last_present;
         if (last_present > 0 && now_s > last_present) p->fps = ema(p->fps, (float)(1.0 / (now_s - last_present)));
@@ -471,6 +771,161 @@ bool bz_ui_frame(double now_s)
 }
 
 void bz_ui_perf(bz_ui_perf_t *out) { *out = U.perf; }
+double bz_ui_clock(void) { return wall(); }
+
+#if BZ_LEAN
+/* The top layer's pieces hidden while a slide picture of the page alone is drawn, then put back. */
+static void chrome_hide(bool before, void *u)
+{
+    (void)u;
+    static uint32_t shown;
+    lv_obj_t *top = lv_display_get_layer_top(U.disp_content);
+    uint32_t nc = lv_obj_get_child_count(top);
+    if (before) shown = 0;
+    for (uint32_t k = 0; k < nc && k < 32; k++) {
+        lv_obj_t *c = lv_obj_get_child(top, (int32_t)k);
+        if (before) {
+            if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+            shown |= 1u << k;
+            lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+        } else if (shown & (1u << k)) {
+            lv_obj_remove_flag(c, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+#endif
+
+void bz_ui_slide_begin(void)
+{
+#if BZ_LEAN
+    double tb = wall();
+    size_t px = (size_t)U.cfg.w * U.cfg.h;
+    if (!U.snap) U.snap = aligned_alloc(128, px * 2);
+    if (!U.ground) U.ground = aligned_alloc(128, px * 2);
+    if (!U.chrome_src) U.chrome_src = aligned_alloc(128, px * 2);
+    if (!U.snap || !U.ground || !U.chrome_src) return;
+    uint32_t g = bz_color(BZ_C_GROUND);
+    if (g != U.ground_color || !U.sliding) {
+        uint16_t c = (uint16_t)(((g >> 19) & 31) << 11 | ((g >> 10) & 63) << 5 | ((g >> 3) & 31));
+        if (g != U.ground_color) for (size_t i = 0; i < px; i++) U.ground[i] = c;
+        U.ground_color = g;
+    }
+    /* what's on screen now: LVGL's buffer, complete once it has drawn what's pending */
+    double tg = wall();
+    lv_refr_now(U.disp_content);
+    double tr = wall();
+    /* the picture LVGL just finished becomes the slide's snapshot; LVGL carries on in the other buffer
+     * (it redraws everything when the slide ends, so what that buffer holds doesn't matter) */
+    if (U.bufs[1]) {
+        U.snap = U.bufpx[U.cur_buf];
+        U.cur_buf ^= 1;
+        U.cfg.content = U.bufpx[U.cur_buf];
+        U.own_buf = U.bufs[U.cur_buf];
+        lv_display_set_draw_buffers(U.disp_content, U.own_buf, NULL);
+    } else if (U.cfg.ops && U.cfg.ops->copy565) {
+        U.cfg.ops->copy565(U.snap, U.cfg.w, U.cfg.content, U.cfg.w, U.cfg.w, U.cfg.h);
+    } else {
+        memcpy(U.snap, U.cfg.content, px * 2);
+    }
+    double tc = wall();
+    U.slide_dx = U.slide_shown = 0;
+    U.nb_side = 0;
+    U.nchrome = 0;
+    lv_obj_t *top = lv_display_get_layer_top(U.disp_content);
+    uint32_t nc = lv_obj_get_child_count(top);
+    for (uint32_t i = 0; i < nc && U.nchrome < 8; i++) {
+        lv_obj_t *c = lv_obj_get_child(top, (int32_t)i);
+        if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+        lv_area_t a;
+        lv_obj_get_coords(c, &a);
+        if (a.x1 < 0) a.x1 = 0;
+        if (a.y1 < 0) a.y1 = 0;
+        if (a.x2 > U.cfg.w - 1) a.x2 = U.cfg.w - 1;
+        if (a.y2 > U.cfg.h - 1) a.y2 = U.cfg.h - 1;
+        if (a.x2 < a.x1 || a.y2 < a.y1) continue;
+        U.chrome[U.nchrome++] = (bz_area_t){ (int16_t)a.x1, (int16_t)a.y1, (int16_t)a.x2, (int16_t)a.y2 };
+    }
+    /* the snapshot is the page alone: under each piece of chrome, the page is drawn again without it (small
+     * areas, a few ms), so the page slides clean under the chrome that stays put */
+    /* the chrome as it is, from the snapshot, before the page under it is drawn in there */
+    for (int i = 0; i < U.nchrome; i++) {
+        bz_area_t c = U.chrome[i];
+        size_t n = (size_t)(c.x2 - c.x1 + 1) * 2;
+        for (int y = c.y1; y <= c.y2; y++)
+            memcpy(U.chrome_src + (size_t)y * U.cfg.w + c.x1, U.snap + (size_t)y * U.cfg.w + c.x1, n);
+    }
+    /* all of them in one refresh: one layout pass, not one per piece (six of those cost ~100 ms) */
+    if (U.nchrome) {
+        lv_display_t *d = U.disp_content;
+        lv_obj_t *scr = lv_display_get_screen_active(d);
+        lv_display_enable_invalidation(d, false);
+        chrome_hide(true, NULL);
+        lv_obj_update_layout(scr);
+        static lv_draw_buf_t db;
+        uint32_t stride_b = (uint32_t)U.cfg.w * 2;
+        lv_draw_buf_init(&db, (uint32_t)U.cfg.w, (uint32_t)U.cfg.h, LV_COLOR_FORMAT_RGB565, stride_b, U.snap,
+                         stride_b * (uint32_t)U.cfg.h);
+        lv_display_set_draw_buffers(d, &db, NULL);
+        U.offscreen = true;
+        lv_display_enable_invalidation(d, true);
+        for (int i = 0; i < U.nchrome; i++) {
+            bz_area_t c = U.chrome[i];
+            lv_area_t a = { c.x1, c.y1, c.x2, c.y2 };
+            lv_obj_invalidate_area(scr, &a);
+        }
+        lv_refr_now(d);
+        lv_display_enable_invalidation(d, false);
+        U.offscreen = false;
+        lv_display_set_draw_buffers(d, U.own_buf, NULL);
+        chrome_hide(false, NULL);
+        lv_obj_update_layout(scr);
+        lv_display_enable_invalidation(d, true);
+    }
+    U.sliding = true;
+    printf("slide begin: %.1f ms (ground %.1f, pending %.1f, copies %.1f, chrome %.1f), %d pieces\n",
+           (wall() - tb) * 1000, (tg - tb) * 1000, (tr - tg) * 1000, (tc - tr) * 1000, (wall() - tc) * 1000, U.nchrome);
+#endif
+}
+
+uint16_t *bz_ui_slide_nb_buf(void)
+{
+#if BZ_LEAN
+    if (!U.nb) U.nb = aligned_alloc(128, (size_t)U.cfg.w * U.cfg.h * 2);
+    return U.nb;
+#else
+    return NULL;
+#endif
+}
+
+void bz_ui_slide_nb(int side)
+{
+#if BZ_LEAN
+    if (side == U.nb_side) return;
+    U.nb_side = side;
+    U.slide_shown = 0x7fffffff; /* show it (or take it away) next frame even if the finger is still */
+#else
+    (void)side;
+#endif
+}
+
+void bz_ui_slide(int dx)
+{
+#if BZ_LEAN
+    if (U.sliding) U.slide_dx = dx;
+#else
+    (void)dx;
+#endif
+}
+
+void bz_ui_slide_end(void)
+{
+#if BZ_LEAN
+    if (!U.sliding) return;
+    U.sliding = false;
+    lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
+    lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
+#endif
+}
 
 /* ------------------------------------------------------------------ motion caches */
 
@@ -614,7 +1069,7 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
         for (int r = a.y2; r >= a.y1 + dy; r--) memcpy(px + r * W, px + (r - dy) * W, row);
     U.shift_px += (uint32_t)(w * (h - abs(dy)));
     bz_area_t b = { (int16_t)a.x1, (int16_t)a.y1, (int16_t)a.x2, (int16_t)a.y2 };
-    bz_comp_damage_content(U.comp, &b);
+    damage_content(&b);
     /* LVGL draws only the strip that scrolled into view */
     lv_area_t band = a;
     if (dy < 0) band.y1 = a.y2 + dy + 1;
@@ -625,6 +1080,9 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
 
 void bz_ui_set_mode(bool dark, bool calm)
 {
+#if BZ_LEAN
+    calm = true; /* no glass to draw: the shapes are always solid */
+#endif
     bool changed = dark != U.dark || calm != U.calm;
     U.dark = dark;
     U.calm = calm;
@@ -708,7 +1166,7 @@ static void drag_event(lv_event_t *e)
 
 void bz_drag_attach(lv_obj_t *obj, const bz_drag_t *d)
 {
-    drag_state_t *s = calloc(1, sizeof *s);
+    drag_state_t *s = lv_malloc_zeroed(sizeof *s); /* per widget: PSRAM, not internal RAM */
     if (!s) return;
     s->d = *d;
     lv_obj_add_flag(obj, LV_OBJ_FLAG_CLICKABLE);
@@ -721,6 +1179,9 @@ typedef struct {
     void *user;
 } tap_t;
 
+static void (*s_on_any_tap)(void);
+void bz_ui_on_any_tap(void (*fn)(void)) { s_on_any_tap = fn; }
+
 static void tap_event(lv_event_t *e)
 {
     tap_t *t = lv_event_get_user_data(e);
@@ -729,12 +1190,13 @@ static void tap_event(lv_event_t *e)
         return;
     }
     if (g_press_claimed) return; /* a drag's release is not a tap */
+    if (s_on_any_tap) s_on_any_tap();
     t->cb(lv_event_get_current_target(e), t->user);
 }
 
 void bz_on_tap(lv_obj_t *obj, bz_tap_fn cb, void *user)
 {
-    tap_t *t = malloc(sizeof *t);
+    tap_t *t = lv_malloc(sizeof *t); /* per widget: PSRAM, not internal RAM */
     if (!t) return;
     t->cb = cb;
     t->user = user;

@@ -296,6 +296,7 @@ static void poll_status(void)
         /* without a good token the Link answers only its name, with auth false */
         L.st.auth = aj_is(aj_get(d, "auth"), AJ_TRUE);
         L.st.claude = aj_is(aj_get(d, "claude"), AJ_TRUE) && L.st.auth;
+        copy_str(L.st.claude_via, sizeof L.st.claude_via, d, "claude_via");
         copy_str(L.st.name, sizeof L.st.name, d, "name");
         copy_str(L.st.repo, sizeof L.st.repo, d, "repo");
         copy_str(L.st.branch, sizeof L.st.branch, d, "branch");
@@ -426,6 +427,7 @@ void link_configure(const char *url, const char *token)
     L.st.reachable = false;
     L.st.auth = false;
     L.st.claude = false;
+    L.st.claude_via[0] = 0;
     L.st.last_ok = 0;
     pthread_mutex_unlock(&L.lock);
     L.kick = true;

@@ -130,6 +130,18 @@ struct ui_boot {
     int seen_gen;
     line_t status_draw, status_old;
     bz_area_t prev, cur;
+    bool baked; /* the settled mark and text are in bg: only what still moves is drawn each frame */
+    /* the route rasterised once, whole, per pass (haze, glow, stroke): its coverage and where along it
+     * each pixel is; a frame blends the part up to the head, with no geometry */
+    uint8_t *rcov[3], *rpos[3];
+    bz_area_t rbox[3];
+    /* the same, as a list of the route's pixels in order along it: a frame walks the prefix up to the
+     * head and touches nothing else */
+    uint32_t *ridx[3];
+    uint8_t *rc[3], *ru[3];
+    int rn[3], rstart[3][257];
+    bool route_ready;
+    bool done[9];  /* pieces of the card settled into bg */
 };
 
 /* ------------------------------------------------------------------ colour */
@@ -532,12 +544,110 @@ static void route_paint(float u, rgb_t *c, float *a)
     }
 }
 
+static const float ROUTE_W[3] = { 14, 6, 3.2f }; /* the banner's wide haze, the tight glow, the stroke */
+#define ROUTE_N 90
+
+/* Once: each pass of the whole route into its own coverage map. */
+static void route_prepare(ui_boot_t *b)
+{
+    size_t n = (size_t)b->w * b->h;
+    for (int pass = 0; pass < 3; pass++) {
+        b->rcov[pass] = calloc(n, 1); /* large: malloc places it in PSRAM */
+        b->rpos[pass] = malloc(n);
+        if (!b->rcov[pass] || !b->rpos[pass]) return;
+        float px, py;
+        route_at(0, &px, &py);
+        for (int i = 1; i <= ROUTE_N; i++) {
+            float x, y;
+            route_at(i / (float)ROUTE_N, &x, &y);
+            stroke_piece(b, px, py, x, y, ROUTE_W[pass], (i - 1) / (float)ROUTE_N, i / (float)ROUTE_N);
+            px = x;
+            py = y;
+        }
+        bz_area_t s = b->sbox;
+        b->rbox[pass] = s;
+        for (int y = s.y1; y <= s.y2; y++) {
+            size_t o = (size_t)y * b->w + s.x1, len = (size_t)(s.x2 - s.x1 + 1);
+            memcpy(b->rcov[pass] + o, b->cov + o, len);
+            memcpy(b->rpos[pass] + o, b->pos + o, len);
+            memset(b->cov + o, 0, len);
+        }
+        b->sbox = (bz_area_t){ 1, 1, 0, 0 };
+        /* the pixels it covers, bucketed by position along the line (a counting sort on u) */
+        int cnt[256] = { 0 }, total = 0;
+        for (int y = s.y1; y <= s.y2; y++)
+            for (int x = s.x1; x <= s.x2; x++) {
+                size_t o = (size_t)y * b->w + x;
+                if (b->rcov[pass][o]) { cnt[b->rpos[pass][o]]++; total++; }
+            }
+        b->ridx[pass] = malloc((size_t)total * 4);
+        b->rc[pass] = malloc((size_t)total);
+        b->ru[pass] = malloc((size_t)total);
+        if (!b->ridx[pass] || !b->rc[pass] || !b->ru[pass]) return;
+        int at = 0;
+        for (int u = 0; u < 256; u++) { b->rstart[pass][u] = at; at += cnt[u]; cnt[u] = b->rstart[pass][u]; }
+        b->rstart[pass][256] = at;
+        for (int y = s.y1; y <= s.y2; y++)
+            for (int x = s.x1; x <= s.x2; x++) {
+                size_t o = (size_t)y * b->w + x;
+                uint8_t c = b->rcov[pass][o];
+                if (!c) continue;
+                int k = cnt[b->rpos[pass][o]]++;
+                b->ridx[pass][k] = (uint32_t)o;
+                b->rc[pass][k] = c;
+                b->ru[pass][k] = b->rpos[pass][o];
+            }
+        b->rn[pass] = total;
+        free(b->rcov[pass]);
+        free(b->rpos[pass]);
+        b->rcov[pass] = b->rpos[pass] = NULL;
+    }
+    b->route_ready = true;
+}
+
 static void route(ui_boot_t *b, float head, float pulse)
 {
-    const int N = 90;
+    const int N = ROUTE_N;
     float px = 0, py = 0;
-    /* the banner's wide haze, the tight glow on the line (where the telemetry pulse shows), the stroke */
-    static const float W[3] = { 14, 6, 3.2f }, G[3] = { 0.06f, 0.14f, 1 }, PG[3] = { 0, 0.35f, 0 };
+    static const float *W = ROUTE_W, G[3] = { 0.06f, 0.14f, 1 }, PG[3] = { 0, 0.35f, 0 };
+    if (b->route_ready) {
+        /* the colour along the line and the pulse's brightening, as tables of u (0..255) */
+        static rgb_t lc[256];
+        static float la[256], pul[256];
+        static bool tables;
+        if (!tables) {
+            tables = true;
+            for (int i = 0; i < 256; i++) {
+                route_paint(i / 255.0f, &lc[i], &la[i]);
+                float d = i / 255.0f;
+                pul[i] = expf(-d * d / 0.003f);
+            }
+        }
+        int hu = (int)(head * 255);
+        float hx, hy;
+        route_at(head, &hx, &hy);
+        for (int pass = 0; pass < 3; pass++) {
+            bz_area_t s = b->rbox[pass];
+            if (s.x1 > s.x2 || head <= 0) continue;
+            /* the route runs left to right: nothing past the head's x (and a stroke's half width) */
+            int x2 = (int)(hx + W[pass]) + 2;
+            if (x2 > s.x2) x2 = s.x2;
+            if (x2 < s.x1) continue;
+            touch(b, s.x1, s.y1, x2, s.y2);
+            int pu = pulse >= 0 ? (int)(pulse * 255) : -1;
+            int end = b->rstart[pass][hu < 255 ? hu + 1 : 256];
+            const uint32_t *ix = b->ridx[pass];
+            const uint8_t *cv = b->rc[pass], *uv = b->ru[pass];
+            for (int k = 0; k < end; k++) {
+                int u = uv[k], x = (int)(ix[k] % (uint32_t)b->w), y = (int)(ix[k] / (uint32_t)b->w);
+                float g = G[pass];
+                if (pu >= 0 && PG[pass] > 0) g += PG[pass] * pul[u > pu ? u - pu : pu - u];
+                blend(&b->buf[ix[k]], x, y, lc[u], la[u] * g * cv[k] / 255.0f, pass < 2);
+            }
+        }
+        px = hx;
+        py = hy;
+    } else
     for (int pass = 0; pass < 3; pass++) {
         route_at(0, &px, &py);
         for (int i = 1; i <= N; i++) {
@@ -649,6 +759,7 @@ ui_boot_t *ui_boot_create(uint16_t *buf, int w, int h, const hal_boot_t *prev, b
         b->has_note = true;
     }
     ground(b);
+    route_prepare(b);
     return b;
 }
 
@@ -689,6 +800,13 @@ void ui_boot_destroy(ui_boot_t *b)
     free(b->bg);
     free(b->cov);
     free(b->pos);
+    for (int p = 0; p < 3; p++) {
+        free(b->rcov[p]);
+        free(b->rpos[p]);
+        free(b->ridx[p]);
+        free(b->rc[p]);
+        free(b->ru[p]);
+    }
     free(b);
 }
 
@@ -697,6 +815,21 @@ static void restore(ui_boot_t *b, const bz_area_t *a)
     if (a->x1 > a->x2) return;
     size_t n = (size_t)(a->x2 - a->x1 + 1) * 2;
     for (int y = a->y1; y <= a->y2; y++) memcpy(b->buf + (size_t)y * b->w + a->x1, b->bg + (size_t)y * b->w + a->x1, n);
+}
+
+/* A piece has been drawn into buf (its box in b->cur); the frame's box grows by it, and a settled piece
+ * goes into the background for good: its pixels in buf are exactly background plus it, since the frame
+ * started from a restored background and pieces are drawn in order. */
+static void elem_end(ui_boot_t *b, bz_area_t saved, int k, bool settled)
+{
+    bz_area_t e = b->cur;
+    b->cur = saved;
+    if (e.x1 <= e.x2) touch(b, e.x1, e.y1, e.x2, e.y2);
+    if (!settled) return;
+    b->done[k] = true;
+    if (e.x1 > e.x2) return;
+    size_t n = (size_t)(e.x2 - e.x1 + 1) * 2;
+    for (int y = e.y1; y <= e.y2; y++) memcpy(b->bg + (size_t)y * b->w + e.x1, b->buf + (size_t)y * b->w + e.x1, n);
 }
 
 bool ui_boot_frame(ui_boot_t *b, double t, bz_area_t *damage)
@@ -723,7 +856,18 @@ bool ui_boot_frame(ui_boot_t *b, double t, bz_area_t *damage)
     restore(b, &b->prev);
     b->cur = (bz_area_t){ 1, 1, 0, 0 };
 
+    /* Everything above the line settles by ~2 s. Until then it's drawn each frame; on the first frame
+     * after, it's drawn once more at rest and copied into the background, and never drawn again — each
+     * frame then costs only the line, the tablet and the status caption. */
+    bool draw_static = !b->baked;
+    bool bake_now = draw_static && T > 2.3f;
+    float lit = smooth((arrive - 0.4f) * 2.5f);
+    /* Each piece, once its own animation has finished, is copied into the background and never drawn
+     * again (ELEM_END with `settled`): the card costs less every few hundred ms, not only after 2 s. */
+#define ELEM_BEGIN(k) if (!b->done[k]) { bz_area_t sv_ = b->cur; b->cur = (bz_area_t){ 1, 1, 0, 0 };
+#define ELEM_END(k, settled) elem_end(b, sv_, k, settled); }
     /* ---- the mark: the bolt strikes, drawn top to bottom, with a flash that settles */
+    ELEM_BEGIN(0)
     static const float BOLT[6][2] = { { 13.5f, 2 }, { 5, 13 }, { 10, 13 }, { 8.5f, 22 }, { 19, 10 }, { 13.5f, 10 } };
     float bpts[12], bx = TX(76), by = TY(84), bs = 2.5f * S;
     for (int i = 0; i < 6; i++) {
@@ -734,55 +878,82 @@ bool ui_boot_frame(ui_boot_t *b, double t, bz_area_t *damage)
     float flash = strike * expf(-fmaxf(T - 0.28f, 0) / 0.25f);
     glow(b, bx + 12 * bs, by + 12 * bs, 22, rgb(C_CRIMSON), 0.35f * flash);
     polygon(b, bpts, 6, rgb(C_CRIMSON), 1, strike);
+    ELEM_END(0, T > 1.6f)
 
     /* ---- the wordmark: "Catalyst" light grey, "Tab" bold white, rising letter by letter */
     float wx = TX(138), wb = TY(124);
     glyph_fx_t fx[MAXGLYPHS];
+    ELEM_BEGIN(1)
     for (int i = 0; i < b->word1.n; i++) {
         float st = T - (0.28f + 0.035f * i);
         fx[i].dy = 16 * (1 - RELEASE(st));
         fx[i].a = clamp01(st * 4);
     }
     text(b, b->buf, &b->word1, wx, wb, rgb(C_WORD_LIGHT), 1, fx, 1);
+    ELEM_END(1, T > 0.28f + 0.035f * b->word1.n + 0.9f)
+    ELEM_BEGIN(2)
     for (int i = 0; i < b->word2.n; i++) {
         float st = T - (0.62f + 0.05f * i);
         fx[i].dy = 16 * (1 - RELEASE(st));
         fx[i].a = clamp01(st * 4);
     }
     text(b, b->buf, &b->word2, wx + b->word1.width + 20, wb, rgb(C_WHITE), 1, fx, 1);
+    ELEM_END(2, T > 0.62f + 0.05f * b->word2.n + 0.9f)
 
     /* ---- the hairline draws out under it */
+    ELEM_BEGIN(3)
     float hair = SMOOTH((T - 0.8f) * 1.1f);
     if (hair > 0.004f) {
         float hx = TX(140), hy = TY(146) + 1, hw = 300 * S * hair;
         capsule(b, hx, hy, hx + hw, hy, 1.8f, rgb(C_CRIMSON), rgb(C_CRIMSON), 0.85f, 0.85f * (1 - hair), false);
     }
+    ELEM_END(3, hair >= 1)
 
     /* ---- tagline, the line under it, the pill and its caption */
+    ELEM_BEGIN(4)
     float tg = SMOOTH((T - 0.95f) * 1.3f);
     text(b, b->buf, &b->tag, TX(139), TY(184) + 10 * (1 - tg), rgb(C_TAGLINE), tg, NULL, 1);
+    ELEM_END(4, tg >= 1)
+    ELEM_BEGIN(5)
     float sp = SMOOTH((T - 1.08f) * 1.3f);
     text(b, b->buf, &b->spec, TX(140), TY(212) + 10 * (1 - sp), rgb(C_SPEC), sp, NULL, 1);
+    ELEM_END(5, sp >= 1)
+    ELEM_BEGIN(6)
     float pl = SMOOTH((T - 1.2f) * 1.3f);
     if (pl > 0.004f) {
         float px = TX(140), py = TY(240) + 8 * (1 - pl), pw = 33 * S + b->ver.width + 16, ph = 30 * S;
         rrect_t pill = { px + pw / 2, py + ph / 2, pw, ph, ph / 2, 0 };
         rrect(b, &pill, rgb(C_CRIMSON), 0.14f * pl, 0, 0);
         rrect(b, &pill, rgb(C_CRIMSON), 0.6f * pl, 1.2f, 0);
+        text(b, b->buf, &b->ver, px + 33 * S, py + ph / 2 + 6, rgb(C_PILL_TXT), pl, NULL, 1);
+    }
+    ELEM_END(6, pl >= 1)
+    ELEM_BEGIN(7)
+    float na = SMOOTH((T - 1.3f) * 1.3f);
+    if (b->has_note) {
+        text(b, b->buf, &b->note, TX(140), TY(304), rgb(BZ_PAL_DARK.warn), na, NULL, 1);
+        text(b, b->buf, &b->detail, TX(140), TY(304) + 20, rgb(C_SPEC), na, NULL, 1);
+    }
+    ELEM_END(7, na >= 1)
+    ELEM_BEGIN(8)
+    tablet(b, (T - 0.45f) * 1.4f, 0);
+    ELEM_END(8, (T - 0.45f) * 1.4f >= 1.2f)
+#undef ELEM_BEGIN
+#undef ELEM_END
+    if (bake_now) b->baked = true;
+    {
+    float pl = SMOOTH((T - 1.2f) * 1.3f);
+    if (pl > 0.004f) {
+        float px = TX(140), py = TY(240) + 8 * (1 - pl), pw = 33 * S + b->ver.width + 16, ph = 30 * S;
         /* the dot breathes while the tablet is still starting */
         float breathe = arrive > 0 ? 1 : 0.6f + 0.4f * cosf(TAU * T / 1.3f);
         disc(b, px + 19 * S, py + ph / 2, 4 * S, rgb(C_LINE_HI), pl * breathe);
-        text(b, b->buf, &b->ver, px + 33 * S, py + ph / 2 + 6, rgb(C_PILL_TXT), pl, NULL, 1);
         /* the caption says what it's doing, crossfading as it changes */
         float cx = px + pw + 18, cy = py + ph / 2 + 5;
         float na = clamp01((float)(t - b->status_t) * 6);
         text(b, b->buf, &b->status_draw, cx, cy, rgb(C_CAPTION), pl * na, NULL, 1);
         if (na < 0.99f) text(b, b->buf, &b->status_old, cx, cy, rgb(C_CAPTION), pl * (1 - na), NULL, 1);
     }
-    if (b->has_note) {
-        float na = SMOOTH((T - 1.3f) * 1.3f);
-        text(b, b->buf, &b->note, TX(140), TY(304), rgb(BZ_PAL_DARK.warn), na, NULL, 1);
-        text(b, b->buf, &b->detail, TX(140), TY(304) + 20, rgb(C_SPEC), na, NULL, 1);
     }
 
     /* ---- the line is the progress: chased critically damped, never ahead of the card coming in; when
@@ -793,9 +964,9 @@ bool ui_boot_frame(ui_boot_t *b, double t, bz_area_t *damage)
     float pulse = T > 1.5f && arrive <= 0 ? fmodf((T - 1.5f) * 0.6f, 1.25f) * head : -1;
     route(b, head, pulse);
 
-    /* ---- the tablet it arrives at, and beyond it, where it's going: dotted to a ring */
-    float lit = smooth((arrive - 0.4f) * 2.5f);
-    tablet(b, (T - 0.45f) * 1.4f, lit);
+    /* ---- the tablet it arrives at, and beyond it, where it's going: dotted to a ring (in the settled
+     * background once it has come in, drawn again only while it lights) */
+    if (b->done[8] && lit > 0) tablet(b, (T - 0.45f) * 1.4f, lit);
     if (lit > 0.01f) {
         float x0, y0;
         route_at(1, &x0, &y0);
@@ -808,18 +979,13 @@ bool ui_boot_frame(ui_boot_t *b, double t, bz_area_t *damage)
         rrect(b, &ring, rgb(C_DOT), 0.75f * lit, 2, 0);
     }
 
-    /* ---- the outro: the whole card fades to the UI's ground */
+    /* ---- the outro: the card fades out with the backlight — a PWM duty, not a blend of every pixel
+     * each frame — and the interface fades back in on its first frame (ui_shell) */
     bz_area_t d;
     if (out > 0) {
-        rgb_t gr = rgb(BZ_PAL_DARK.ground);
         float k = smooth(out);
-        for (int y = 0; y < b->h; y++) {
-            uint16_t *row = b->buf + (size_t)y * b->w;
-            for (int x = 0; x < b->w; x++) blend(&row[x], x, y, gr, k, false);
-        }
-        d = (bz_area_t){ 0, 0, (int16_t)(b->w - 1), (int16_t)(b->h - 1) };
-        b->prev = d;
-        *damage = d;
+        hal_set_brightness(0.7f * (1 - k));
+        *damage = (bz_area_t){ 1, 1, 0, 0 };
         return out < 1;
     }
 

@@ -136,13 +136,13 @@ static void devices_refresh(void *u)
 
 void ui_page_devices(lv_obj_t *page)
 {
-    lv_obj_t *right = ui_head(page, "Devices", "can · roster");
-    D.summary = bz_label(right, "", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_t *right = ui_head(page, "Devices", NULL);
+    D.summary = bz_label_line(right, "", BZ_F_LABEL, BZ_C_DIM, ui_head_width("Devices"));
     lv_obj_t *wrap = bz_box(page);
     lv_obj_set_pos(wrap, PAD, BODY_Y);
     D.scroll = ui_scroller(wrap, W - 2 * PAD, BODY_H);
     D.sig = 1;
-    ui_on_refresh(devices_refresh, NULL);
+    ui_on_page_refresh(PG_DEVICES, devices_refresh, NULL);
 }
 
 /* ================================================================== power */
@@ -150,7 +150,7 @@ void ui_page_devices(lv_obj_t *page)
 #define PW_RIGHT 392
 #define PW_GRID_W (W - 2 * PAD - PW_RIGHT - BZ_GAP)
 #define PW_CELL_W ((PW_GRID_W - 5 * 10) / 6)
-#define PW_CELL_H 104
+#define PW_CELL_H ((BODY_BOTTOM - BODY_Y - 3 * 10) / 4) /* 121 */
 
 static struct {
     lv_obj_t *cells[24], *names[24], *amps[24], *meters[24], *nums[24];
@@ -190,8 +190,7 @@ static void power_refresh(void *u)
     char pv[16], fl[16];
     ui_text(PW.foot, "brownout floor %s v · predicted %s v%s", bz_fmt(fl, sizeof fl, r->brownout_v == r->brownout_v, "%.2f", r->brownout_v),
             bz_fmt(pv, sizeof pv, r->predicted_v == r->predicted_v, "%.1f", r->predicted_v), r->brownout_risk ? " · at risk" : "");
-    ui_text(PW.head, "%s%s%d of 24 in use%s", r->pd_module[0] ? r->pd_module : "", r->pd_module[0] ? " · " : "", r->nchannels,
-            r->have_pd_live ? "" : " · live currents not published");
+    ui_text(PW.head, "%s%s%d of 24 in use", r->pd_module[0] ? r->pd_module : "", r->pd_module[0] ? " · " : "", r->nchannels);
 
     for (int ch = 0; ch < 24; ch++) {
         const cat_channel_t *c = NULL;
@@ -217,8 +216,8 @@ static void power_refresh(void *u)
 
 void ui_page_power(lv_obj_t *page)
 {
-    lv_obj_t *right = ui_head(page, "Power", "distribution");
-    PW.head = bz_label(right, "", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_t *right = ui_head(page, "Power", NULL);
+    PW.head = bz_label_line(right, "", BZ_F_LABEL, BZ_C_DIM, ui_head_width("Power"));
 
     lv_obj_t *grid = bz_row(page, 10);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
@@ -249,27 +248,27 @@ void ui_page_power(lv_obj_t *page)
     PW.band = bz_label(br, "", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *vr = bz_row(t, 10);
     lv_obj_set_flex_align(vr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-    lv_obj_set_pos(vr, 0, 30);
+    lv_obj_set_pos(vr, 0, 28);
     PW.batt = bz_label(vr, "\xe2\x80\x94", BZ_F_DISPLAY, BZ_C_INK);
     lv_obj_t *vu = bz_label(vr, "v", BZ_F_NAME, BZ_C_DIM);
     lv_obj_set_style_pad_bottom(vu, 12, 0);
     PW.spark = bz_spark(t, PW_RIGHT - 2 * BZ_PAD_TILE, 70, 120);
     bz_spark_min_span(PW.spark, 1.0f);
-    lv_obj_set_pos(PW.spark, 0, 132);
+    lv_obj_set_pos(PW.spark, 0, 140);
     lv_obj_t *cl = bz_label(t, "total current", BZ_F_LABEL, BZ_C_DIM);
-    lv_obj_set_pos(cl, 0, 222);
+    lv_obj_set_pos(cl, 0, 240);
     lv_obj_t *cr = bz_row(t, 8);
     lv_obj_set_flex_align(cr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-    lv_obj_align(cr, LV_ALIGN_TOP_RIGHT, 0, 206);
+    lv_obj_align(cr, LV_ALIGN_TOP_RIGHT, 0, 226);
     PW.total = bz_label(cr, "\xe2\x80\x94", BZ_F_NAME, BZ_C_INK);
     bz_label(cr, "a", BZ_F_LABEL, BZ_C_DIM);
     PW.curr_spark = bz_spark(t, PW_RIGHT - 2 * BZ_PAD_TILE, 70, 120);
     bz_spark_min_span(PW.curr_spark, 20.0f);
-    lv_obj_set_pos(PW.curr_spark, 0, 252);
+    lv_obj_set_pos(PW.curr_spark, 0, 276);
     bz_spark_color(PW.curr_spark, BZ_C_ICE);
     PW.foot = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_align(PW.foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    ui_on_refresh(power_refresh, NULL);
+    ui_on_page_refresh(PG_POWER, power_refresh, NULL);
 }
 
 /* ================================================================== motion */
@@ -356,7 +355,7 @@ static void motion_rebuild(const cat_robot_t *r)
     MO.nm = r->nmechs;
     int w = (W - 2 * PAD - MO_SWERVE - BZ_GAP - BZ_GAP) / 2;
     for (int i = 0; i < r->nmechs && i < 6; i++) {
-        lv_obj_t *t = bz_tile(MO.grid, w, 160);
+        lv_obj_t *t = bz_tile(MO.grid, w, 186);
         MO.mt[i] = t;
         MO.mname[i] = bz_label(t, r->mechs[i].name, BZ_F_LABEL, BZ_C_DIM);
         lv_obj_t *sr = bz_row(t, 8);
@@ -365,19 +364,19 @@ static void motion_rebuild(const cat_robot_t *r)
         MO.mstate[i] = bz_label(sr, "", BZ_F_LABEL, BZ_C_INK);
         lv_obj_t *vr = bz_row(t, 8);
         lv_obj_set_flex_align(vr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-        lv_obj_set_pos(vr, 0, 26);
+        lv_obj_set_pos(vr, 0, 28);
         MO.mval[i] = bz_label(vr, "\xe2\x80\x94", BZ_F_VALUE, BZ_C_INK);
         MO.munit[i] = bz_label(vr, r->mechs[i].unit, BZ_F_BODY, BZ_C_DIM);
         lv_obj_set_style_pad_bottom(MO.munit[i], 8, 0);
         MO.msp[i] = bz_label(t, "", BZ_F_LABEL, BZ_C_DIM);
-        lv_obj_align(MO.msp[i], LV_ALIGN_TOP_RIGHT, 0, 60);
+        lv_obj_align(MO.msp[i], LV_ALIGN_TOP_RIGHT, 0, 30);
         MO.mgoal[i] = bz_meter(t, w - 2 * BZ_PAD_TILE, 8);
         lv_obj_align(MO.mgoal[i], LV_ALIGN_BOTTOM_LEFT, 0, -24);
         MO.mfoot[i] = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
         lv_obj_align(MO.mfoot[i], LV_ALIGN_BOTTOM_LEFT, 0, 0);
     }
     if (!r->nmechs) {
-        lv_obj_t *t = bz_tile(MO.grid, 2 * w + BZ_GAP, 160);
+        lv_obj_t *t = bz_tile(MO.grid, 2 * w + BZ_GAP, 186);
         bz_label(t, "no mechanisms published", BZ_F_BODY, BZ_C_DIM);
         lv_obj_t *l = bz_label(t, "Catalyst mechanisms publish AngleDegrees, PositionMeters or VelocityRPS under /Catalyst/<name>/.",
                                BZ_F_CAPTION, BZ_C_DIM);
@@ -428,9 +427,8 @@ static void motion_refresh(void *u)
 
 void ui_page_motion(lv_obj_t *page)
 {
-    lv_obj_t *right = ui_head(page, "Motion", "mechanisms · drive");
-    (void)right;
-    lv_obj_t *t = bz_tile(page, MO_SWERVE, BODY_H - 40);
+    ui_head(page, "Motion", NULL);
+    lv_obj_t *t = bz_tile(page, MO_SWERVE, BODY_BOTTOM - BODY_Y);
     lv_obj_set_pos(t, PAD, BODY_Y);
     lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
     bz_on_tap(t, open_app_tap, (void *)&APP_FIELD);
@@ -438,8 +436,8 @@ void ui_page_motion(lv_obj_t *page)
     MO.heading = bz_label(t, "", BZ_F_NAME, BZ_C_INK);
     lv_obj_align(MO.heading, LV_ALIGN_TOP_RIGHT, 0, -4);
     MO.swerve = bz_box(t);
-    lv_obj_set_size(MO.swerve, MO_SWERVE - 2 * BZ_PAD_TILE, BODY_H - 40 - 2 * BZ_PAD_TILE - 60);
-    lv_obj_set_pos(MO.swerve, 0, 34);
+    lv_obj_set_size(MO.swerve, MO_SWERVE - 2 * BZ_PAD_TILE, BODY_BOTTOM - BODY_Y - 2 * BZ_PAD_TILE - 76);
+    lv_obj_set_pos(MO.swerve, 0, 38);
     lv_obj_add_event_cb(MO.swerve, swerve_draw, LV_EVENT_DRAW_MAIN, NULL);
     MO.pose = bz_label(t, "", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_align(MO.pose, LV_ALIGN_BOTTOM_LEFT, 0, 0);
@@ -451,56 +449,98 @@ void ui_page_motion(lv_obj_t *page)
     lv_obj_set_width(MO.grid, W - 2 * PAD - MO_SWERVE - BZ_GAP);
     lv_obj_set_pos(MO.grid, PAD + MO_SWERVE + BZ_GAP, BODY_Y);
     MO.sig = 1;
-    ui_on_refresh(motion_refresh, NULL);
+    ui_on_page_refresh(PG_MOTION, motion_refresh, NULL);
 }
 
-/* ================================================================== tools */
+/* ================================================================== apps */
 
-/* Three rows: the robot through Catalyst, the controller and its history, the tablet and the PC. */
-static const struct { const ui_app_t *app; const char *icon; const char *label; const char *hint; } TOOLS[] = {
+/* The app library: every app, in three groups — the robot through Catalyst, diagnosing it from the
+ * outside, and the tablet's own tools. Scrolls when it outgrows the screen. */
+typedef struct { const ui_app_t *app; const char *icon; const char *label; const char *hint; } app_entry_t;
+static const app_entry_t APPS_ROBOT[] = {
     { &APP_PREFLIGHT, BZ_I_CHECKLIST, "preflight", "go / no-go" },
     { &APP_ALERTS, BZ_I_WARNING, "alerts", "errors, health" },
     { &APP_TUNE, BZ_I_TUNE, "tune", "tunables" },
     { &APP_AUTO, BZ_I_FLAG, "auto", "chooser" },
     { &APP_FIELD, BZ_I_STADIUM, "field", "pose, vision" },
     { &APP_ROBOT, BZ_I_SMART_TOY, "robot", "spec, versions" },
-    { &APP_SYSTEMCORE, BZ_I_DEVELOPER_BOARD, "systemcore", "cores, buses" },
     { &APP_MOTORS, BZ_I_HISTORY, "motors", "lifetime, wear" },
     { &APP_STATES, BZ_I_ACCOUNT_TREE, "states", "timelines" },
     { &APP_CONTROLS, BZ_I_SPORTS_ESPORTS, "controls", "bindings" },
-    { &APP_RECORDER, BZ_I_FIBER_MANUAL_RECORD, "recorder", "black box" },
+};
+static const app_entry_t APPS_DIAG[] = {
+    { &APP_SYSTEMCORE, BZ_I_DEVELOPER_BOARD, "systemcore", "cores, buses" },
     { &APP_CANTAP, BZ_I_CABLE, "can tap", "bus sniffer" },
-    { &APP_ASSIST, BZ_I_AUTO_AWESOME, "assist", "ai technician" },
-    { &APP_LINK, BZ_I_COMPUTER, "link", "pc, patches" },
+    { &APP_RECORDER, BZ_I_FIBER_MANUAL_RECORD, "recorder", "black box" },
     { &APP_LOGS, BZ_I_RECEIPT_LONG, "logs", "ds logs, sd" },
     { &APP_LEVEL, BZ_I_STRAIGHTEN, "level", "imu angle" },
     { &APP_LENS, BZ_I_PHOTO_CAMERA, "lens", "camera, clips" },
-    { &APP_SETTINGS, BZ_I_SETTINGS, "settings", "team, link" },
+};
+static const app_entry_t APPS_TABLET[] = {
+    { &APP_ASSIST, BZ_I_AUTO_AWESOME, "assist", "ai technician" },
+    { &APP_LINK, BZ_I_COMPUTER, "link", "pc, patches" },
+    { &APP_TIMER, BZ_I_TIMER, "timer", "match, stopwatch" },
+    { &APP_CALC, BZ_I_CALCULATE, "calculator", "ratios, units" },
+    { &APP_NOTES, BZ_I_EDIT_NOTE, "notes", "pit notebook" },
+    { &APP_CHECK, BZ_I_CHECKLIST_RTL, "checklist", "before a match" },
+    { &APP_LIGHT, BZ_I_FLASHLIGHT_ON, "flashlight", "white, red" },
+    { &APP_FILES, BZ_I_FOLDER, "files", "microsd" },
+    { &APP_SYSMON, BZ_I_MONITORING, "system", "this tablet" },
+    { &APP_SETTINGS, BZ_I_SETTINGS, "settings", "everything" },
 };
 
-void ui_page_tools(lv_obj_t *page)
+const ui_app_t *ui_app_find(const char *name)
 {
-    ui_head(page, "Tools", "diagnose · measure");
-    lv_obj_t *grid = bz_row(page, BZ_GAP);
+    const app_entry_t *groups[3] = { APPS_ROBOT, APPS_DIAG, APPS_TABLET };
+    int counts[3] = { (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0]), (int)(sizeof APPS_DIAG / sizeof APPS_DIAG[0]),
+                      (int)(sizeof APPS_TABLET / sizeof APPS_TABLET[0]) };
+    for (int g = 0; g < 3; g++)
+        for (int i = 0; i < counts[g]; i++)
+            if (!strcmp(groups[g][i].label, name) || !strcmp(groups[g][i].app->name, name)) return groups[g][i].app;
+    return NULL;
+}
+
+#define APPS_COLS 6
+#define APP_TILE_H 140
+
+static void apps_group(lv_obj_t *col, const char *title, const app_entry_t *e, int n)
+{
+    lv_obj_t *l = bz_label(col, title, BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_set_style_pad_top(l, 6, 0);
+    int w = (W - 2 * PAD - (APPS_COLS - 1) * BZ_GAP) / APPS_COLS;
+    lv_obj_t *grid = bz_row(col, BZ_GAP);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    int n = (int)(sizeof TOOLS / sizeof TOOLS[0]);
-    int cols = 6;
-    int w = (W - 2 * PAD - (cols - 1) * BZ_GAP) / cols;
+    lv_obj_set_style_pad_row(grid, BZ_GAP, 0);
     lv_obj_set_width(grid, W - 2 * PAD);
-    lv_obj_set_pos(grid, PAD, BODY_Y);
     for (int i = 0; i < n; i++) {
-        lv_obj_t *t = bz_tile(grid, w, 148);
+        lv_obj_t *t = bz_tile(grid, w, APP_TILE_H);
         lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_set_style_pad_all(t, 18, 0);
         lv_obj_t *ic = bz_tile(t, 56, 56);
         lv_obj_add_style(ic, bz_style_fill(BZ_C_SURFACE3), 0);
         lv_obj_set_style_radius(ic, 18, 0);
         lv_obj_set_style_pad_all(ic, 0, 0);
-        lv_obj_t *g = bz_icon(ic, TOOLS[i].icon, 32, BZ_C_INK);
+        lv_obj_t *g = bz_icon(ic, e[i].icon, 32, BZ_C_INK);
         lv_obj_center(g);
-        lv_obj_t *l = bz_label(t, TOOLS[i].label, BZ_F_NAME, BZ_C_INK);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, -20);
-        lv_obj_t *h = bz_label(t, TOOLS[i].hint, BZ_F_CAPTION, BZ_C_DIM);
+        lv_obj_t *lb = bz_label_line(t, e[i].label, BZ_F_BODY, BZ_C_INK, w - 36);
+        lv_obj_align(lb, LV_ALIGN_BOTTOM_LEFT, 0, -22);
+        lv_obj_t *h = bz_label_line(t, e[i].hint, BZ_F_CAPTION, BZ_C_DIM, w - 36);
         lv_obj_align(h, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        bz_on_tap(t, open_app_tap, (void *)TOOLS[i].app);
+        bz_on_tap(t, open_app_tap, (void *)e[i].app);
     }
+}
+
+void ui_page_tools(lv_obj_t *page)
+{
+    lv_obj_t *right = ui_head(page, "Apps", NULL);
+    bz_label_line(right, "25 apps", BZ_F_LABEL, BZ_C_DIM, ui_head_width("Apps"));
+    lv_obj_t *wrap = bz_box(page);
+    lv_obj_set_pos(wrap, PAD, BODY_Y);
+    lv_obj_t *col = ui_scroller(wrap, W - 2 * PAD, BODY_H);
+    apps_group(col, "robot", APPS_ROBOT, (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0]));
+    apps_group(col, "diagnose", APPS_DIAG, (int)(sizeof APPS_DIAG / sizeof APPS_DIAG[0]));
+    apps_group(col, "this tablet", APPS_TABLET, (int)(sizeof APPS_TABLET / sizeof APPS_TABLET[0]));
+    /* room to scroll the last row clear of the dock */
+    lv_obj_t *sp = bz_box(col);
+    lv_obj_set_height(sp, DOCK_CLEAR);
 }

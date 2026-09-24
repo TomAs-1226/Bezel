@@ -25,16 +25,24 @@ the contract between `components/assist/src/link.c` (the tablet) and the `cataly
 ```json
 {"ok":true,"name":"thomas-laptop","version":"1.0.0","auth":true,
  "repo":"CatalystX1","branch":"main","dirty":false,
- "claude":true, "inbox_open":2, "patches":1, "files":4}
+ "claude":true, "claude_via":"claude-code", "inbox_open":2, "patches":1, "files":4}
 ```
-`claude` is true when the Link can forward the Messages API (it has `ANTHROPIC_API_KEY`).
+`claude` is true when the Link can serve `/v1/messages`; `claude_via` says how: `"api"` (it has
+`ANTHROPIC_API_KEY`), `"claude-code"` (Claude Code on the PC, logged in with the owner's Claude
+subscription; `claude` is false while that login is missing), or `null` (`--claude off`).
 `inbox_open` counts work orders not yet finished (`open` + `claimed`); `patches` counts patches still
 `proposed`; `dirty` means tracked files have uncommitted changes (patches start from `HEAD`, not from
 them).
 
 ## Claude, through the Link
 
-`POST /v1/messages` — the body is a Messages API request exactly as the tablet would send it to
+`POST /v1/messages` — one contract, two backends, chosen on the PC (`catalyst-link serve --claude
+auto|api|claude-code|off`; `auto`, the default, is `api` when `ANTHROPIC_API_KEY` is set and
+`claude-code` otherwise). The tablet sends and parses the same thing either way.
+
+### `api`: the Messages API with the PC's key
+
+The body is a Messages API request exactly as the tablet would send it to
 `api.anthropic.com` (it always sets `"stream": true`). Request headers the tablet sends and the Link
 honours: `anthropic-beta` (comma-separated; passed through as the SDK's `betas`). The Link adds the
 key and calls the official Python SDK; the response is `text/event-stream` in the Messages API's own
@@ -54,6 +62,38 @@ tablet parses one format whichever route it takes. The key never reaches the tab
   the API's `ping`s, so the Link sends its own `event: ping` / `{"type":"ping"}` after every 10 s of
   upstream silence (ignore it, as on the direct route). If the tablet disconnects, the Link closes the
   upstream stream.
+
+### `claude-code`: the owner's Claude subscription, no API key
+
+The Link runs a Claude Code session through the Claude Agent SDK (`claude-agent-sdk`, which runs the
+official `claude` CLI logged in with `claude login` or a `claude setup-token` token). The Link holds
+no credential and never calls an Anthropic endpoint itself.
+
+- **Tools stay on the tablet.** The request's `tools` become an MCP server inside the session and are
+  its only tools (Claude Code's own shell, file and web tools are off; no settings, plugins, hooks,
+  `CLAUDE.md` or other MCP servers load; prompts are delivered verbatim, so `@file` or `/command` in
+  the technician's text does nothing; it runs in the empty folder `~/.catalyst-link/claude-code/`).
+  When Claude calls one, the response streams its `tool_use` block (the name as the tablet declared it)
+  and ends with `stop_reason: "tool_use"`, exactly as the API does; the tablet runs the tool — with the
+  on-screen confirmation for anything that changes the robot — and posts the conversation with the
+  `tool_result`s, and the same session carries on in that response. Parallel calls work the same way.
+- **The stream** is Claude Code's own Messages API events, re-emitted in the format above
+  (`message_start` … `message_stop`, `event: ping` every 10 s of silence). `message.model` is the model
+  Claude Code used, which is Claude Code's default or `--claude-model`, not the body's `model`. An error
+  is one `event: error` (`rate_limit_error` when the plan's limit is hit, `authentication_error` when
+  the login lapsed), after which the session is discarded.
+- **Sessions.** One per conversation. A request is matched to its session by the `tool_result` ids it
+  carries, or, for a new question, by the text of the answer the tablet echoes back as the
+  second-to-last message; only the new user message is sent. A conversation the Link doesn't hold (it
+  restarted, the tablet trimmed or rolled back its history) starts a new session primed with a text
+  transcript of the history. A dropped connection ends the session. Idle sessions close after 30 min,
+  a session waiting on tool results after 15 min, and at most 4 are kept.
+- **What doesn't apply:** `model`, `max_tokens`, `thinking`, `fallbacks`, `cache_control` and the
+  `anthropic-beta` header. `output_config.effort` is passed to Claude Code.
+- **Errors before the stream:** 503 `api_error` when the SDK or CLI is missing or Claude Code isn't
+  logged in (the message says which); 400 `invalid_request_error` when `messages` doesn't end with a
+  user message. The audit log gets one line per request with `"backend":"claude-code"`, how it was
+  matched (`new`, `tool_results`, `next_question`, `replayed`), the model and token usage.
 
 ## Code (read-only)
 

@@ -12,9 +12,15 @@
 #define W HAL_W
 #define H HAL_H
 #define PAD BZ_PAD_PAGE
-#define HEAD_Y 30          /* page heads start here; the island floats at 18 */
-#define BODY_Y 104         /* page bodies start under the head */
-#define DOCK_CLEAR 132     /* the dock's top edge from the bottom: 30 + 92 + 10 */
+/* The frame, top to bottom: the status band (page title and context on the left, the island centred,
+ * link, battery and clock on the right), the body, and the dock. */
+#define STATUS_H 76        /* the status band */
+#define HEAD_Y 20          /* the page title's top, inside the band; the island floats at 12 */
+#define BODY_Y 88          /* page bodies start under the band */
+#define DOCK_BOTTOM 14     /* the dock's gap to the bottom edge */
+#define DOCK_CLEAR 118     /* the dock's top edge from the bottom, and a gap: 14 + 92 + 12 */
+#define BODY_BOTTOM (H - DOCK_CLEAR) /* 602: where a page's tiles end */
+#define ISLAND_HALF 200    /* half the island's widest: page context stays left of W/2 - this */
 
 /* The robot as of the last model update (10 Hz), and the tablet's own state. */
 extern cat_robot_t *R;
@@ -24,15 +30,23 @@ typedef struct {
     float brightness, volume;
     bool dark, calm;
     bool perf;             /* the frame-time overlay */
+    bool auto_rotate;      /* turn the picture to whichever way up the tablet is held */
+    bool flip;             /* which way up now (and the fixed choice when auto_rotate is off) */
+    int dim_s;             /* the panel dims after this long untouched (0: never) */
+    bool clicks;           /* a soft tick on taps */
+    int tz;                /* index into the time zones settings offers */
     char wifi_ssid[33];
 } ui_settings_t;
 extern ui_settings_t S;
 void ui_settings_save(void);
+void ui_set_flip(bool flip); /* turns the picture 180° and redraws everything */
 void ui_apply_addresses(void);
 
 /* Called at 10 Hz after the model updates. Pages and apps register one each. */
 typedef void (*ui_refresh_fn)(void *user);
 void ui_on_refresh(ui_refresh_fn fn, void *user);
+/* A page's refresh: runs only while that page is on screen (and once when it comes back). */
+void ui_on_page_refresh(int page, ui_refresh_fn fn, void *user);
 
 /* The island: robot status at rest; a message morphs it for 2.4 s (controls.js:284-323). */
 void ui_island_say(const char *icon, const char *text);
@@ -50,12 +64,17 @@ typedef struct {
 void ui_app_open(const ui_app_t *app, lv_obj_t *from);
 void ui_app_close(void);
 bool ui_app_is_open(const ui_app_t *app);
+bool ui_app_any_open(void); /* some app is open (or opening) */
+const ui_app_t *ui_app_find(const char *name); /* by its library label or window name */
 
 /* Pages. */
 void ui_go(int page);
 int ui_page(void);
 lv_obj_t *ui_page_body(int page); /* the page's container, W×H, content layer */
 
+/* The pages, left to right: the home screen, the robot's four, and the app library. */
+enum { PG_HOME, PG_ROBOT, PG_DEVICES, PG_POWER, PG_MOTION, PG_APPS, PG_COUNT };
+void ui_page_home(lv_obj_t *page);
 void ui_page_overview(lv_obj_t *page);
 void ui_page_devices(lv_obj_t *page);
 void ui_page_power(lv_obj_t *page);
@@ -70,15 +89,20 @@ extern const ui_app_t APP_PREFLIGHT, APP_ALERTS, APP_TUNE, APP_AUTO, APP_FIELD, 
 extern const ui_app_t APP_SYSTEMCORE, APP_MOTORS, APP_STATES, APP_CONTROLS, APP_RECORDER;
 /* The assistant and the PC (ui_app_assist.c): the AI technician, and Catalyst Link's inbox and patches. */
 extern const ui_app_t APP_ASSIST, APP_LINK;
+/* ui_apps_util.c: the tablet's own utilities */
+extern const ui_app_t APP_TIMER, APP_CALC, APP_NOTES, APP_CHECK, APP_LIGHT, APP_SYSMON, APP_FILES;
 
 /* The control center: pulled down from the top edge. */
 void ui_cc_init(void);
 /* The assistant's orb, over every screen (ui_app_assist.c). */
 void ui_orb_init(void);
+void ui_cc_open(void);       /* the control center, as if pulled down */
+void ui_orb_show(bool show); /* the orb floats over the pages; an open app takes its corner */
 /* Starts the state recorder, so the states app has a timeline from boot (ui_apps_sc.c). */
 void ui_sc_boot(void);
 
 /* Helpers. */
+int ui_head_width(const char *title); /* room for context beside a page title, before the island */
 lv_obj_t *ui_head(lv_obj_t *page, const char *title, const char *label); /* returns the right-hand row */
 /* Sets a label's text only when it changes (a set always invalidates). printf-style. */
 void ui_text(lv_obj_t *label, const char *fmt, ...) __attribute__((format(printf, 2, 3)));

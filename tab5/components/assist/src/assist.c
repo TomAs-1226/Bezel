@@ -594,13 +594,19 @@ static void run_tools(wctx_t *c, as_hist_t *h, const as_msg_t *m, const as_call_
 
 static void usage_add(wctx_t *c, const as_msg_t *m, const char *requested)
 {
+    /* Through Claude Code on the PC the model is Claude Code's choice, not the one requested: a different
+     * name there is not a fallback. (link_status takes the Link's lock: read it before ours.) */
+    link_status_t ls;
+    link_status(&ls);
+    bool own_model = !strcmp(ls.claude_via, "claude-code");
     pthread_mutex_lock(&A.lock);
     bool fell = false;
     if (A.gen == c->gen) {
         A.usage.input_tokens += m->input_tokens + m->cache_read + m->cache_write;
         A.usage.output_tokens += m->output_tokens;
         if (m->model[0]) snprintf(A.usage.model, sizeof A.usage.model, "%s", m->model);
-        fell = m->fallback || (m->model[0] && strcmp(m->model, requested) != 0);
+        if (A.cfg.route != AS_ROUTE_LINK) own_model = false;
+        fell = m->fallback || (!own_model && m->model[0] && strcmp(m->model, requested) != 0);
         if (fell) A.usage.fell_back = true;
     }
     pthread_mutex_unlock(&A.lock);
@@ -839,7 +845,9 @@ bool assist_ready(char *why, size_t n)
     if (!ls.configured) snprintf(why, n, "Catalyst Link isn't set up (or add an API key)");
     else if (!ls.reachable) snprintf(why, n, "Catalyst Link at %s isn't answering", ls.url);
     else if (!ls.auth) snprintf(why, n, "Catalyst Link at %s doesn't take this token: check it in settings", ls.url);
-    else if (!ls.claude) snprintf(why, n, "Catalyst Link has no API key (set ANTHROPIC_API_KEY on the PC)");
+    else if (!ls.claude && !strcmp(ls.claude_via, "claude-code"))
+        snprintf(why, n, "Claude Code on the PC isn't ready: run `catalyst-link claude-check` there");
+    else if (!ls.claude) snprintf(why, n, "Catalyst Link can't reach Claude: log in Claude Code on the PC, or set ANTHROPIC_API_KEY");
     else {
         if (n) why[0] = 0;
         return true;

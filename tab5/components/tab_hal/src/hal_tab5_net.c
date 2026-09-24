@@ -41,6 +41,7 @@
 #include "iot_usbh_ecm.h"
 #include "iot_usbh_rndis.h"
 #include "lwip/netif.h"
+#include "esp_sntp.h"
 #include "mdns.h"
 #include "usb/usb_helpers.h"
 #include "usb/usb_host.h"
@@ -784,12 +785,26 @@ bool hal_thread(const char *name, void *(*fn)(void *), void *arg, int stack)
 
 /* ------------------------------------------------------------------ init */
 
+static void sntp_sync_cb(struct timeval *tv)
+{
+    struct tm tm;
+    localtime_r(&tv->tv_sec, &tm);
+    hal_rtc_set(&tm);
+    ESP_LOGI(TAG, "time from the network: %04d-%02d-%02d %02d:%02d", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday,
+             tm.tm_hour, tm.tm_min);
+}
+
 void hal_net_init(void)
 {
     esp_netif_init();
     esp_event_loop_create_default();
     if (mdns_init() == ESP_OK) mdns_hostname_set("catalyst-tab");
     wifi_init();
+    /* network time whenever Wi-Fi reaches the internet; the RTC is set from it (sntp_sync_cb) */
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    esp_sntp_setservername(0, "pool.ntp.org");
+    sntp_set_time_sync_notification_cb(sntp_sync_cb);
+    esp_sntp_init();
 }
 
 void hal_net_tether_init(void)

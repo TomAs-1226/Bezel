@@ -6,7 +6,7 @@
 
 #define COL3 ((W - 2 * PAD - 2 * BZ_GAP) / 3)       /* 397 */
 #define COL4 ((W - 2 * PAD - 3 * BZ_GAP) / 4)       /* 294 */
-#define ROW_H 214
+#define ROW_H ((BODY_BOTTOM - BODY_Y - BZ_GAP) / 2) /* 250 */
 
 static lv_obj_t *tile_at(lv_obj_t *page, int x, int y, int w, int h)
 {
@@ -166,8 +166,8 @@ static void pulse_refresh(void *u)
         ui_text(P.vis_foot, " ");
     }
 
-    if (r->connected && r->have_identity) ui_text(P.team, "pulse · team %d", r->team);
-    else ui_text(P.team, "pulse · team %d", S.team);
+    if (r->connected && r->have_identity) ui_text(P.team, "team %d", r->team);
+    else ui_text(P.team, "team %d", S.team);
 }
 
 /* A value in the display face with its unit set small beside it. */
@@ -186,16 +186,15 @@ static lv_obj_t *value_row(lv_obj_t *tile, bz_font_role_t f, const char *unit, l
 
 void ui_page_overview(lv_obj_t *page)
 {
-    lv_obj_t *col = bz_col(page, 2);
-    lv_obj_set_pos(col, PAD, HEAD_Y - 4);
-    P.team = bz_label(col, "pulse", BZ_F_LABEL, BZ_C_DIM);
-    bz_label(col, "Catalyst Tab", BZ_F_TITLE, BZ_C_INK);
+    /* the home page carries the tablet's own name, like the device it is */
+    lv_obj_t *head = ui_head(page, "Robot", NULL);
+    P.team = bz_label_line(head, "", BZ_F_LABEL, BZ_C_DIM, ui_head_width("Robot"));
 
     int y1 = BODY_Y, y2 = BODY_Y + ROW_H + BZ_GAP;
     /* battery */
     lv_obj_t *t = tile_at(page, PAD, y1, COL3, ROW_H);
     make_tappable(t);
-    bz_on_tap(t, go_tap, (void *)(intptr_t)2);
+    bz_on_tap(t, go_tap, (void *)(intptr_t)PG_POWER);
     tile_label(t, "battery", NULL);
     lv_obj_t *br = bz_row(t, 8);
     lv_obj_align(br, LV_ALIGN_TOP_RIGHT, 0, 0);
@@ -216,11 +215,11 @@ void ui_page_overview(lv_obj_t *page)
     tile_label(t, "robot", &mr);
     P.mode_time = mr;
     lv_obj_t *mrow = bz_row(t, 14);
-    lv_obj_set_pos(mrow, 0, 48);
+    lv_obj_set_pos(mrow, 0, 40);
     P.mode_mark = bz_mark(mrow, BZ_STALE, 14);
     P.mode = bz_label(mrow, "offline", BZ_F_VALUE, BZ_C_INK);
     lv_obj_t *marks = bz_row(t, 8);
-    lv_obj_align(marks, LV_ALIGN_BOTTOM_LEFT, 0, -30);
+    lv_obj_align(marks, LV_ALIGN_BOTTOM_LEFT, 0, -34);
     P.mode_ds = bz_mark(marks, BZ_STALE, 10);
     bz_label(marks, "ds", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *sp = bz_box(marks);
@@ -274,8 +273,8 @@ void ui_page_overview(lv_obj_t *page)
         lv_obj_t *rw = bz_row(cc, 10);
         P.can_rows[i] = rw;
         P.can_names[i] = bz_label(rw, "", BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_set_width(P.can_names[i], 58);
-        P.can_meters[i] = bz_meter(rw, COL4 - 2 * BZ_PAD_TILE - 58 - 52 - 20, 12);
+        lv_obj_set_width(P.can_names[i], 72);
+        P.can_meters[i] = bz_meter(rw, COL4 - 2 * BZ_PAD_TILE - 72 - 60 - 20, 12);
         P.can_vals[i] = bz_label(rw, "", BZ_F_LABEL, BZ_C_INK);
         lv_obj_add_flag(rw, LV_OBJ_FLAG_HIDDEN);
     }
@@ -286,7 +285,7 @@ void ui_page_overview(lv_obj_t *page)
     x += COL4 + BZ_GAP;
     t = tile_at(page, x, y2, COL4, ROW_H);
     make_tappable(t);
-    bz_on_tap(t, go_tap, (void *)(intptr_t)1);
+    bz_on_tap(t, go_tap, (void *)(intptr_t)PG_DEVICES);
     tile_label(t, "motors", NULL);
     P.dev_mark = bz_mark(t, BZ_STALE, 12);
     lv_obj_align(P.dev_mark, LV_ALIGN_TOP_RIGHT, 0, 2);
@@ -306,5 +305,5 @@ void ui_page_overview(lv_obj_t *page)
     P.vis_foot = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_align(P.vis_foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
-    ui_on_refresh(pulse_refresh, NULL);
+    ui_on_page_refresh(PG_ROBOT, pulse_refresh, NULL);
 }

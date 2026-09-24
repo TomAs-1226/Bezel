@@ -22,7 +22,7 @@ static void kb_event(lv_event_t *e)
 
 ui_kb_t *ui_kb_create(lv_obj_t *body, int h)
 {
-    ui_kb_t *k = calloc(1, sizeof *k);
+    ui_kb_t *k = lv_malloc_zeroed(sizeof *k);
     k->sheet = bz_tile(body, W - 2 * PAD, h);
     lv_obj_align(k->sheet, LV_ALIGN_BOTTOM_MID, 0, -PAD);
     bz_tile_set_fill(k->sheet, BZ_C_SURFACE2);

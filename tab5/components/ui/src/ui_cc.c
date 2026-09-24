@@ -30,6 +30,8 @@ static struct {
     double boot_at;
 } C;
 
+static void cc_refresh(void *user);
+
 static void cc_to(float target, float v)
 {
     bz_motion_to_v(&C.p, target, BZ_RELEASE, v);
@@ -91,7 +93,15 @@ static void toggle_tap(lv_obj_t *o, void *u)
     int i = (int)(intptr_t)u;
     switch (i) {
     case 0: S.dark = !S.dark; bz_ui_set_mode(S.dark, S.calm); break;
-    case 1: S.calm = !S.calm; bz_ui_set_mode(S.dark, S.calm); break;
+    case 1:
+#if BZ_LEAN
+        /* rotation lock: the picture stays the way up it is now */
+        S.auto_rotate = !S.auto_rotate;
+#else
+        S.calm = !S.calm;
+        bz_ui_set_mode(S.dark, S.calm);
+#endif
+        break;
     case 2:
         /* the panel goes dark until the next touch; the robot link stays up */
         C.asleep = true;
@@ -135,15 +145,25 @@ static void cc_frame(double now, double dt, void *user)
     bz_comp_set_backdrop(bz_ui_comp(), blind > 1 ? 1 : blind < 0 ? 0 : blind, 0.9f);
     /* the page behind is frosted and dimmed out of sight: it stops redrawing (live numbers under the
      * blind would only make every module re-frost) until the blind starts back up */
-    bool hold = (shown && C.p.target > 0) || C.dragging;
+    /* (lean: the modules are drawn on the page's own display, so freezing it would freeze them too) */
+    bool hold = !BZ_LEAN && ((shown && C.p.target > 0) || C.dragging);
     if (hold != C.frozen) {
         C.frozen = hold;
         bz_ui_freeze(hold);
     }
     if (shown != C.shown) {
         C.shown = shown;
-        if (shown) lv_obj_remove_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
-        else lv_obj_add_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+        if (shown) {
+            /* lean: no frosted blind — the page goes under a solid dim of the ground, set once */
+            if (BZ_LEAN) {
+                lv_obj_set_style_bg_color(C.scrim, bz_lv(BZ_C_GROUND), 0);
+                lv_obj_set_style_bg_opa(C.scrim, LV_OPA_80, 0);
+            }
+            lv_obj_remove_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+            cc_refresh(NULL);
+        } else {
+            lv_obj_add_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+        }
     }
     for (int i = 0; i < NMOD; i++) {
         float k = (p - C.delay[i]) / (1 - C.delay[i]);
@@ -183,8 +203,13 @@ static void cc_refresh(void *user)
     else ui_text(C.link_usb, "no usb tether");
     hal_battery_t b;
     if (hal_battery(&b)) ui_text(C.link_batt, "%d %% · %.2f v%s", b.percent, b.volts, b.charging ? " · charging" : "");
+#if BZ_LEAN
+    bool on[4] = { !S.dark, !S.auto_rotate, false, false };
+#else
     bool on[4] = { !S.dark, S.calm, false, false };
+#endif
     int bits = on[0] | on[1] << 1 | 16;
+    (void)0;
     if (bits == C.last_tog) return;
     C.last_tog = bits;
     for (int i = 0; i < 4; i++) {
@@ -192,6 +217,8 @@ static void cc_refresh(void *user)
         bz_set_color(C.tog_icon[i], on[i] ? BZ_C_ON_ICE : BZ_C_INK);
     }
 }
+
+void ui_cc_open(void) { cc_to(1, 0); }
 
 void ui_cc_init(void)
 {
@@ -207,7 +234,7 @@ void ui_cc_init(void)
 
     /* link */
     /* 26 px between modules, as Bezel's: apart by more than the merge distance, they never melt */
-    lv_obj_t *m = module(0, 130, 70, 414, 206, 44, 0);
+    lv_obj_t *m = module(0, 130, 70, 414, BZ_LEAN ? 250 : 206, 44, 0);
     lv_obj_set_flex_flow(m, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(m, 8, 0);
     bz_label(m, "link", BZ_F_LABEL, BZ_C_DIM);
@@ -241,7 +268,8 @@ void ui_cc_init(void)
     bz_level_set(C.vol, S.volume, false);
 
     /* toggles: light tone, calm, sleep the panel, power */
-    static const char *const icons[4] = { BZ_I_LIGHT_MODE, BZ_I_MOTION_PHOTOS_ON, BZ_I_DARK_MODE, BZ_I_POWER };
+    static const char *const icons[4] = { BZ_I_LIGHT_MODE, BZ_LEAN ? BZ_I_ROTATE_RIGHT : BZ_I_MOTION_PHOTOS_ON,
+                                          BZ_I_DARK_MODE, BZ_I_POWER };
     for (int i = 0; i < 4; i++) {
         m = module(3 + i, 570 + i * 150, 290, 120, 120, 60, 0.16f + 0.04f * i);
         lv_obj_set_style_pad_all(m, 0, 0);

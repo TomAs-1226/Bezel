@@ -761,7 +761,8 @@ static void orb_frame(double now, double dt, void *u)
     as_phase_t ph = assist_phase();
     bool busy = ph != AS_PHASE_IDLE && ph != AS_PHASE_ERROR;
     bool here = ui_app_is_open(&APP_ASSIST);
-    bool show = !here;
+    /* over the pages only: an open app (this one included) takes the corner */
+    bool show = !here && !ui_app_any_open();
     bool hidden = lv_obj_has_flag(ORB.obj, LV_OBJ_FLAG_HIDDEN);
     if (show == hidden) {
         if (show) lv_obj_remove_flag(ORB.obj, LV_OBJ_FLAG_HIDDEN);
@@ -784,13 +785,20 @@ static void orb_frame(double now, double dt, void *u)
     ORB.last = ph;
 }
 
+void ui_orb_show(bool show)
+{
+    if (!ORB.obj || show != lv_obj_has_flag(ORB.obj, LV_OBJ_FLAG_HIDDEN)) return;
+    if (show) lv_obj_remove_flag(ORB.obj, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(ORB.obj, LV_OBJ_FLAG_HIDDEN);
+}
+
 void ui_orb_init(void)
 {
     lv_obj_t *g = bz_ui_glass();
     ORB.obj = lv_obj_create(g);
     lv_obj_remove_style_all(ORB.obj);
     lv_obj_set_size(ORB.obj, 92, 92);
-    lv_obj_set_pos(ORB.obj, W - PAD - 92, H - 30 - 92);
+    lv_obj_set_pos(ORB.obj, W - PAD - 92, H - DOCK_BOTTOM - 92);
     lv_obj_add_flag(ORB.obj, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(ORB.obj, LV_OBJ_FLAG_SCROLLABLE);
     ORB.glass = bz_glass_attach(ORB.obj, 7, 46);
@@ -941,7 +949,8 @@ static void link_build(lv_obj_t *b)
     hal_kv_get("link_url", LK.url, sizeof LK.url);
     hal_kv_get("link_token", LK.token, sizeof LK.token);
 
-    int c1 = 400, c2 = (W - 2 * PAD - c1 - 2 * BZ_GAP) / 2;
+    /* wide enough that the buttons and the route chips each take one row at the tablet's type size */
+    int c1 = 480, c2 = (W - 2 * PAD - c1 - 2 * BZ_GAP) / 2;
     lv_obj_t *t = bz_tile(b, c1, APP_H);
     lv_obj_set_pos(t, PAD, APP_Y);
     lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
@@ -959,6 +968,9 @@ static void link_build(lv_obj_t *b)
     ui_button(br, BZ_I_KEYBOARD, "token", lk_edit, (void *)1);
     bz_label(t, "claude", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *rr = bz_row(t, 8);
+    lv_obj_set_flex_flow(rr, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_width(rr, c1 - 2 * BZ_PAD_TILE);
+    lv_obj_set_style_pad_row(rr, 8, 0);
     LK.route_chips[0] = ui_chip(rr, "through the pc", lk_route, (void *)0);
     LK.route_chips[1] = ui_chip(rr, "key on tablet", lk_route, (void *)1);
     LK.key_state = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);

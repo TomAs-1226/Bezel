@@ -40,6 +40,16 @@ void hal_display(hal_display_t *out);
 void hal_present(const bz_present_t *areas, int n, void *user);
 bool hal_touch(int *x, int *y, void *user);
 void hal_set_brightness(float v01);
+/* Which way up: false the default landscape, true turned 180°. The caller redraws the whole screen after. */
+void hal_set_flip(bool flip);
+bool hal_flip(void);
+/* The development console on the USB-C port (tools/tab5_dev.py): screenshots and injected touches. */
+void hal_dev_init(void);
+const uint16_t *hal_front_fb(void); /* the panel's current picture, portrait 720x1280 */
+bool hal_dev_touch(int *x, int *y); /* an injected finger, if one is down */
+/* Commands the console doesn't know go to the UI ("open <app>", "page <n>", "close"): true if handled.
+ * Called from the console's task; the handler must hand the work to the UI's own loop. */
+void hal_dev_set_handler(bool (*fn)(const char *line));
 const char *hal_panel_name(void);        /* "ILI9881C", "ST7123", "ST7121", "simulator" */
 
 /* ---- sensors ---- */
@@ -85,6 +95,7 @@ double hal_seconds(void);                 /* monotonic */
 
 /* ---- storage ---- */
 const char *hal_sd_root(void);            /* "/sdcard" when mounted, else NULL */
+bool hal_sd_space(uint64_t *total, uint64_t *free_bytes);
 bool hal_kv_get(const char *key, char *buf, size_t n);
 void hal_kv_set(const char *key, const char *value);
 

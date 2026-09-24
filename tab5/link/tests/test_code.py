@@ -4,7 +4,7 @@ from __future__ import annotations
 import unittest
 from urllib.parse import quote
 
-from helpers import LinkCase
+from helpers import SYMLINK_NAMES, LinkCase
 
 from catalyst_link import pathsafe
 from catalyst_link.state import LinkError
@@ -78,7 +78,7 @@ class CodeEndpointsTest(LinkCase):
 
     def test_refusals(self) -> None:
         cases = {
-            "../outside.txt": 403, "/etc/passwd": 403, "escape.txt": 403, "gitconfig-link": 403,
+            "../outside.txt": 403, "/etc/passwd": 403, **{name: 403 for name in SYMLINK_NAMES},
             ".git/config": 403, ".env": 403, "deploy.key": 403, "config/secrets.json": 403,
             "build/libs.txt": 403, "src/../../outside.txt": 403, "missing.java": 404,
         }
@@ -93,7 +93,7 @@ class CodeEndpointsTest(LinkCase):
         paths = {e["path"] for e in body["entries"]}
         self.assertIn("src/main/java/frc/robot/Constants.java", paths)
         self.assertIn("src", paths)
-        for hidden in (".git", ".env", "deploy.key", "config/secrets.json", "build", "escape.txt", "gitconfig-link"):
+        for hidden in (".git", ".env", "deploy.key", "config/secrets.json", "build", *SYMLINK_NAMES):
             self.assertNotIn(hidden, paths)
         entry = next(e for e in body["entries"] if e["path"].endswith("Constants.java"))
         self.assertEqual(entry["type"], "file")
