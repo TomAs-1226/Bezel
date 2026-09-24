@@ -93,6 +93,14 @@ extern const ui_app_t APP_PREFLIGHT, APP_ALERTS, APP_TUNE, APP_AUTO, APP_FIELD, 
 extern const ui_app_t APP_SYSTEMCORE, APP_MOTORS, APP_STATES, APP_CONTROLS, APP_RECORDER;
 /* The assistant and the PC (ui_app_assist.c): the AI technician, and Catalyst Link's inbox and patches. */
 extern const ui_app_t APP_ASSIST, APP_LINK;
+/* Desk mode (ui_app_companion.c): a face with two eyes, quick questions, and Claude Code on the PC. */
+extern const ui_app_t APP_COMPANION;
+/* Settings > assistant: the model and its keys, what the orb opens, desk mode, Claude Code reminders.
+ * Built into the settings pane `pane` (a flex column; it takes the rest of it), keyboard on `body`. */
+void ui_assist_settings(lv_obj_t *pane, lv_obj_t *body, int w);
+void ui_assist_settings_open(void);
+/* The companion is on screen and the tablet on power: the screen shouldn't go off by itself. */
+bool ui_companion_keeps_awake(void);
 /* ui_apps_util.c: the tablet's own utilities */
 extern const ui_app_t APP_TIMER, APP_CALC, APP_NOTES, APP_CHECK, APP_LIGHT, APP_SYSMON, APP_FILES;
 extern const ui_app_t APP_GEAR, APP_RULER, APP_REF; /* ui_apps_shop.c */
