@@ -10,6 +10,7 @@
 #include "ui_internal.h"
 
 #include <math.h>
+#include <stdlib.h>
 
 #define NMOD 7
 
@@ -28,7 +29,22 @@ static struct {
     bool asleep, shown, frozen;
     bz_motion_t boot;      /* the power-on blind: starts down, lifts off the page */
     double boot_at;
+    /* the system edge gesture: a press starting along the top edge and moving down pulls the sheet,
+     * whatever it began on */
+    bool edge;
+    int edge_y0;
+    float edge_vy, edge_last_y;
+    double edge_last_t;
+    /* the sheet: the platform slides a picture of it over the page, nothing drawn per frame
+     * (bz_ui_sheet_*); `open` is where it rests, `sheet` a pull or settle under way, `sheet_mode` once
+     * the platform has shown it can (the older per-module cascade is the fallback) */
+    bool sheet, open, sheet_mode;
+    lv_obj_t *panel;
 } C;
+
+#define CC_SH 460     /* the sheet's height: the modules and a handle; the page shows below it */
+#define EDGE_H 64     /* the top band a pull may start in: the status bar and a finger's width */
+#define EDGE_SLOP 10  /* px down, more down than sideways, before it's a pull */
 
 static void cc_refresh(void *user);
 
@@ -38,9 +54,61 @@ static void cc_to(float target, float v)
     bz_ui_keep_alive();
 }
 
+/* the pull's span: with the sheet its edge follows the finger (the full height); the cascade, 380 px */
+static float span(void) { return C.sheet ? (float)CC_SH : 380.0f; }
+
+/* The sheet as it rests: the modules in place, over solid ground (a sheet that slides can't be seen
+ * through), or all of it out of the way. Only what changes is touched: each set redraws. */
+static void cc_show(bool on)
+{
+    if (on) {
+        /* the scrim only catches a tap or a pull outside; the sheet's own ground is the panel */
+        lv_obj_set_style_bg_opa(C.scrim, LV_OPA_TRANSP, 0);
+        lv_obj_remove_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(C.panel, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(C.panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    for (int i = 0; i < NMOD; i++) {
+        if (on) {
+            if (C.last_y[i] != C.base_y[i]) lv_obj_set_y(C.mods[i], C.base_y[i]);
+            if (C.last_opa[i] != 255) lv_obj_set_style_opa(C.mods[i], LV_OPA_COVER, 0);
+            bz_glass_set_strength(C.glass[i], 1);
+            lv_obj_remove_flag(C.mods[i], LV_OBJ_FLAG_HIDDEN);
+            C.last_y[i] = C.base_y[i];
+            C.last_opa[i] = 255;
+        } else {
+            lv_obj_add_flag(C.mods[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    C.shown = on;
+    if (on) cc_refresh(NULL);
+}
+
+/* drawing the sheet's other picture, a band at a time: opening, the sheet itself; closing, the page */
+static void cc_prep(bool before, void *u)
+{
+    bool opening = (intptr_t)u != 0;
+    cc_show(before ? opening : C.open);
+}
+
+static void sheet_start(bool opening)
+{
+    if (C.sheet) return;
+    if (bz_ui_sheet_begin(opening, CC_SH, cc_prep, (void *)(intptr_t)opening)) C.sheet = C.sheet_mode = true;
+}
+
+static void cc_close(void)
+{
+    sheet_start(false);
+    cc_to(0, 0);
+}
+
 static void st_begin(lv_obj_t *o, lv_point_t p, void *u)
 {
     (void)o; (void)p; (void)u;
+    sheet_start(!C.open);
     C.dragging = true;
     C.p0 = C.p.value;
     bz_motion_set(&C.p, C.p.value, 0);
@@ -49,16 +117,16 @@ static void st_begin(lv_obj_t *o, lv_point_t p, void *u)
 static void st_move(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
 {
     (void)o; (void)dx; (void)vx; (void)u;
-    float p = C.p0 + dy / 380.0f;
+    float p = C.p0 + dy / span();
     p = bz_rubber_clamp(p, 0, 1, 0.12f * 2);
-    bz_motion_set(&C.p, p, vy / 380.0f);
+    bz_motion_set(&C.p, p, vy / span());
 }
 
 static void st_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
 {
     (void)o; (void)dx; (void)dy; (void)vx; (void)u;
     C.dragging = false;
-    float v = vy / 380.0f;
+    float v = vy / span();
     float aim = C.p.value + bz_project(v * 1000, BZ_RATE_FAST) / 1000;
     cc_to(aim > 0.5f ? 1 : 0, C.p.value > 1 ? 0 : v);
 }
@@ -66,7 +134,7 @@ static void st_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
 static void scrim_tap(lv_obj_t *o, void *u)
 {
     (void)o; (void)u;
-    cc_to(0, 0);
+    cc_close();
 }
 
 static lv_obj_t *module(int i, int x, int y, int w, int h, float radius, float delay)
@@ -104,7 +172,7 @@ static void toggle_tap(lv_obj_t *o, void *u)
         break;
     case 2:
         /* the panel goes dark until the next touch; the robot link stays up */
-        cc_to(0, 0);
+        cc_close();
         ui_sleep_now();
         break;
     case 3: ui_island_say(BZ_I_POWER, "hold the power button to turn off"); break;
@@ -129,7 +197,59 @@ static void level_cb(lv_obj_t *lv, float v, bool final, void *u)
 static void cc_frame(double now, double dt, void *user)
 {
     (void)dt; (void)user;
-    if (bz_motion_tick(&C.p) || C.dragging) bz_ui_keep_alive();
+    int x0, y0, x, y;
+    bool down = bz_ui_press(&x0, &y0, &x, &y);
+    /* opening: a pull down from the top edge; closing: a push up anywhere on the open sheet, whatever it
+     * began on (a module, a toggle) */
+    bool pull = !C.open && C.p.target <= 0 && y0 <= EDGE_H && y - y0 > EDGE_SLOP && y - y0 > abs(x - x0);
+    bool push = C.open && C.p.target >= 1 && y0 <= CC_SH && y0 - y > EDGE_SLOP && y0 - y > abs(x - x0);
+    if (!C.edge && down && !C.dragging && !bz_drag_active() && (pull || push)) {
+        C.edge = true;
+        C.edge_y0 = y0;
+        C.edge_vy = 0;
+        C.edge_last_y = (float)y;
+        C.edge_last_t = now;
+        bz_ui_take_press();
+        st_begin(NULL, (lv_point_t){ x, y }, NULL);
+    }
+    if (C.edge) {
+        if (down) {
+            double et = now - C.edge_last_t;
+            if (et > 0.001) {
+                float v = (float)((y - C.edge_last_y) / et);
+                C.edge_vy += (v - C.edge_vy) * 0.5f; /* a light smoothing: touch reports are uneven */
+                C.edge_last_y = (float)y;
+                C.edge_last_t = now;
+            }
+            st_move(NULL, 0, y - C.edge_y0, 0, C.edge_vy, NULL);
+        } else {
+            C.edge = false;
+            st_end(NULL, 0, 0, 0, C.edge_vy, NULL);
+        }
+    }
+    bool moving = bz_motion_tick(&C.p);
+    if (moving || C.dragging) bz_ui_keep_alive();
+    if (C.sheet) {
+        float k = C.p.value < 0 ? 0 : C.p.value > 1 ? 1 : C.p.value;
+        if (moving || C.dragging) {
+            bz_ui_sheet((int)(k * CC_SH + 0.5f));
+            return;
+        }
+        /* at rest: the resting height on the glass first, then the real thing takes over from the
+         * picture, drawn once and not sent (the glass already shows it) */
+        int rest = C.p.target > 0.5f ? CC_SH : 0;
+        if (bz_ui_sheet_shown() != rest) {
+            bz_ui_sheet(rest);
+            bz_ui_keep_alive();
+            return;
+        }
+        C.open = rest > 0;
+        cc_show(C.open);
+        bz_ui_sheet_end();
+        C.sheet = false;
+        return;
+    }
+    if (C.sheet_mode) return; /* resting: nothing moves, cc_show set it all */
     float p = C.p.value < 0 ? 0 : C.p.value;
     bool shown = p > 0.002f || C.dragging;
     /* power-on: the page starts under the frosted blind and it lifts, a beat after the first frame */
@@ -214,7 +334,12 @@ static void cc_refresh(void *user)
     }
 }
 
-void ui_cc_open(void) { cc_to(1, 0); }
+void ui_cc_open(void)
+{
+    if (C.open) return;
+    sheet_start(true);
+    cc_to(1, 0);
+}
 
 void ui_cc_init(void)
 {
@@ -227,6 +352,22 @@ void ui_cc_init(void)
     bz_on_tap(C.scrim, scrim_tap, NULL);
     bz_drag_t d = { .begin = st_begin, .move = st_move, .end = st_end, .axis = 2, .slop = 8 };
     bz_drag_attach(C.scrim, &d);
+    /* the sheet's ground, with a handle at its foot to pull it back up by */
+    C.panel = lv_obj_create(g);
+    lv_obj_remove_style_all(C.panel);
+    lv_obj_set_size(C.panel, W, CC_SH + 40);
+    lv_obj_set_pos(C.panel, 0, -40); /* its top corners above the screen: only the foot is rounded */
+    lv_obj_add_style(C.panel, bz_style_fill(BZ_C_SURFACE1), 0);
+    lv_obj_set_style_radius(C.panel, 28, 0);
+    lv_obj_remove_flag(C.panel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_remove_flag(C.panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(C.panel, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *handle = lv_obj_create(C.panel);
+    lv_obj_remove_style_all(handle);
+    lv_obj_add_style(handle, bz_style_fill(BZ_C_FAINT), 0);
+    lv_obj_set_style_radius(handle, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_size(handle, 96, 8);
+    lv_obj_align(handle, LV_ALIGN_BOTTOM_MID, 0, -14);
 
     /* link */
     /* 26 px between modules, as Bezel's: apart by more than the merge distance, they never melt */

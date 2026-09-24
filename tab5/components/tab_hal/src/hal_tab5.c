@@ -886,7 +886,47 @@ static void slide_end(void)
     P.nprev = 0;
 }
 
-static const bz_slide_ops_t SLIDE_OPS = { .begin = slide_begin, .patch = slide_patch, .frame = slide_frame, .end = slide_end };
+/* A sheet pulled down over the page (the control center). A landscape row is a portrait column, so the
+ * sheet's visible rows and the page's are each one rectangle the panel's full height: two DMA2D copies a
+ * frame, nothing turned. The sheet's picture (drawn at rest, full screen) shows by its bottom h rows. */
+static void sheet_frame(int h, int sh, bool swapped)
+{
+    if (!SLD.active) return;
+    const int H = HAL_H; /* landscape rows = portrait columns = PANEL_W */
+    if (sh > H) sh = H;
+    if (h < 8) h = 0;    /* a sliver would be a DMA block a few pixels wide: none at all */
+    if (h > sh - 8) h = sh;
+    /* the sheet's picture; the page's rows it has uncovered, [h, sh); below the sheet the glass as it was */
+    const uint16_t *sheet = swapped ? SLD.snap : SLD.nb, *under = swapped ? SLD.nb : SLD.snap;
+    present_wait();
+    uint16_t *fb = T.fb[T.back];
+    fbcpy_wait();
+    if (!s_flip) {
+        /* portrait column c shows landscape row c: in the sheet, row c + (sh - h) */
+        if (h) blk_copy_async(fb, 0, 0, sheet, sh - h, 0, h, PANEL_H);
+        if (sh - h) blk_copy_async(fb, h, 0, under, h, 0, sh - h, PANEL_H);
+        if (H - sh) blk_copy_async(fb, sh, 0, SLD.snap, sh, 0, H - sh, PANEL_H);
+    } else {
+        /* column c shows landscape row H - 1 - c */
+        if (h) blk_copy_async(fb, H - h, 0, sheet, H - sh, 0, h, PANEL_H);
+        if (sh - h) blk_copy_async(fb, H - sh, 0, under, H - sh, 0, sh - h, PANEL_H);
+        if (H - sh) blk_copy_async(fb, 0, 0, SLD.snap, 0, 0, H - sh, PANEL_H);
+    }
+    fbcpy_wait();
+    P.nprev = 0;
+    present_flip(fb, 0, PANEL_H - 1);
+}
+
+static void slide_settle(void)
+{
+    /* the glass's buffer copied into the other one: the next present, a few areas, lands on the same picture */
+    present_wait();
+    blk_copy(T.fb[T.back], 0, 0, T.fb[T.back ^ 1], 0, 0, PANEL_W, PANEL_H);
+    P.nprev = 0;
+}
+
+static const bz_slide_ops_t SLIDE_OPS = { .begin = slide_begin, .patch = slide_patch, .frame = slide_frame, .end = slide_end,
+                                          .sheet = sheet_frame, .settle = slide_settle };
 #endif
 
 static void display_init(void)

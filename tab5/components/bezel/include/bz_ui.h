@@ -53,6 +53,10 @@ double bz_ui_idle_s(void);
 /* The next press (or the one under way) still counts as a touch but never reaches the interface: the tap
  * that wakes a dark screen mustn't also press what was under it. */
 void bz_ui_swallow_touch(void);
+/* The finger now and where its press began (false: no press). For system gestures read every frame. */
+bool bz_ui_press(int *x0, int *y0, int *x, int *y);
+/* A system gesture takes the press under way: the interface sees it end without a click. */
+void bz_ui_take_press(void);
 void bz_ui_wake(void);
 
 /* Tone and calm. Applying a tone rebuilds styles (see bz_theme) and redraws everything. */
@@ -115,6 +119,18 @@ uint16_t *bz_ui_slide_nb_buf(void);
 void bz_ui_slide_nb(int side);
 /* A band of the neighbour has been drawn into the buffer: the platform's slide takes it from there. */
 void bz_ui_slide_nb_patch(const lv_area_t *a);
+/* A full-screen sheet over the page, pulled down from the top (the control center), composed by the
+ * platform in its panel's orientation with no drawing per frame. Opening: the page is what's on the glass
+ * and the sheet is drawn at rest offscreen, a band at a time as it's revealed, with `prep(true)` making
+ * it appear for the drawing and `prep(false)` putting things back. Closing: the other way round, the
+ * sheet on the glass and the page drawn. h: how much of the sheet shows, 0 .. screen height. false: no
+ * such platform support (animate some other way). End puts LVGL back in charge without a redraw, so show
+ * the resting height (0 or `height`) first. The sheet is `height` rows from the top; below, the page. */
+bool bz_ui_sheet_begin(bool opening, int height, void (*prep)(bool before, void *u), void *u);
+void bz_ui_sheet(int h);
+int bz_ui_sheet_shown(void); /* the height on the panel now (-1: none yet) */
+bool bz_ui_sheeting(void);
+void bz_ui_sheet_end(void);
 double bz_ui_clock(void);    /* monotonic seconds, for timing */
 void bz_ui_hooks_report(void); /* logs each frame hook's time since the last call */
 /* Per-frame averages since the last call: frame hooks, lv_timer_handler, display refreshes, renders. */

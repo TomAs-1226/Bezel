@@ -36,4 +36,6 @@ bool ui_boot_frame(ui_boot_t *b, double t, bz_area_t *damage);
 /* The same frame's damage as separate boxes, up to `max` of them, for a presenter that takes a list:
  * `damage` above spans all of them, and most of that span didn't change. */
 int ui_boot_damage(const ui_boot_t *b, bz_area_t *out, int max);
+/* The whole card again on the next frame (the picture was turned). */
+void ui_boot_redraw(ui_boot_t *b);
 void ui_boot_destroy(ui_boot_t *b);

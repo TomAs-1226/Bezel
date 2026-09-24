@@ -46,7 +46,8 @@ static struct {
     /* touch routing */
     bool pressed;
     int tx, ty;
-    int owner; /* 0 none, 1 content, 2 glass */
+    int owner; /* 0 none, 1 content, 2 glass, 3 taken by the system (an edge gesture) */
+    int px0, py0; /* where the press began */
     bool keep_alive;
     bool swallow_seen; /* the swallowed press has begun */
     bool swallow; /* the press under way, or the next one, is not the interface's (it wakes the screen) */
@@ -73,6 +74,12 @@ static struct {
     uint32_t ground_color;
     bool sliding;
     int slide_dx, slide_shown;
+    /* a sheet over the page (bz_ui_sheet_begin): its visible height, what's on the panel, and how much of
+     * the picture it reveals has been drawn (rows [sheet_lo, h) of U.nb, drawn and handed over) */
+    bool sheeting, sheet_open;
+    int sheet_h, sheet_shown, sheet_lo, sheet_sh;
+    void (*sheet_prep)(bool before, void *u);
+    void *sheet_u;
 #endif
 } U;
 
@@ -291,6 +298,8 @@ static void poll_touch(void)
         U.ty = y;
         U.last_touch = U.now;
         if (!U.pressed) {
+            U.px0 = x;
+            U.py0 = y;
 #if BZ_LEAN
             U.owner = 1; /* one display: LVGL finds the top layer (the chrome) before the page itself */
 #else
@@ -578,6 +587,24 @@ void bz_ui_on_frame(bz_frame_fn fn, void *user)
 
 void bz_ui_keep_alive(void) { U.keep_alive = true; }
 double bz_ui_idle_s(void) { return U.now - U.last_touch; }
+bool bz_ui_press(int *x0, int *y0, int *x, int *y)
+{
+    *x0 = U.px0;
+    *y0 = U.py0;
+    *x = U.tx;
+    *y = U.ty;
+    return U.pressed;
+}
+
+void bz_ui_take_press(void)
+{
+    /* LVGL sees the finger lift (press lost, no click); the press is nobody's but the caller's */
+    if (!U.pressed) return;
+    U.owner = 3;
+    g_press_claimed = true;
+    g_claimed = NULL;
+}
+
 void bz_ui_swallow_touch(void)
 {
     U.swallow = true;
@@ -727,7 +754,26 @@ bool bz_ui_frame(double now_s)
     moving |= update_glass();
 
 #if BZ_LEAN
-    if (U.sliding && U.cfg.slide) {
+    if (U.sheeting) {
+        U.nlean = 0;
+        if (U.sheet_h != U.sheet_shown) {
+            int sh = U.sheet_sh, h = U.sheet_h < 0 ? 0 : U.sheet_h > sh ? sh : U.sheet_h;
+            /* the rows of the picture this height reveals, and a margin: opening, the sheet's bottom rows;
+             * closing, the page's rows under the sheet's edge */
+            int need = (U.sheet_open ? sh - h : h) - 48;
+            if (need < 0) need = 0;
+            if (need < U.sheet_lo) {
+                lv_area_t a = { 0, need, U.cfg.w - 1, U.sheet_lo - 1 };
+                bz_ui_render_offscreen(U.nb + (size_t)need * U.cfg.w, U.cfg.w, &a, U.sheet_prep, U.sheet_u);
+                bz_present_t p = { { 0, (int16_t)need, (int16_t)(U.cfg.w - 1), (int16_t)(U.sheet_lo - 1) },
+                                   U.nb + (size_t)need * U.cfg.w, U.cfg.w };
+                U.cfg.slide->patch(&p, true);
+                U.sheet_lo = need;
+            }
+            U.sheet_shown = U.sheet_h;
+            U.cfg.slide->sheet(h, sh, !U.sheet_open);
+        }
+    } else if (U.sliding && U.cfg.slide) {
         U.nlean = 0;
         if (U.slide_dx != U.slide_shown) {
             U.slide_shown = U.slide_dx;
@@ -987,6 +1033,80 @@ void bz_ui_slide_end(void)
     if (U.cfg.slide) U.cfg.slide->end();
     lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
     lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
+#endif
+}
+
+bool bz_ui_sheet_begin(bool opening, int height, void (*prep)(bool before, void *u), void *u)
+{
+#if BZ_LEAN
+    if (!U.cfg.slide || !U.cfg.slide->sheet || U.sliding || U.sheeting) return false;
+    if (!bz_ui_slide_nb_buf()) return false;
+    /* what's pending goes on the glass first: begin captures the glass */
+    lv_refr_now(U.disp_content);
+    for (int i = 0; i < U.nlean; i++) {
+        bz_area_t *a = &U.lean[i].a;
+        U.lean[i].src = U.cfg.content + (size_t)a->y1 * U.cfg.w + a->x1;
+        U.lean[i].stride = U.cfg.w;
+    }
+    if (U.nlean && U.cfg.present) U.cfg.present(U.lean, U.nlean, U.cfg.user);
+    U.nlean = 0;
+    if (!U.cfg.slide->begin(bz_color(BZ_C_GROUND), NULL, 0)) return false;
+    U.sheeting = true;
+    U.sheet_open = opening;
+    U.sheet_prep = prep;
+    U.sheet_u = u;
+    U.sheet_sh = height < 16 ? 16 : height > U.cfg.h ? U.cfg.h : height;
+    U.sheet_lo = U.sheet_sh; /* nothing of the other picture drawn yet */
+    U.sheet_h = opening ? 0 : U.sheet_sh;
+    U.sheet_shown = -1;
+    return true;
+#else
+    (void)opening; (void)height; (void)prep; (void)u;
+    return false;
+#endif
+}
+
+int bz_ui_sheet_shown(void)
+{
+#if BZ_LEAN
+    return U.sheeting ? U.sheet_shown : -1;
+#else
+    return -1;
+#endif
+}
+
+void bz_ui_sheet(int h)
+{
+#if BZ_LEAN
+    if (U.sheeting) U.sheet_h = h;
+#else
+    (void)h;
+#endif
+}
+
+bool bz_ui_sheeting(void)
+{
+#if BZ_LEAN
+    return U.sheeting;
+#else
+    return false;
+#endif
+}
+
+void bz_ui_sheet_end(void)
+{
+#if BZ_LEAN
+    if (!U.sheeting) return;
+    U.sheeting = false;
+    U.cfg.slide->end();
+    /* The glass already shows the sheet at rest (or the page): LVGL draws everything into its own buffer
+     * once, and that isn't sent again; the panel's other buffer is made the same so later areas land
+     * on the picture that is showing. */
+    lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
+    lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
+    lv_refr_now(U.disp_content);
+    U.nlean = 0;
+    if (U.cfg.slide->settle) U.cfg.slide->settle();
 #endif
 }
 

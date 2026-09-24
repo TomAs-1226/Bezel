@@ -82,7 +82,8 @@ static void shot(bool panel)
     esp_log_level_t was = esp_log_level_get("*");
     esp_log_level_set("*", ESP_LOG_NONE);
     char head[48];
-    snprintf(head, sizeof head, "SHOT %d %d %u\n", w, h, (unsigned)(k * 2));
+    /* a panel picture also says whether the picture is turned, so the tool shows it the way up it reads */
+    snprintf(head, sizeof head, "SHOT %d %d %u %d\n", w, h, (unsigned)(k * 2), panel && hal_flip() ? 1 : 0);
     say(head);
     size_t m = 0;
     for (size_t i = 0; i < n;) {

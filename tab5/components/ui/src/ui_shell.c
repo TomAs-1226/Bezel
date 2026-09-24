@@ -1242,8 +1242,9 @@ static void settings_load(void)
     S.clicks = true;
     if (hal_kv_get("clicks", buf, sizeof buf)) S.clicks = buf[0] == '1';
     if (hal_kv_get("tzi", buf, sizeof buf)) S.tz = atoi(buf);
-    if (hal_kv_get("flip", buf, sizeof buf)) S.flip = buf[0] == '1';
-    hal_set_flip(S.flip);
+    /* which way up is main's to decide, before the boot card's first frame (and the card follows the
+     * tablet while it plays): taking it from the panel here never turns the picture mid-animation */
+    S.flip = hal_flip();
 }
 
 void ui_set_flip(bool flip)

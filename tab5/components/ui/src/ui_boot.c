@@ -1243,6 +1243,13 @@ bool ui_boot_frame(ui_boot_t *b, double t, bz_area_t *damage)
     return true;
 }
 
+void ui_boot_redraw(ui_boot_t *b)
+{
+    /* the next frame restores and damages the whole card: after the picture turned, every pixel moves */
+    b->pl[0] = (bz_area_t){ 0, 0, (int16_t)(b->w - 1), (int16_t)(b->h - 1) };
+    b->pn = 1;
+}
+
 int ui_boot_damage(const ui_boot_t *b, bz_area_t *out, int max)
 {
     int n = b->on < max ? b->on : max;

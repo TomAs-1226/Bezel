@@ -92,6 +92,28 @@ static volatile int s_boot_at;
 static volatile double s_boot_t;
 static volatile bool s_boot_abandoned; /* the interface started without it: it must not draw again */
 
+static bool s_boot_autorot;
+
+/* Held upside down for a third of a second, the card turns (the shell does the same after start-up). */
+static void boot_orient(double now)
+{
+    static double last, since;
+    if (!s_boot_autorot || now - last < 0.1) return;
+    last = now;
+    hal_imu_t m;
+    if (!hal_imu(&m) || !m.ok || (m.ax == 0 && m.ay == 0 && m.az == 0)) return; /* not started yet */
+    if (m.ay >= -0.6f) {
+        since = 0;
+        return;
+    }
+    if (since == 0) since = now;
+    if (now - since < 0.35) return;
+    since = 0;
+    hal_set_flip(!hal_flip());
+    hal_kv_set("flip", hal_flip() ? "1" : "0");
+    ui_boot_redraw(s_boot);
+}
+
 static void boot_task(void *arg)
 {
     uint16_t *buf = arg;
@@ -105,6 +127,7 @@ static void boot_task(void *arg)
         if (s_boot_abandoned) vTaskDelete(NULL);
         s_boot_at = 1;
         s_boot_t = hal_seconds() - t0;
+        boot_orient(hal_seconds());
         bool more = ui_boot_frame(s_boot, hal_seconds() - t0, &a);
         double now = hal_seconds();
         draw += now - f0;
@@ -168,6 +191,11 @@ void app_main(void)
     hal_display_t d;
     hal_display(&d);
     /* the animation draws in the composite buffer, which nothing else touches until the UI's first frame */
+    /* which way up, before the first frame: the last one used; auto-rotate then follows the tablet during
+     * the card too (boot_task), and the interface takes whatever the panel is set to */
+    char kv[4];
+    hal_set_flip(hal_kv_get("flip", kv, sizeof kv) && kv[0] == '1');
+    s_boot_autorot = !(hal_kv_get("autorot", kv, sizeof kv) && kv[0] == '0');
     s_boot = ui_boot_create(d.out, HAL_W, HAL_H, &prev, safe);
     ui_boot_set(s_boot, 0.1f, "starting");
     s_boot_done = xSemaphoreCreateBinary();

@@ -38,7 +38,9 @@ def reply(s, timeout=20):
             continue
         text = line.decode(errors="replace").strip()
         if text.startswith("SHOT "):
-            _, w, h, n = text.split()
+            f = text.split()
+            w, h, n = f[1], f[2], f[3]
+            flip = len(f) > 4 and f[4] == "1"
             data = b""
             n = int(n)
             while len(data) < n:
@@ -46,7 +48,7 @@ def reply(s, timeout=20):
                 if not chunk:
                     raise SystemExit("shot: timed out after %d of %d bytes" % (len(data), n))
                 data += chunk
-            return ("shot", int(w), int(h), data)
+            return ("shot", int(w), int(h), data, flip)
         if text.startswith("AP "):
             print(text[3:])  # a network from "scan"
             continue
@@ -58,7 +60,7 @@ def reply(s, timeout=20):
     return ("none",)
 
 
-def save(w, h, rle, path):
+def save(w, h, rle, path, flip=False):
     px = bytearray(w * h * 3)
     o = 0
     for i in range(0, len(rle), 4):
@@ -70,7 +72,7 @@ def save(w, h, rle, path):
         o += run * 3
     im = Image.frombytes("RGB", (w, h), bytes(px))
     if h > w:
-        im = im.rotate(-90, expand=True)  # the panel's portrait buffer, turned the way the tablet is held
+        im = im.rotate(90 if flip else -90, expand=True)  # the panel's portrait buffer, the way up it reads
     im.save(path)
 
 
@@ -88,7 +90,7 @@ def main():
             r = reply(s)
             if r[0] != "shot":
                 continue
-            save(r[1], r[2], r[3], parts[1] if len(parts) > 1 else "shot.png")
+            save(r[1], r[2], r[3], parts[1] if len(parts) > 1 else "shot.png", r[4])
             reply(s)
             print("saved", parts[1] if len(parts) > 1 else "shot.png")
             continue
