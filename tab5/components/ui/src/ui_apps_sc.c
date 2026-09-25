@@ -423,15 +423,17 @@ static void sc_build_machine(void)
     SC.t_mach = sc_tile(COL3, "machine", NULL, NULL);
     lv_obj_t *c = bz_col(SC.t_mach, 7);
     lv_obj_set_pos(c, 0, 30);
-    kv_rows(c, SC.mach, 8, IN(COL3), 110);
+    /* the keys run to 13 characters ("systemcore os") of the caption face's 10 px: 110 cut "hardware rev" */
+    kv_rows(c, SC.mach, 8, IN(COL3), 134);
 }
 
 static void sc_build_can(void)
 {
     lv_obj_t *t = sc_tile(COL2, "can buses", NULL, NULL);
-    /* column heads, over the columns they name */
+    /* column heads, over the columns they name; "tec" and "bus-off" stood 7 px apart, so the bar gave up
+     * 10 px and the columns spread to the tile's edge (760) */
     static const struct { const char *s; int x, w; } HEAD[] = {
-        { "rec", 390, 56 }, { "tec", 450, 56 }, { "bus-off", 510, 70 }, { "frames", 584, 84 }, { "errors", 672, 88 },
+        { "rec", 372, 56 }, { "tec", 436, 56 }, { "bus-off", 506, 74 }, { "frames", 592, 80 }, { "errors", 680, 80 },
     };
     for (size_t i = 0; i < sizeof HEAD / sizeof HEAD[0]; i++) {
         lv_obj_t *h = bz_label(t, HEAD[i].s, BZ_F_CAPTION, BZ_C_DIM);
@@ -453,7 +455,7 @@ static void sc_build_can(void)
         lv_obj_set_size(r, IN(COL2), 28);
         SC.bus[b].name = bz_label(r, BUSES[b], BZ_F_LABEL, BZ_C_INK);
         lv_obj_set_width(SC.bus[b].name, 86);
-        SC.bus[b].bar = sbar(r, 214, 10);
+        SC.bus[b].bar = sbar(r, 204, 10);
         SC.bus[b].pct = bz_label(r, "", BZ_F_LABEL, BZ_C_INK);
         lv_obj_set_width(SC.bus[b].pct, 70);
         lv_obj_set_style_text_align(SC.bus[b].pct, LV_TEXT_ALIGN_RIGHT, 0);
@@ -622,6 +624,7 @@ static void sc_cpu(const cat_agent_t *a, bool agent)
         for (int i = 1; i < a->ncores; i++)
             if (a->cores[i].percent > a->cores[busiest].percent) busiest = i;
         ui_text(SC.cpu.v, "%s", bz_fmt(b, sizeof b, true, "%.0f", a->cores[busiest].percent));
+        bz_set_color(SC.cpu.v, BZ_C_INK);
         ui_text(SC.cpu_sub, "busiest " MID " core %d", a->cores[busiest].core);
         for (int i = 0; i < SC_CORES; i++) {
             show(SC.core_row[i], i < a->ncores);
@@ -648,6 +651,7 @@ static void sc_cpu(const cat_agent_t *a, bool agent)
     /* the NT summary: one figure for all the cores */
     const cat_robot_t *r = R;
     ui_text(SC.cpu.v, "%s", bz_fmt(b, sizeof b, r->have_sc, "%.0f", r->sc_cpu));
+    bz_set_color(SC.cpu.v, r->have_sc ? BZ_C_INK : BZ_C_FAINT); /* an absent value is a faint dash */
     ui_text(SC.cpu_sub, "all cores");
     show(SC.core_row[0], true);
     for (int i = 1; i < SC_CORES; i++) show(SC.core_row[i], false);
@@ -662,13 +666,15 @@ static void sc_cpu(const cat_agent_t *a, bool agent)
 static void sc_temp_mem(const cat_agent_t *a, bool agent)
 {
     char b[32], c[32];
-    double temp = R->sc_temp;
+    /* the model's summary is 0 until published: absent, never "0 °c · ok" (nor 0 % memory below) */
+    double temp = R->have_sc ? R->sc_temp : NAN;
     if (agent && a->nzones) {
         /* the hottest zone the kernel names; Console reads the same sensor off NT */
         temp = a->zones[0].celsius;
         for (int i = 1; i < a->nzones; i++) if (a->zones[i].celsius > temp) temp = a->zones[i].celsius;
     }
     ui_text(SC.temp.v, "%s", bz_fmt(b, sizeof b, temp == temp, "%.0f", temp));
+    bz_set_color(SC.temp.v, temp == temp ? BZ_C_INK : BZ_C_FAINT);
     /* The CM5 throttles rather than saying so, so a hot controller shows up as loop overruns. 80 / 90 are
      * below where throttling starts (Console app.js paintCore). */
     bz_status_t ts = level(temp, 80, 90);
@@ -685,7 +691,7 @@ static void sc_temp_mem(const cat_agent_t *a, bool agent)
         ui_text(SC.zones, "%s", R->have_sc ? "the controller's own sensor" : "");
     }
 
-    double used = NAN, total = NAN, frac = R->sc_ram;
+    double used = NAN, total = NAN, frac = R->have_sc ? R->sc_ram : NAN;
     if (agent && a->mem_total == a->mem_total) {
         used = a->mem_used;
         total = a->mem_total;
@@ -693,8 +699,10 @@ static void sc_temp_mem(const cat_agent_t *a, bool agent)
     } else {
         used = ntnum("/Catalyst/Systemcore/RamUsedBytes");
         total = ntnum("/Catalyst/Systemcore/RamTotalBytes");
+        if (!(frac == frac) && used == used && total > 0) frac = used / total;
     }
     ui_text(SC.mem.v, "%s", used == used ? fmt_bytes(b, sizeof b, used) : frac == frac ? bz_fmt(b, sizeof b, true, "%.0f %%", frac * 100) : DASH);
+    bz_set_color(SC.mem.v, used == used || frac == frac ? BZ_C_INK : BZ_C_FAINT);
     ui_text(SC.mem.u, "%s", used == used && total == total ? (snprintf(c, sizeof c, "of %s", fmt_bytes(c + 16, 16, total)), c) : "");
     sbar_set(SC.mem_bar, frac, level_fill(frac * 100, 85, 95));
     if (frac == frac) {
@@ -848,15 +856,18 @@ static void sc_storage(const cat_agent_t *a, bool agent)
 {
     char b[24], c[24], line[256];
     double used = ntnum("/Catalyst/Systemcore/StorageUsedBytes"), total = ntnum("/Catalyst/Systemcore/StorageTotalBytes");
-    double frac = R->sc_storage;
+    double frac = R->have_sc ? R->sc_storage : NAN;
     const cat_ag_mount_t *root = NULL;
     for (int i = 0; agent && i < a->nmounts; i++) if (!strcmp(a->mounts[i].mount, "/")) root = &a->mounts[i];
     if (root && root->total > 0) {
         used = root->used;
         total = root->total;
         frac = used / total;
+    } else if (!(frac == frac) && used == used && total > 0) {
+        frac = used / total;
     }
     ui_text(SC.disk.v, "%s", bz_fmt(b, sizeof b, frac == frac, "%.0f", frac * 100));
+    bz_set_color(SC.disk.v, frac == frac ? BZ_C_INK : BZ_C_FAINT);
     /* storage warns earlier than the rest: a full disk stops logging, then the program (85 / 93) */
     bz_status_t s = level(frac * 100, 85, 93);
     bz_mark_set(SC.disk_mark, s);
@@ -1040,7 +1051,7 @@ static void sc_refresh(void)
     }
     sc_layout(agent);
     if (!agent) {
-        if (!r->connected) ui_text(SC.install_text, "Not connected. The summary arrives over NetworkTables; the detail from catalyst-agent on the robot, port %d.", CAT_AGENT_PORT);
+        if (!r->connected) ui_text(SC.install_text, "not connected: the summary comes over networktables, the detail from catalyst-agent on the robot (port %d)", CAT_AGENT_PORT);
         else if (!r->line2) ui_text(SC.install_text, "A Catalyst 1.x robot on a roboRIO publishes no Systemcore summary.");
         else set_long(SC.install_text, "For per-core load, the program's restarts and log, what fills the disk and CAN frame counters, install catalyst-agent on the Systemcore: FrcCatalyst agent/build.sh, then the Systemcore web UI's package manager (or opkg install).");
     }
@@ -2346,7 +2357,7 @@ static void rc_runs(void)
     RC.nruns = cat_runs_list(RC.list, RC_RUNS);
     if (RC.nruns < 0) {
         ui_text(RC.runs_title, "no microSD card");
-        lv_obj_t *rn = bz_label(RC.runs, "Runs are written to runs/ on the card.", BZ_F_CAPTION, BZ_C_DIM);
+        lv_obj_t *rn = bz_label(RC.runs, "runs are written to runs/ on the card", BZ_F_CAPTION, BZ_C_DIM);
         lv_obj_set_width(rn, lv_pct(100));
         lv_label_set_long_mode(rn, LV_LABEL_LONG_WRAP);
         return;
@@ -2401,7 +2412,7 @@ static void rc_runs_fill(void)
         bz_tile_set_fill(send, BZ_C_SURFACE3);
     }
     if (!RC.nruns) {
-        lv_obj_t *l = bz_label(RC.runs, "Nothing recorded yet. Pick what to record and tap the button.", BZ_F_CAPTION, BZ_C_DIM);
+        lv_obj_t *l = bz_label(RC.runs, "nothing recorded yet: pick what to record and tap the red button", BZ_F_CAPTION, BZ_C_DIM);
         lv_obj_set_width(l, IN(RC_RIGHT_W));
     }
 }
@@ -2540,15 +2551,15 @@ static void rc_build(lv_obj_t *b)
     lv_obj_set_pos(RC.mid, RC_MID_X, APP_Y);
     bz_label(RC.mid, "black box " MID " 50 hz to microsd", BZ_F_LABEL, BZ_C_DIM);
     RC.elapsed = bz_label(RC.mid, "0:00.0", BZ_F_DISPLAY, BZ_C_INK);
-    lv_obj_set_pos(RC.elapsed, -4, 26);
+    lv_obj_set_pos(RC.elapsed, -4, 34); /* the display face's digits touched the label above at 26 */
     RC.stats = bz_label_line(RC.mid, "", BZ_F_LABEL, BZ_C_INK, IN(RC_MID_W));
-    lv_obj_set_pos(RC.stats, 0, 106);
+    lv_obj_set_pos(RC.stats, 0, 114);
     RC.file = bz_label_line(RC.mid, "", BZ_F_CAPTION, BZ_C_DIM, IN(RC_MID_W));
-    lv_obj_set_pos(RC.file, 0, 130);
+    lv_obj_set_pos(RC.file, 0, 138);
     for (int i = 0; i < RC_SPARKS; i++) {
         lv_obj_t *c = bz_box(RC.mid);
         lv_obj_set_size(c, IN(RC_MID_W), 60);
-        lv_obj_set_pos(c, 0, 162 + i * 64);
+        lv_obj_set_pos(c, 0, 168 + i * 64);
         RC.spark_name[i] = bz_label_line(c, "", BZ_F_CAPTION, BZ_C_DIM, IN(RC_MID_W) - 100);
         RC.spark_val[i] = bz_label(c, "", BZ_F_LABEL, BZ_C_INK);
         lv_obj_align(RC.spark_val[i], LV_ALIGN_TOP_RIGHT, 0, -2);
@@ -2665,9 +2676,9 @@ static void rc_refresh(void)
     }
     /* send to PC */
     if (RC.upload_result >= 2) {
-        char msg[80];
+        char msg[112];
         if (RC.upload_result == 2) snprintf(msg, sizeof msg, "%s \xe2\x86\x92 pc", RC.upload_name);
-        else snprintf(msg, sizeof msg, "Link not connected");
+        else snprintf(msg, sizeof msg, "couldn't send %.40s: the pc link isn't set up", RC.upload_name);
         ui_island_say(RC.upload_result == 2 ? BZ_I_CLOUD_UPLOAD : BZ_I_CLOUD_OFF, msg);
         RC.upload_result = 0;
     }

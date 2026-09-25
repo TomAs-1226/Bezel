@@ -115,20 +115,33 @@ static bool charged_now(const cat_batt_t *b)
     return b->charged && (!l || b->charged >= l->t);
 }
 
-/* a tile's short state: "charged 2 h ago", "went in 40 min ago", "used 5 h ago" */
-static void short_state(const cat_batt_t *b, int64_t now, char *out, size_t n)
+/* "12m ago": a tile's caption holds 15 characters of the caption face */
+static void ago_short(int64_t s, char *out, size_t n)
+{
+    if (s < 0) s = 0;
+    if (s < 90) snprintf(out, n, "now");
+    else if (s < 3600) snprintf(out, n, "%dm ago", (int)(s / 60));
+    else if (s < 48 * 3600) snprintf(out, n, "%dh ago", (int)((s + 1800) / 3600));
+    else snprintf(out, n, "%dd ago", (int)(s / 86400));
+}
+
+/* a battery's short state: "charged 2 h ago", "went in 40 min ago", "used 5 h ago"; `tile`: the tile's
+ * 15-character form ("charged 2h ago", "charge unknown"), which the long one overran ("charge not r...") */
+static void short_state(const cat_batt_t *b, int64_t now, char *out, size_t n, bool tile)
 {
     char a[24];
     const cat_batt_use_t *l = cat_batt_last(b);
     if (b->status == CB_BAD) snprintf(out, n, "marked bad");
     else if (b->status == CB_RETIRED) snprintf(out, n, "retired");
     else if (charged_now(b)) {
-        ago(now - b->charged, a, sizeof a);
+        if (tile) ago_short(now - b->charged, a, sizeof a);
+        else ago(now - b->charged, a, sizeof a);
         snprintf(out, n, "charged %s", a);
     } else if (l) {
-        ago(now - l->t, a, sizeof a);
+        if (tile) ago_short(now - l->t, a, sizeof a);
+        else ago(now - l->t, a, sizeof a);
         snprintf(out, n, "%s %s", now - l->t < 2 * 3600 ? "went in" : "used", a);
-    } else snprintf(out, n, "charge not recorded");
+    } else snprintf(out, n, "%s", tile ? "charge unknown" : "charge not recorded");
 }
 
 static bz_status_t status_mark(int s) { return s == CB_GOOD ? BZ_OK : s == CB_WATCH ? BZ_WARN : s == CB_BAD ? BZ_FAULT : BZ_STALE; }
@@ -596,14 +609,14 @@ static lv_obj_t *batt_tile(lv_obj_t *parent, const cat_batt_t *b, int64_t now, t
     float r = cat_batt_r_now(b, &m);
     if (KNOWN(r)) snprintf(s, sizeof s, "%.0f mohm", r);
     else snprintf(s, sizeof s, "\xe2\x80\x94 mohm");
-    l = bz_label_line(t, s, BZ_F_NAME, ink, o.w - 32);
+    l = bz_label_line(t, s, BZ_F_NAME, KNOWN(r) ? ink : dim, o.w - 32); /* not measured: dim, not a reading */
     lv_obj_set_pos(l, 0, 42);
-    short_state(b, now, s, sizeof s);
+    short_state(b, now, s, sizeof s, true);
     l = bz_label_line(t, s, BZ_F_CAPTION, dim, o.w - 32);
     lv_obj_set_pos(l, 0, o.h - 32 - 42);
+    /* "(auto)" is the detail's to say: on a tile it pushed "watch" past the edge */
     if (o.top) snprintf(s, sizeof s, "recommended");
-    else snprintf(s, sizeof s, "%d use%s%s%s", b->uses_total, b->uses_total == 1 ? "" : "s", b->status == CB_WATCH ? " \xc2\xb7 watch" : "",
-                  b->status == CB_WATCH && b->auto_watch ? " (auto)" : "");
+    else snprintf(s, sizeof s, "%d use%s%s", b->uses_total, b->uses_total == 1 ? "" : "s", b->status == CB_WATCH ? " \xc2\xb7 watch" : "");
     l = bz_label_line(t, s, BZ_F_CAPTION, o.top && !o.hl ? BZ_C_SIGNAL : dim, o.w - 32);
     lv_obj_set_pos(l, 0, o.h - 32 - 22);
     if (o.dim) lv_obj_set_style_opa(t, LV_OPA_40, 0);
@@ -877,7 +890,7 @@ static void build_detail(int64_t now)
     if (KNOWN(rn)) snprintf(rs, sizeof rs, "%.1f mohm", rn);
     if (KNOWN(b->r_base)) snprintf(bs, sizeof bs, " (baseline %.1f)", b->r_base);
     if (b->year) snprintf(yr, sizeof yr, "bought %d", b->year);
-    short_state(b, now, ch, sizeof ch);
+    short_state(b, now, ch, sizeof ch, false);
     snprintf(s, sizeof s, "resistance %s%s \xc2\xb7 %d measured\n%s \xc2\xb7 %d uses \xc2\xb7 %s%s", rs, bs, m, yr,
              b->uses_total, ch, b->auto_watch && b->status == CB_WATCH ? "\non watch by its numbers" : "");
     para(c, s, BZ_F_BODY_S, BZ_C_INK, w);

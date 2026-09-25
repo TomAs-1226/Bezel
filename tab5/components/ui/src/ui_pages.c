@@ -27,6 +27,23 @@ static lv_obj_t *tile_label(lv_obj_t *tile, const char *text, lv_obj_t **right)
     return l;
 }
 
+lv_obj_t *ui_empty(lv_obj_t *parent, int w, const char *title, const char *text)
+{
+    /* sized by its content: a fixed height left a gap under one line and ran a wrapped one into the title */
+    lv_obj_t *t = bz_tile(parent, w, LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(t, 12, 0);
+    lv_obj_t *h = bz_label(t, title, BZ_F_NAME, BZ_C_INK);
+    lv_obj_set_width(h, w - 2 * BZ_PAD_TILE);
+    lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
+    if (text && text[0]) {
+        lv_obj_t *l = bz_label(t, text, BZ_F_CAPTION, BZ_C_DIM);
+        lv_obj_set_width(l, w - 2 * BZ_PAD_TILE);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    }
+    return t;
+}
+
 static void open_app_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
 static void go_tap(lv_obj_t *o, void *u) { (void)o; ui_go((int)(intptr_t)u); }
 
@@ -42,7 +59,7 @@ static struct {
     lv_obj_t *mode, *mode_mark, *mode_marks, *mode_ds, *mode_fms, *mode_ali, *mode_foot, *mode_time;
     lv_obj_t *al_count, *al_mark, *al_lines[3], *al_foot;
     lv_obj_t *loop_v, *loop_meter, *loop_foot;
-    lv_obj_t *can_rows[3], *can_names[3], *can_meters[3], *can_vals[3], *can_foot;
+    lv_obj_t *can_rows[3], *can_names[3], *can_meters[3], *can_vals[3], *can_foot, *can_none;
     lv_obj_t *dev_v, *dev_mark, *dev_foot;
     lv_obj_t *vis_v, *vis_mark, *vis_foot;
     lv_obj_t *head_right, *team;
@@ -56,6 +73,8 @@ static void pulse_refresh(void *u)
     char b[32];
 
     ui_text(P.batt_v, "%s", bz_fmt(b, sizeof b, r->have_battery, "%.2f", r->battery_v));
+    /* an absent value is a faint dash, not a bright bar that reads as a reading */
+    bz_set_color(P.batt_v, r->have_battery ? BZ_C_INK : BZ_C_FAINT);
     if (r->have_battery) {
         int band = cat_battery_band(r->battery_v);
         ui_text(P.batt_band, "%s", band == 2 ? "charged" : band == 1 ? "swap before a match" : "low");
@@ -71,8 +90,10 @@ static void pulse_refresh(void *u)
     }
     if (!r->connected) bz_spark_clear(P.batt_spark);
     char fl[16], cur[16];
-    ui_text(P.batt_foot, "floor %s v · draw %s a", bz_fmt(fl, sizeof fl, r->brownout_v == r->brownout_v, "%.2f", r->brownout_v),
-            bz_fmt(cur, sizeof cur, r->total_current == r->total_current, "%.0f", r->total_current));
+    if (r->connected)
+        ui_text(P.batt_foot, "floor %s v · draw %s a", bz_fmt(fl, sizeof fl, r->brownout_v == r->brownout_v, "%.2f", r->brownout_v),
+                bz_fmt(cur, sizeof cur, r->total_current == r->total_current, "%.0f", r->total_current));
+    else ui_text(P.batt_foot, "no robot");
 
     ui_text(P.mode, "%s", r->connected ? cat_mode_name(r) : "offline");
     bz_mark_set(P.mode_mark, !r->connected ? BZ_STALE : r->estop ? BZ_FAULT : r->enabled ? BZ_WARN : BZ_OK);
@@ -88,7 +109,7 @@ static void pulse_refresh(void *u)
     else ui_text(P.mode_foot, "trying %s", r->address[0] ? r->address : "…");
 
     if (!r->connected) {
-        ui_text(P.al_count, "\xe2\x80\x94");
+        ui_text(P.al_count, " "); /* the stale mark says it: no count, rather than a stray bar */
         bz_mark_set(P.al_mark, BZ_STALE);
     } else if (r->n_errors || r->n_warnings) {
         ui_text(P.al_count, "%d · %d", r->n_errors, r->n_warnings);
@@ -105,10 +126,14 @@ static void pulse_refresh(void *u)
         shown++;
     }
     for (; shown < 3; shown++) ui_text(P.al_lines[shown], " ");
-    ui_text(P.al_foot, "%d error%s · %d warning%s", r->n_errors, r->n_errors == 1 ? "" : "s", r->n_warnings,
-            r->n_warnings == 1 ? "" : "s");
+    /* offline, "0 errors" would claim a clean robot */
+    if (r->connected)
+        ui_text(P.al_foot, "%d error%s · %d warning%s", r->n_errors, r->n_errors == 1 ? "" : "s", r->n_warnings,
+                r->n_warnings == 1 ? "" : "s");
+    else ui_text(P.al_foot, "no robot");
 
     ui_text(P.loop_v, "%s", bz_fmt(b, sizeof b, r->have_loop, "%.1f", r->loop_avg_ms));
+    bz_set_color(P.loop_v, r->have_loop ? BZ_C_INK : BZ_C_FAINT);
     if (r->have_loop) {
         double f = r->loop_avg_ms / 20.0;
         bz_meter_set(P.loop_meter, (float)f, f > 1 ? BZ_C_FAULT : f > 0.75 ? BZ_C_WARN : BZ_C_ICE);
@@ -129,10 +154,15 @@ static void pulse_refresh(void *u)
         ui_text(P.can_vals[row], "%.0f%%", u * 100);
         row++;
     }
+    /* no bus to show: the same faint dash as the tiles beside it, not an empty tile */
+    if (row) lv_obj_add_flag(P.can_none, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(P.can_none, LV_OBJ_FLAG_HIDDEN);
     for (; row < 3; row++) lv_obj_add_flag(P.can_rows[row], LV_OBJ_FLAG_HIDDEN);
     if (r->ncan_util) ui_text(P.can_foot, "%d devices declared", r->ndevices);
-    else ui_text(P.can_foot, "%s", r->connected ? "not published" : " ");
+    else ui_text(P.can_foot, "%s", r->connected ? "not published" : "no robot");
 
+    bz_set_color(P.dev_v, r->have_roster || r->ndevices ? BZ_C_INK : BZ_C_FAINT);
+    bz_set_color(P.vis_v, r->ncameras ? BZ_C_INK : BZ_C_FAINT);
     if (r->have_roster) {
         ui_text(P.dev_v, "%d/%d", r->motors_connected, r->motors_expected);
         bz_mark_set(P.dev_mark, r->motors_connected < r->motors_expected ? BZ_FAULT : BZ_OK);
@@ -231,7 +261,8 @@ void ui_page_overview(lv_obj_t *page)
     sp = bz_box(marks);
     lv_obj_set_width(sp, 10);
     P.mode_ali = bz_label(marks, "", BZ_F_LABEL, BZ_C_DIM);
-    P.mode_foot = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
+    /* "catalyst 2.0.0-beta.1 · systemcore · 12 ms" runs past a third of the screen: one line, cut */
+    P.mode_foot = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, COL3 - 2 * BZ_PAD_TILE);
     lv_obj_align(P.mode_foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
     /* alerts */
@@ -280,6 +311,8 @@ void ui_page_overview(lv_obj_t *page)
         P.can_vals[i] = bz_label(rw, "", BZ_F_LABEL, BZ_C_INK);
         lv_obj_add_flag(rw, LV_OBJ_FLAG_HIDDEN);
     }
+    value_row(t, BZ_F_VALUE, NULL, &P.can_none, 58);
+    bz_set_color(P.can_none, BZ_C_FAINT);
     P.can_foot = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_align(P.can_foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
@@ -291,7 +324,7 @@ void ui_page_overview(lv_obj_t *page)
     tile_label(t, "motors", NULL);
     P.dev_mark = bz_mark(t, BZ_STALE, 12);
     lv_obj_align(P.dev_mark, LV_ALIGN_TOP_RIGHT, 0, 2);
-    value_row(t, BZ_F_VALUE, NULL, &P.dev_v, 30);
+    value_row(t, BZ_F_VALUE, NULL, &P.dev_v, 58); /* on the loop tile's line: the row's values align */
     P.dev_foot = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, COL4 - 2 * BZ_PAD_TILE);
     lv_obj_align(P.dev_foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
@@ -303,8 +336,8 @@ void ui_page_overview(lv_obj_t *page)
     tile_label(t, "vision", NULL);
     P.vis_mark = bz_mark(t, BZ_STALE, 12);
     lv_obj_align(P.vis_mark, LV_ALIGN_TOP_RIGHT, 0, 2);
-    value_row(t, BZ_F_VALUE, NULL, &P.vis_v, 30);
-    P.vis_foot = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
+    value_row(t, BZ_F_VALUE, NULL, &P.vis_v, 58);
+    P.vis_foot = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, COL4 - 2 * BZ_PAD_TILE); /* a long camera name stays in */
     lv_obj_align(P.vis_foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
     ui_on_page_refresh(PG_ROBOT, pulse_refresh, NULL);

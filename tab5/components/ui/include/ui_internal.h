@@ -201,6 +201,9 @@ lv_obj_t *ui_button(lv_obj_t *parent, const char *icon, const char *text, bz_tap
 /* A chip that is on (ice fill, on-ice ink) or off (surface2). */
 lv_obj_t *ui_chip(lv_obj_t *parent, const char *text, bz_tap_fn fn, void *user);
 void ui_chip_set(lv_obj_t *chip, bool on);
+/* An empty state: a tile `w` wide that grows with its words, a title (name face) over a caption, 12 px apart.
+ * One look for every "not connected" / "nothing yet" in the robot's pages and apps (ui_pages.c). */
+lv_obj_t *ui_empty(lv_obj_t *parent, int w, const char *title, const char *text);
 /* A vertical scroller: returns the content container; drags coast and rubber-band at the ends. */
 lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h);
 /* Brings a scroller's end into view on the `smooth` spring (a transcript following its newest line).

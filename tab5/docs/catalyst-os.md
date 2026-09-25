@@ -186,7 +186,7 @@ The robot can't know which of the team's batteries is in it (`RobotIdentity.batt
 - **Live.** While a pick is under 4 h old and has no log yet, the robot's battery voltage and
   `/Catalyst/Brownout/TotalCurrent` (else a PDH's `TotalCurrent`) are folded in at 10 Hz; a session ends 15 s after
   the robot is disabled. A log's numbers replace live ones.
-- **The recommendation** ranks every battery with its reasons in words ("#7: lowest resistance (18 mΩ), rested 2 h,
+- **The recommendation** ranks every battery with its reasons in words ("#7: lowest resistance (18 mohm), rested 2 h,
   charged"): charged since its last use (+), rested 30 min off the charger (+), resistance (lower better, rising 15 %
   over its baseline −), brownouts in its last three uses (−), on watch (−), and uses today against the fleet's mean.
   Bad, retired, or in within the last 2 h and not marked charged since: out. A battery whose resistance is over

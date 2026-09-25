@@ -655,6 +655,8 @@ void cat_model_update(cat_robot_t *r)
         r->match_time = r->brownout_v = r->predicted_v = r->total_current = NAN;
         r->loop_last_ms = r->loop_avg_ms = r->loop_max_ms = r->heading_deg = NAN;
         r->pd_voltage = r->pd_total = NAN;
+        /* absent, as read_systemcore leaves them: at 0 the systemcore app said "0 °c · ok" with no robot */
+        r->sc_cpu = r->sc_temp = r->sc_ram = r->sc_storage = NAN;
         for (int i = 0; i < 24; i++) r->pd_amps[i] = NAN;
         r->tag_seen = -1;
         return;
