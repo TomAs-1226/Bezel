@@ -118,6 +118,7 @@ struct hal_http {
     int pos, len;                /* buffered bytes not yet handed out */
     bool chunked, done;
     long remaining;              /* in the current chunk, or of a Content-Length body; -1 unknown */
+    char last_modified[40];
 };
 
 static SSL_CTX *g_ssl;
@@ -289,6 +290,11 @@ hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, siz
         if (l == 0) break;
         if (!strncasecmp(line, "transfer-encoding:", 18) && strcasestr(line, "chunked")) h->chunked = true;
         else if (!strncasecmp(line, "content-length:", 15)) h->remaining = atol(line + 15);
+        else if (!strncasecmp(line, "last-modified:", 14)) {
+            const char *v = line + 14;
+            while (*v == ' ' || *v == '	') v++;
+            snprintf(h->last_modified, sizeof h->last_modified, "%s", v);
+        }
     }
     if (h->chunked) h->remaining = 0; /* read the first chunk size on demand */
     if (status) *status = st;
@@ -325,6 +331,8 @@ int hal_http_read(hal_http_t *h, char *out, int max)
     if (h->remaining > 0) h->remaining -= n;
     return n;
 }
+
+const char *hal_http_last_modified(const hal_http_t *h) { return h ? h->last_modified : ""; }
 
 void hal_http_close(hal_http_t *h)
 {

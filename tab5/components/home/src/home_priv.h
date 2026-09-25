@@ -15,6 +15,7 @@ void home_kick(void);
 void home_pc_work(double now, bool want);
 void home_ha_work(double now, bool want);
 void home_wx_work(double now, bool want);
+void home_tba_work(double now, bool want);
 void home_player_work(double now);
 
 /* A JSON document on the heap: tokens sized to the text. false if it isn't JSON. Free with home_json_free. */

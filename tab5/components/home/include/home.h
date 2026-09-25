@@ -24,6 +24,7 @@ enum {
     HOME_WANT_PC = 1,        /* the PC's now-playing, every second */
     HOME_WANT_HA = 2,        /* the picked Home Assistant entities, every 5 s */
     HOME_WANT_WEATHER = 4,   /* the weather, every 20 min */
+    HOME_WANT_TBA = 8,       /* The Blue Alliance (tba.h), every 20-60 s */
 };
 /* From the UI's refresh: keeps the worker (and those polls) going for a few seconds more. */
 void home_want(unsigned mask);

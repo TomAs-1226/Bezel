@@ -126,6 +126,8 @@ bool ui_companion_keeps_awake(void);
 /* ui_apps_util.c: the tablet's own utilities */
 extern const ui_app_t APP_TIMER, APP_CALC, APP_NOTES, APP_CHECK, APP_LIGHT, APP_SYSMON, APP_FILES;
 extern const ui_app_t APP_GEAR, APP_RULER, APP_REF; /* ui_apps_shop.c */
+/* The Blue Alliance (ui_app_tba.c): the team's event, its next match, standing and the rankings. */
+extern const ui_app_t APP_TBA;
 /* Catalyst OS's everyday apps (ui_apps_os.c), on the card's CATOS layout (ui_storage.h). */
 extern const ui_app_t APP_CLOCK, APP_CALENDAR, APP_DOCS, APP_PHOTOS, APP_STORAGE;
 /* Loads the alarms and starts the hook that rings them with the clock app closed. Once, at start-up, after

@@ -16,7 +16,7 @@
 #define WORKER_STACK 12288  /* TLS (Open-Meteo, an https Home Assistant) wants >= 12 KB */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static double g_want_at[3], g_last;
+static double g_want_at[4], g_last;
 static bool g_running;
 
 static void *worker(void *arg)
@@ -27,7 +27,7 @@ static void *worker(void *arg)
         pthread_mutex_lock(&g_lock);
         bool alive = now - g_last < WORKER_IDLE_S;
         bool w_pc = now - g_want_at[0] < WANT_S, w_ha = now - g_want_at[1] < WANT_S,
-             w_wx = now - g_want_at[2] < WANT_S;
+             w_wx = now - g_want_at[2] < WANT_S, w_tba = now - g_want_at[3] < WANT_S;
         if (!alive) g_running = false;
         pthread_mutex_unlock(&g_lock);
         if (!alive) break;
@@ -35,6 +35,7 @@ static void *worker(void *arg)
         home_pc_work(now, w_pc);
         home_ha_work(now, w_ha);
         home_wx_work(now, w_wx);
+        home_tba_work(now, w_tba);
         usleep(50 * 1000);
     }
     return NULL;
@@ -66,6 +67,7 @@ void home_want(unsigned mask)
     if (mask & HOME_WANT_PC) g_want_at[0] = now;
     if (mask & HOME_WANT_HA) g_want_at[1] = now;
     if (mask & HOME_WANT_WEATHER) g_want_at[2] = now;
+    if (mask & HOME_WANT_TBA) g_want_at[3] = now;
     if (mask) {
         g_last = now;
         start_locked(&start);

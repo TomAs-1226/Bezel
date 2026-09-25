@@ -200,6 +200,8 @@ hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, siz
 /* The next bytes of the body, chunked encoding already removed: > 0 bytes, 0 at the end, < 0 error. */
 int hal_http_read(hal_http_t *h, char *buf, int max);
 void hal_http_close(hal_http_t *h);
+/* The response's Last-Modified header ("" when it sent none), to send back as If-Modified-Since. */
+const char *hal_http_last_modified(const hal_http_t *h);
 
 /* One whole response into `out` (NUL-terminated, truncated to max-1). Returns the status, or -1. */
 static inline int hal_http_fetch(const hal_http_req_t *req, char *out, int max, int *len)

@@ -649,7 +649,18 @@ struct hal_http {
     esp_http_client_handle_t c;
     int timeout_ms;
     bool done;
+    char last_modified[40];
 };
+
+/* response headers arrive one at a time through the client's events: keep the one a conditional GET needs */
+static esp_err_t http_event(esp_http_client_event_t *e)
+{
+    hal_http_t *h = e->user_data;
+    if (e->event_id == HTTP_EVENT_ON_HEADER && h && e->header_key && e->header_value &&
+        !strcasecmp(e->header_key, "Last-Modified"))
+        snprintf(h->last_modified, sizeof h->last_modified, "%s", e->header_value);
+    return ESP_OK;
+}
 
 static void http_err(char *err, size_t n, const char *what, esp_err_t e)
 {
@@ -700,6 +711,11 @@ hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, siz
         return NULL;
     }
     int timeout = req->timeout_ms > 0 ? req->timeout_ms : 10000;
+    hal_http_t *h = calloc(1, sizeof *h);
+    if (!h) {
+        http_err(err, errn, "no memory", ESP_ERR_NO_MEM);
+        return NULL;
+    }
     esp_http_client_config_t cfg = {
         .url = req->url,
         .method = http_method(req->method),
@@ -709,12 +725,9 @@ hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, siz
         .buffer_size_tx = 2048,                     /* the request head, with an API key in it */
         .user_agent = "catalyst-tab",
         .disable_auto_redirect = true,
+        .event_handler = http_event,
+        .user_data = h,
     };
-    hal_http_t *h = calloc(1, sizeof *h);
-    if (!h) {
-        http_err(err, errn, "no memory", ESP_ERR_NO_MEM);
-        return NULL;
-    }
     h->timeout_ms = timeout;
     h->c = esp_http_client_init(&cfg);
     if (!h->c) {
@@ -775,6 +788,8 @@ int hal_http_read(hal_http_t *h, char *buf, int max)
     }
     return r;
 }
+
+const char *hal_http_last_modified(const hal_http_t *h) { return h ? h->last_modified : ""; }
 
 void hal_http_close(hal_http_t *h)
 {

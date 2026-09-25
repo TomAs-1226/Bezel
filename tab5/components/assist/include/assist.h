@@ -127,10 +127,15 @@ void assist_usage(as_usage_t *out);
 /* Suggested openers for the current robot state ("Why is Elevator hot?"), for chips under the prompt. */
 int assist_suggestions(const char **out, int max);
 
-/* Keys dropped on the microSD card: /sdcard/CATOS/KEYS/OPENAI.TXT and ANTHROPIC.TXT, read once at boot by
- * assist_init (whitespace trimmed), stored like a typed key, then overwritten and deleted so they don't
- * linger on the card. The key is never logged. assist_import_note() hands the UI thread a one-time
- * message for the island ("OpenAI key imported"), or NULL. */
+/* Keys dropped on the microSD card, read once at boot: /sdcard/CATOS/KEYS/OPENAI.TXT and ANTHROPIC.TXT (one
+ * key each), and KEYS.ENV in CATOS/ or at the card's root (dotenv: OPENAI_API_KEY, ANTHROPIC_API_KEY,
+ * TBA_API_KEY, HA_URL, HA_TOKEN, NEXUS_API_KEY, FRC_EVENTS_USER, FRC_EVENTS_TOKEN, TEAM, WIFI_SSID, WIFI_PASS;
+ * docs/keys.md). Each value goes to the kv key its settings read, the Wi-Fi pair to the Wi-Fi driver; then
+ * the file is overwritten and deleted so nothing lingers on the card. Values are never logged.
+ * assist_import_card() runs on the UI thread (it writes NVS) before the settings are loaded, so everything
+ * that reads them at start-up sees the new values. assist_import_note() hands the UI thread a one-time
+ * message for the island naming what came in (never a value), or NULL; valid until the next call. */
+void assist_import_card(void);
 const char *assist_import_note(void);
 
 /* Points the direct route at another base URL instead of https://api.anthropic.com (tests use a local
