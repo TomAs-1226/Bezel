@@ -46,6 +46,7 @@
 #include "lwip/netif.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
+#include <errno.h>
 #include <fcntl.h>
 #include "lwip/inet.h"
 #include "esp_sntp.h"
@@ -188,6 +189,37 @@ static bool c6_restart(const char *why)
     return true;
 }
 
+/* Does anything get through: a TCP connect to the gateway's port 80, 2 s at most. An answer either way (it
+ * connects, or the router refuses the port) means packets go both ways; silence means they don't. */
+static bool gw_alive(uint32_t *gw)
+{
+    esp_netif_ip_info_t ip = { 0 };
+    *gw = 0;
+    if (!N.sta || esp_netif_get_ip_info(N.sta, &ip) != ESP_OK || !ip.gw.addr) return true; /* nothing to ask */
+    *gw = ip.gw.addr;
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return true; /* out of sockets is not the link's fault */
+    struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons(80) };
+    sa.sin_addr.s_addr = ip.gw.addr;
+    fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK);
+    int r = connect(fd, (struct sockaddr *)&sa, sizeof sa);
+    bool alive = r == 0;
+    if (!alive && errno == EINPROGRESS) {
+        fd_set w;
+        FD_ZERO(&w);
+        FD_SET(fd, &w);
+        struct timeval tv = { .tv_sec = 2 };
+        int so = -1;
+        socklen_t sl = sizeof so;
+        if (select(fd + 1, NULL, &w, NULL, &tv) > 0 && getsockopt(fd, SOL_SOCKET, SO_ERROR, &so, &sl) == 0)
+            alive = so == 0 || so == ECONNREFUSED || so == ECONNRESET;
+    } else if (!alive) {
+        alive = errno == ECONNREFUSED || errno == ECONNRESET;
+    }
+    close(fd);
+    return alive;
+}
+
 static void rssi_task(void *arg)
 {
     (void)arg;
@@ -198,13 +230,40 @@ static void rssi_task(void *arg)
      * its reset line (c6_restart: spaced out when they come often, never given up). */
     if (s_c6_restarts[3] != 0xC6C6C6C6u) memset(s_c6_restarts, 0, sizeof s_c6_restarts);
     s_c6_restarts[3] = 0xC6C6C6C6u;
-    int misses = 0;
+    int misses = 0, cycle = 0, dead = 0;
+    uint32_t answered = 0; /* the gateway that has answered: only its silence is news (kept across a rejoin) */
+    int64_t rejoined = 0;
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
         wifi_ap_record_t ap;
         if (!N.up || s_scanning) {
             misses = 0;
+            dead = 0;
             continue;
+        }
+        /* The other way the C6 fails: it answers its RPCs, reports "connected", and passes no packets. Only a
+         * failed request used to notice (wifi_heal), so with nothing asking Wi-Fi stayed dead a minute or more.
+         * The gateway is asked every 15 s, every 3 s once it has gone quiet: twice quiet, join again; quiet
+         * twice more after that, reset the C6. A gateway that has never answered (one that drops port 80
+         * without a word) says nothing either way: it's left alone. */
+        if (++cycle >= 5 || dead) {
+            cycle = 0;
+            uint32_t gw;
+            if (gw_alive(&gw)) {
+                if (dead) ESP_LOGI(TAG, "wi-fi: the gateway answers again");
+                dead = 0;
+                answered = gw;
+            } else if (gw && gw == answered) {
+                dead++;
+                int64_t now = esp_timer_get_time();
+                if (dead == 2 && (!rejoined || now - rejoined > 60 * 1000000LL)) {
+                    ESP_LOGW(TAG, "wi-fi: connected but the gateway is silent: joining again");
+                    rejoined = now;
+                    esp_wifi_disconnect(); /* the disconnect handler connects again */
+                } else if (dead >= 4) {
+                    c6_restart("connected, but nothing gets through even after joining again");
+                }
+            }
         }
         if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
             N.rssi = ap.rssi;
@@ -227,7 +286,8 @@ static void wifi_init(void)
     }
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL);
-    xTaskCreatePinnedToCore(rssi_task, "rssi", 3072, NULL, 2, &N.rssi_task, 0);
+    /* 4 KB: its gateway probe opens a socket and selects on it */
+    xTaskCreatePinnedToCore(rssi_task, "rssi", 4096, NULL, 2, &N.rssi_task, 0);
     /* esp-hosted logs every RPC at info (one line each 3 s from the signal poll alone) */
     esp_log_level_set("rpc_core", ESP_LOG_WARN);
     esp_log_level_set("rpc_rsp", ESP_LOG_WARN);
@@ -959,7 +1019,8 @@ static volatile int s_http_fails;
 static void wifi_heal(void)
 {
     static int64_t last;
-    if (!N.up || ++s_http_fails < 3) return;
+    /* both workers' requests land here (assist and the companion): counted atomically */
+    if (!N.up || __atomic_add_fetch(&s_http_fails, 1, __ATOMIC_RELAXED) < 3) return;
     int64_t now = esp_timer_get_time();
     if (last && now - last < 120 * 1000000LL) {
         /* joined again under two minutes ago and still nothing: the C6 needs its reset */
