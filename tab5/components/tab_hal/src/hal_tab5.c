@@ -926,6 +926,8 @@ void hal_present_prof(double out[6])
     s_ppn = 0;
 }
 
+static void plane_draw(uint16_t *fb, int *y0, int *y1);
+
 static void present_do(const bz_present_t *areas, int n)
 {
     double t0 = hal_seconds();
@@ -956,6 +958,7 @@ static void present_do(const bz_present_t *areas, int n)
         if (nrec < PRESENT_MAX + SCROLL_MAX) rec[nrec++] = (bz_present_t){ areas[i].a, s_jstaged ? NULL : areas[i].src, areas[i].stride };
         else if (!P.overflow++) ESP_LOGW(TAG, "present: %d areas, the catch-up keeps %d", n, PRESENT_MAX);
     }
+    plane_draw(fb, &y0, &y1); /* the camera's picture, over what LVGL drew under it */
     if (y1 < y0) { y0 = 0; y1 = 0; }
     /* only the rows the CPU may have touched: draw_bitmap writes back the cache over exactly these */
     double t4 = hal_seconds();
@@ -1739,10 +1742,10 @@ void hal_set_volume(float v)
 
 /* ------------------------------------------------------------------ camera */
 
-/* the preview: 800×450 is more than the lens app's box shows after LVGL scales it, and two of them (1.4 MB)
- * still fit in PSRAM beside the camera's own two 1.8 MB capture buffers */
-#define CAM_OUT_W 800
-#define CAM_OUT_H 450
+/* The preview: 960×540 (the PPA scales in sixteenths: 3/4 of the sensor's 1280×720) when two of them fit in
+ * PSRAM beside the camera's own two 1.8 MB capture buffers, else 800×450 (5/8) */
+#define CAM_OUT_W C.out_w
+#define CAM_OUT_H C.out_h
 static struct {
     int fd;
     bool on, started;
@@ -1752,13 +1755,96 @@ static struct {
     uint16_t *frames[2];
     volatile int ready;         /* index of the newest complete frame, -1 none */
     volatile bool busy;         /* the camera task is between taking a frame and giving it back */
+    int out_w, out_h;           /* the preview's size */
+    /* The video plane: the preview turned into the panel's orientation by the PPA on core 0, then copied onto
+     * the panel by DMA2D with each present (present_do), over whatever LVGL drew there. LVGL scaling and
+     * the PPA turning 0.6 Mpx a frame had the lens app at ~14 fps with every button lagging. */
+    volatile bool plane, freeze;
+    int px, py;                 /* the plane's landscape top-left; its size is the preview's */
+    volatile int reading;       /* the frame a present is copying (-1 none): not written meanwhile */
+    volatile bool want_upright; /* a snapshot wants the next frame upright, for the JPEG */
+    volatile int upright;       /* that frame (-1 none) */
+    bool frame_flip[2];         /* the picture's turn each frame was made for */
+    volatile uint32_t gen;      /* frames made */
+    double ppa_s;               /* PROFILING: the PPA's time for them */
     TaskHandle_t task;
     jpeg_encoder_handle_t jpeg;
-} C = { .fd = -1, .ready = -1 };
+} C = { .fd = -1, .ready = -1, .reading = -1, .upright = -1 };
 
 static void clip_take(const void *src);
 static bool clip_taking_frames(void);
 static volatile bool s_clip_taking;
+
+/* The plane's frame from the capture: scaled (nearest) and turned into the panel's orientation by the CPU, in
+ * 32-row by 64-column tiles so both the capture's rows and the plane's stay in the cache. The PPA doing the
+ * same took ~47 ms a frame (0.5 Mpx turned and scaled) and held up every present's rotations meanwhile. */
+#define PT_ROWS 64 /* plane rows a tile */
+#define PT_COLS 16 /* plane columns a tile: capture rows, each a cache line apart at least */
+static struct {
+    const uint16_t *rowp[720];
+    int16_t sxt[1280];
+    uint16_t *dst;
+    int ow, oh, split;
+    bool flip;
+    TaskHandle_t helper, caller;
+} PT;
+
+/* the plane's rows [y0, y1) */
+static void plane_turn_rows(int y0, int y1)
+{
+    int pw = PT.oh, ow = PT.ow, oh = PT.oh;
+    for (int by = y0; by < y1; by += PT_ROWS) {
+        int ey = by + PT_ROWS < y1 ? by + PT_ROWS : y1;
+        for (int bx = 0; bx < pw; bx += PT_COLS) {
+            int ex = bx + PT_COLS < pw ? bx + PT_COLS : pw;
+            for (int py = by; py < ey; py++) {
+                uint16_t *d = PT.dst + (size_t)py * pw;
+                /* landscape (x, y) lands at portrait (y, W-1-x); turned the other way, at (H-1-y, x) */
+                int sx = PT.sxt[PT.flip ? py : ow - 1 - py];
+                if (!PT.flip)
+                    for (int px = bx; px < ex; px++) d[px] = PT.rowp[px][sx];
+                else
+                    for (int px = bx; px < ex; px++) d[px] = PT.rowp[oh - 1 - px][sx];
+            }
+        }
+    }
+    esp_cache_msync(PT.dst + (size_t)y0 * pw, (size_t)(y1 - y0) * pw * 2,
+                    ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
+
+/* The second half, on the UI's core under everything there: in the lens app that core is mostly idle */
+static void plane_helper(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        plane_turn_rows(PT.split, PT.ow);
+        xTaskNotifyGive(PT.caller);
+    }
+}
+
+static void plane_turn(const uint16_t *src, int sw, int sh, uint16_t *dst, int ow, int oh, bool flip)
+{
+    if (ow > 1280 || oh > 720) return;
+    for (int x = 0; x < ow; x++) PT.sxt[x] = (int16_t)(x * sw / ow);
+    for (int y = 0; y < oh; y++) PT.rowp[y] = src + (size_t)(y * sh / oh) * sw;
+    PT.dst = dst;
+    PT.ow = ow;
+    PT.oh = oh;
+    PT.flip = flip;
+    if (!PT.helper) xTaskCreatePinnedToCore(plane_helper, "plane", 3072, NULL, 3, &PT.helper, 1);
+    if (!PT.helper) {
+        plane_turn_rows(0, ow);
+        return;
+    }
+    /* halves split on a multiple of 32 rows: a whole number of cache lines for either width, so neither core
+     * writes back a line the other is writing */
+    PT.split = ow / 2 / 32 * 32;
+    PT.caller = xTaskGetCurrentTaskHandle();
+    xTaskNotifyGive(PT.helper);
+    plane_turn_rows(0, PT.split);
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(200));
+}
 
 static void cam_task(void *arg)
 {
@@ -1782,25 +1868,70 @@ static void cam_task(void *arg)
             if (clip_taking_frames()) clip_take(C.bufs[b.index]);
             s_clip_taking = false;
         }
-        /* scale 1280×720 to the preview's size on the PPA straight into the frame the UI will show */
-        ppa_srm_oper_config_t op = {
-            .in = { .buffer = C.bufs[b.index], .pic_w = (uint32_t)C.src_w, .pic_h = (uint32_t)C.src_h,
-                    .block_w = (uint32_t)C.src_w, .block_h = (uint32_t)C.src_h, .srm_cm = PPA_SRM_COLOR_MODE_RGB565 },
-            .out = { .buffer = C.frames[w], .buffer_size = CAM_OUT_W * CAM_OUT_H * 2, .pic_w = CAM_OUT_W,
-                     .pic_h = CAM_OUT_H, .srm_cm = PPA_SRM_COLOR_MODE_RGB565 },
-            .rotation_angle = PPA_SRM_ROTATION_ANGLE_0,
-            .scale_x = (float)CAM_OUT_W / C.src_w,
-            .scale_y = (float)CAM_OUT_H / C.src_h,
-            .mode = PPA_TRANS_MODE_BLOCKING,
-        };
-        static bool said;
-        if (ppa_do_scale_rotate_mirror(T.ppa_cam, &op) != ESP_OK && !said) {
-            said = true;
-            ESP_LOGE(TAG, "camera: scale %p (%ux%u) -> %p failed", C.bufs[b.index], (unsigned)C.src_w,
-                     (unsigned)C.src_h, C.frames[w]);
+        /* the frame to write: not the one shown, not one a present is copying, not a snapshot's */
+        bool upright = C.want_upright || !C.plane;
+        w = C.ready < 0 ? 0 : C.ready ^ 1;
+        bool skip = (C.plane && C.freeze && !C.want_upright) || w == C.reading || w == C.upright;
+        if (!skip && !upright) {
+            bool flip = s_flip;
+            double t0 = hal_seconds();
+            /* the capture came in by DMA: what the cache holds of this buffer is last time's */
+            esp_cache_msync(C.bufs[b.index], (C.lens[b.index] + 127) & ~(size_t)127, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+            static double sync_s;
+            sync_s += hal_seconds() - t0;
+            if (!((C.gen + 1) % 150)) {
+                ESP_LOGI(TAG, "camera: %.1f ms of it the cache", sync_s * 1000 / 150); /* PROFILING */
+                sync_s = 0;
+            }
+            /* The camera is fixed to the body, as the panel is: when the picture turns 180° (the tablet held
+             * the other way up), the scene has turned with the body too, and the two cancel. So the frame is
+             * laid out as the unturned panel's, whatever the picture's turn; only where it goes follows it. */
+            (void)flip;
+            plane_turn(C.bufs[b.index], C.src_w, C.src_h, C.frames[w], CAM_OUT_W, CAM_OUT_H, false);
+            C.ppa_s += hal_seconds() - t0;
+            C.frame_flip[w] = flip;
+            C.ready = w;
+            C.gen++;
+            if (!(C.gen % 150)) {
+                ESP_LOGI(TAG, "camera: %.1f ms to turn a frame", C.ppa_s * 1000 / 150); /* PROFILING */
+                C.ppa_s = 0;
+            }
+        } else if (!skip) {
+            /* scale 1280×720 to the preview's size on the PPA, upright (the LVGL preview, a snapshot) */
+            bool flip = s_flip;
+            ppa_srm_oper_config_t op = {
+                .in = { .buffer = C.bufs[b.index], .pic_w = (uint32_t)C.src_w, .pic_h = (uint32_t)C.src_h,
+                        .block_w = (uint32_t)C.src_w, .block_h = (uint32_t)C.src_h, .srm_cm = PPA_SRM_COLOR_MODE_RGB565 },
+                .out = { .buffer = C.frames[w], .buffer_size = ((uint32_t)CAM_OUT_W * CAM_OUT_H * 2 + 127) & ~127u,
+                         .pic_w = (uint32_t)(upright ? CAM_OUT_W : CAM_OUT_H),
+                         .pic_h = (uint32_t)(upright ? CAM_OUT_H : CAM_OUT_W), .srm_cm = PPA_SRM_COLOR_MODE_RGB565 },
+                /* upright for the person holding it: turned half round when the picture is (see plane_turn) */
+                .rotation_angle = flip ? PPA_SRM_ROTATION_ANGLE_180 : PPA_SRM_ROTATION_ANGLE_0,
+                .scale_x = (float)CAM_OUT_W / C.src_w,
+                .scale_y = (float)CAM_OUT_H / C.src_h,
+                .mode = PPA_TRANS_MODE_BLOCKING,
+            };
+            static bool said;
+            double t0 = hal_seconds();
+            if (ppa_do_scale_rotate_mirror(T.ppa_cam, &op) != ESP_OK && !said) {
+                said = true;
+                ESP_LOGE(TAG, "camera: scale %p (%ux%u) -> %p failed", C.bufs[b.index], (unsigned)C.src_w,
+                         (unsigned)C.src_h, C.frames[w]);
+            }
+            C.ppa_s += hal_seconds() - t0;
+            if (C.plane && C.want_upright) {
+                C.upright = w;
+                C.want_upright = false;
+            } else {
+                C.frame_flip[w] = flip;
+                C.ready = w;
+                C.gen++;
+                if (!(C.gen % 150)) {
+                    ESP_LOGI(TAG, "camera: %.1f ms of PPA a frame", C.ppa_s * 1000 / 150); /* PROFILING */
+                    C.ppa_s = 0;
+                }
+            }
         }
-        C.ready = w;
-        w ^= 1;
         ioctl(C.fd, VIDIOC_QBUF, &b);
         C.busy = false;
     }
@@ -1857,8 +1988,17 @@ bool hal_camera_start(void)
             C.lens[i] = b.length;
             ioctl(C.fd, VIDIOC_QBUF, &b);
         }
-        C.frames[0] = psram_aligned(CAM_OUT_W * CAM_OUT_H * 2);
-        C.frames[1] = psram_aligned(CAM_OUT_W * CAM_OUT_H * 2);
+        static const int SZ[2][2] = { { 960, 540 }, { 800, 450 } };
+        for (int k = 0; k < 2 && !C.frames[1]; k++) {
+            free(C.frames[0]);
+            C.frames[0] = NULL;
+            C.out_w = SZ[k][0];
+            C.out_h = SZ[k][1];
+            size_t n = ((size_t)C.out_w * C.out_h * 2 + 127) & ~(size_t)127;
+            C.frames[0] = psram_aligned(n);
+            C.frames[1] = C.frames[0] ? psram_aligned(n) : NULL;
+        }
+        C.ready = C.reading = C.upright = -1;
         if (!C.frames[0] || !C.frames[1]) {
             ESP_LOGE(TAG, "camera: no PSRAM for the preview (%u free, %u in one piece)",
                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
@@ -1888,6 +2028,8 @@ void hal_camera_stop(void)
     if (!C.started) return;
     hal_clip_stop();
     C.on = false;
+    C.plane = false;
+    present_sync(); /* no present copying the plane from buffers about to be freed */
     for (int i = 0; i < 50 && C.busy; i++) vTaskDelay(pdMS_TO_TICKS(4));
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(C.fd, VIDIOC_STREAMOFF, &type);
@@ -1903,16 +2045,79 @@ void hal_camera_stop(void)
 
 const uint16_t *hal_camera_frame(int *w, int *h)
 {
-    if (!C.on || C.ready < 0) return NULL;
+    if (!C.on || C.ready < 0 || C.plane) return NULL;
     *w = CAM_OUT_W;
     *h = CAM_OUT_H;
     return C.frames[C.ready];
 }
 
+/* The plane's picture into a panel buffer: one DMA2D block from a buffer the preview's size */
+static void plane_draw(uint16_t *fb, int *y0, int *y1)
+{
+    int i = C.ready;
+    if (!C.plane || i < 0 || !s_fbcpy) return;
+    C.reading = i;
+    bz_area_t a = { (int16_t)C.px, (int16_t)C.py, (int16_t)(C.px + C.out_w - 1), (int16_t)(C.py + C.out_h - 1) };
+    int x, y, w, h;
+    portrait_rect(&a, &x, &y, &w, &h);
+    fbcpy_wait();
+    esp_async_fbcpy_trans_desc_t t = {
+        .src_buffer = C.frames[i], .dst_buffer = fb,
+        .src_buffer_size_x = (size_t)w, .src_buffer_size_y = (size_t)h,
+        .dst_buffer_size_x = PANEL_W, .dst_buffer_size_y = PANEL_H,
+        .src_offset_x = 0, .src_offset_y = 0,
+        .dst_offset_x = (size_t)x, .dst_offset_y = (size_t)y,
+        .copy_size_x = (size_t)w, .copy_size_y = (size_t)h,
+        .pixel_format_unique_id = { .color_type_id = COLOR_TYPE_ID(COLOR_SPACE_RGB, COLOR_PIXEL_RGB565) },
+    };
+    if (esp_async_fbcpy(s_fbcpy, &t, fbcpy_done, NULL) == ESP_OK) s_fbcpy_pending = true;
+    fbcpy_wait();
+    C.reading = -1;
+    rows_of(&a, y0, y1);
+}
+
+bool hal_camera_plane(int bx, int by, int bw, int bh, int *x, int *y, int *w, int *h)
+{
+    if (!C.on || !C.frames[0] || !s_fbcpy) return false;
+    C.px = bx + (bw - C.out_w) / 2;
+    C.py = by + (bh - C.out_h) / 2;
+    *x = C.px;
+    *y = C.py;
+    *w = C.out_w;
+    *h = C.out_h;
+    C.ready = -1; /* the frames so far are upright: none shown until a turned one is made */
+    C.plane = true;
+    return true;
+}
+
+void hal_camera_plane_off(void)
+{
+    if (!C.plane) return;
+    C.plane = false;
+    present_sync();
+    C.ready = -1;
+}
+
+void hal_camera_freeze(bool freeze) { C.freeze = freeze; }
+uint32_t hal_camera_gen(void) { return C.gen; }
+
 bool hal_camera_snapshot(const char *path)
 {
-    int w, h;
-    const uint16_t *f = hal_camera_frame(&w, &h);
+    int w = CAM_OUT_W, h = CAM_OUT_H;
+    const uint16_t *f;
+    if (C.plane) {
+        /* the plane's frames are turned: the next one is made upright for this */
+        C.upright = -1;
+        C.want_upright = true;
+        for (int i = 0; i < 60 && C.upright < 0; i++) vTaskDelay(pdMS_TO_TICKS(5));
+        if (C.upright < 0) {
+            C.want_upright = false;
+            return false;
+        }
+        f = C.frames[C.upright];
+    } else {
+        f = hal_camera_frame(&w, &h);
+    }
     if (!f) return false;
     if (!C.jpeg) {
         jpeg_encode_engine_cfg_t ec = { .timeout_ms = 100 };
@@ -1926,6 +2131,7 @@ bool hal_camera_snapshot(const char *path)
     bool ok = false;
     if (in && out) {
         memcpy(in, f, (size_t)w * h * 2);
+        C.upright = -1; /* copied out: the camera may write it again */
         jpeg_encode_cfg_t cfg = { .width = (uint32_t)w, .height = (uint32_t)h, .src_type = JPEG_ENCODE_IN_FORMAT_RGB565,
                                   .sub_sample = JPEG_DOWN_SAMPLING_YUV422, .image_quality = 88 };
         uint32_t size = 0;

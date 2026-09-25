@@ -231,6 +231,9 @@ static struct {
     lv_obj_t *img, *frame_box, *frz, *info, *rec, *clip_info;
     lv_image_dsc_t dsc;
     bool frozen, started, recording;
+    bool plane;                 /* the HAL lays the camera on the panel itself (hal_camera_plane) */
+    int px, py, pw, ph;         /* where */
+    uint32_t gen;               /* the camera frame last asked for */
     int shots, shown_s;
     char clip_path[160], clip_name[48];
     volatile int upload;   /* 0 idle, 1 sending, 2 sent or queued, 3 failed */
@@ -271,6 +274,24 @@ static void lens_frame(double now, double dt)
     (void)now; (void)dt;
     bz_ui_keep_alive();
     clip_tick();
+    /* the plane, once the window is up (the sheet that brings it in has no plane) */
+    if (!LN.plane && LN.started && !bz_ui_sheeting()) {
+        lv_area_t a;
+        lv_obj_get_coords(LN.frame_box, &a);
+        LN.plane = hal_camera_plane(a.x1, a.y1, lv_area_get_width(&a), lv_area_get_height(&a), &LN.px, &LN.py,
+                                    &LN.pw, &LN.ph);
+        if (LN.plane) lv_obj_add_flag(LN.img, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (LN.plane) {
+        /* a new frame: one pixel under the plane redrawn, so a present lays the frame on */
+        uint32_t g = hal_camera_gen();
+        if (g != LN.gen && !LN.frozen) {
+            LN.gen = g;
+            lv_area_t a = { LN.px, LN.py, LN.px, LN.py }; /* screen coordinates */
+            lv_obj_invalidate_area(LN.frame_box, &a);
+        }
+        return;
+    }
     if (LN.frozen) return;
     int w, h;
     const uint16_t *px = hal_camera_frame(&w, &h);
@@ -296,6 +317,7 @@ static void ln_freeze(lv_obj_t *o, void *u)
 {
     (void)u;
     LN.frozen = !LN.frozen;
+    hal_camera_freeze(LN.frozen);
     ui_chip_set(o, LN.frozen);
 }
 
@@ -390,6 +412,12 @@ static void lens_open(void)
 
 static void lens_close(void)
 {
+    hal_camera_plane_off();
+    LN.plane = false;
+    LN.frozen = false;
+    hal_camera_freeze(false);
+    if (LN.frz) ui_chip_set(LN.frz, false);
+    lv_obj_remove_flag(LN.img, LV_OBJ_FLAG_HIDDEN);
     if (LN.recording) clip_ended(hal_clip_stop());
     hal_camera_stop();
 }

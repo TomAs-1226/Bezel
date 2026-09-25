@@ -568,7 +568,10 @@ static void check_build(lv_obj_t *b)
         lv_obj_set_flex_align(t, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(t, 16, 0);
         CK.marks[i] = bz_icon(t, BZ_I_RADIO_BUTTON_UNCHECKED, 32, BZ_C_DIM);
-        bz_label_line(t, CHECK[i], BZ_F_BODY, BZ_C_INK, IN(cw) - 56);
+        /* two lines when it needs them (the tile has the height): an item cut short is a check skipped */
+        lv_obj_t *l = bz_label(t, CHECK[i], BZ_F_BODY, BZ_C_INK);
+        lv_obj_set_width(l, IN(cw) - 56);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
         bz_on_tap(t, ck_tap, (void *)(intptr_t)i);
         CK.rows[i] = t;
     }

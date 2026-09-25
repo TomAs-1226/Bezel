@@ -115,6 +115,14 @@ const uint16_t *hal_camera_frame(int *w, int *h);
 void hal_camera_stop(void);
 /* Encodes the current frame as JPEG (hardware codec on the P4) to `path`. */
 bool hal_camera_snapshot(const char *path);
+/* The video plane: the camera's picture laid onto the panel by the HAL itself, centred in the landscape box
+ * (bx, by, bw, bh), at the preview's size (the rect it takes comes back). LVGL draws nothing there that
+ * shows: every present lays the newest frame over it. hal_camera_gen() counts frames, so the app knows when
+ * to ask for a present; hal_camera_freeze() holds the picture. */
+bool hal_camera_plane(int bx, int by, int bw, int bh, int *x, int *y, int *w, int *h);
+void hal_camera_plane_off(void);
+void hal_camera_freeze(bool freeze);
+uint32_t hal_camera_gen(void);
 /* A clip: the camera's frames through the P4's hardware H.264 encoder into `path` as an Annex-B
  * elementary stream (plays in VLC/ffplay; `ffmpeg -i x.h264 -c copy x.mp4` boxes it). The camera must
  * be running. Stops by itself at `max_s`. */

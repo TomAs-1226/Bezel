@@ -43,10 +43,14 @@ def reply(s, timeout=20):
             flip = len(f) > 4 and f[4] == "1"
             data = b""
             n = int(n)
+            # a noisy picture (the camera) barely compresses: ~1.5 MB at the port's pace takes a while
+            deadline = time.time() + 120
             while len(data) < n:
                 chunk = s.read(n - len(data))
                 if not chunk:
-                    raise SystemExit("shot: timed out after %d of %d bytes" % (len(data), n))
+                    if time.time() > deadline:
+                        raise SystemExit("shot: timed out after %d of %d bytes" % (len(data), n))
+                    continue
                 data += chunk
             return ("shot", int(w), int(h), data, flip)
         if text.startswith("AP "):
@@ -95,7 +99,7 @@ def main():
                 continue
             save(r[1], r[2], r[3], parts[1] if len(parts) > 1 else "shot.png", r[4])
             reply(s)
-            print("saved", parts[1] if len(parts) > 1 else "shot.png")
+            print("saved", parts[1] if len(parts) > 1 else "shot.png", "(turned: flip)" if r[4] else "")
             continue
         if parts[0] == "settime":
             # the PC's clock and zone (POSIX TZ; default Pacific, the team's)

@@ -1870,7 +1870,7 @@ static void sg_show(void)
     uint64_t used = SG.have_space && SG.total > SG.free_b ? SG.total - SG.free_b : 0;
     if (SG.have_space) {
         ui_text(SG.total_lbl, "%s", cstore_size(used, a, sizeof a));
-        ui_text(SG.free_lbl, "used of %s · %s free", cstore_size(SG.total, b, sizeof b), cstore_size(SG.free_b, c, sizeof c));
+        ui_text(SG.free_lbl, "%s free of %s", cstore_size(SG.free_b, c, sizeof c), cstore_size(SG.total, b, sizeof b));
         float f = SG.total ? (float)((double)used / (double)SG.total) : 0;
         bz_meter_set(SG.meter, f, f > 0.9f ? BZ_C_WARN : BZ_C_ICE);
     } else {
@@ -1917,8 +1917,9 @@ static void storage_build(lv_obj_t *b)
     bz_icon(t, BZ_I_SD_CARD, 40, BZ_C_ICE);
     lv_obj_t *cap = bz_label(t, "microSD", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_set_pos(cap, 56, 12);
-    SG.total_lbl = bz_label(t, "—", BZ_F_DISPLAY, BZ_C_INK);
-    lv_obj_set_pos(SG.total_lbl, 0, 64);
+    /* the value size, not display: "320.0 kb" at 76 px ran past the tile's 352 */
+    SG.total_lbl = bz_label(t, "—", BZ_F_VALUE, BZ_C_INK);
+    lv_obj_set_pos(SG.total_lbl, 0, 84);
     SG.free_lbl = bz_label_line(t, "", BZ_F_BODY, BZ_C_DIM, IN(lw));
     lv_obj_set_pos(SG.free_lbl, 0, 164);
     SG.meter = bz_meter(t, IN(lw), 14);

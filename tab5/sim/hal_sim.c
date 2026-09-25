@@ -243,6 +243,16 @@ const uint16_t *hal_camera_frame(int *w, int *h)
 }
 
 int png_write_rgb565(const char *path, const uint16_t *px, int w, int h);
+/* no video plane in the simulator: the lens app draws the preview through LVGL */
+bool hal_camera_plane(int bx, int by, int bw, int bh, int *x, int *y, int *w, int *h)
+{
+    (void)bx; (void)by; (void)bw; (void)bh; (void)x; (void)y; (void)w; (void)h;
+    return false;
+}
+void hal_camera_plane_off(void) {}
+void hal_camera_freeze(bool freeze) { (void)freeze; }
+uint32_t hal_camera_gen(void) { return 0; }
+
 bool hal_camera_snapshot(const char *path)
 {
     int w, h;

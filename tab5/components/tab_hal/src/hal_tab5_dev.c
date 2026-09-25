@@ -45,9 +45,15 @@ bool hal_dev_touch(int *x, int *y)
 static void put(const void *p, size_t n)
 {
     const uint8_t *b = p;
+    int stalls = 0;
     while (n) {
         int w = usb_serial_jtag_write_bytes(b, n > 4096 ? 4096 : n, pdMS_TO_TICKS(1000));
-        if (w <= 0) return;
+        /* a big shot (the camera's noise barely compresses) outlasts the host's reads now and then: a few
+         * stalls are waited out, not taken as the host gone */
+        if (w <= 0) {
+            if (++stalls > 8) return;
+            continue;
+        }
         b += w;
         n -= (size_t)w;
     }

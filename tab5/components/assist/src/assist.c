@@ -11,6 +11,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <ctype.h>
 #include <string.h>
 #include <strings.h>
 #include <sys/stat.h>
@@ -914,7 +915,9 @@ static bool env_line(char *line, char **name, char **value)
         p += 6;
         while (*p == ' ' || *p == '\t') p++;
     }
-    char *eq = strchr(p, '=');
+    /* "NAME=value", or as people write it by hand, "name: value" (whichever comes first) */
+    char *eq = strchr(p, '='), *colon = strchr(p, ':');
+    if (colon && (!eq || colon < eq)) eq = colon;
     if (!eq || eq == p) return false;
     char *ne = eq;
     while (ne > p && (ne[-1] == ' ' || ne[-1] == '\t')) ne--;
@@ -940,6 +943,33 @@ static bool env_line(char *line, char **name, char **value)
     *name = p;
     *value = v;
     return true;
+}
+
+/* A hand-written name to its ENV_KEYS entry: case, '-', '_', '.' and spaces don't matter, and the short
+ * names people use ("gpt", "tba", "wifi", "pass") count; -1 unknown */
+static int env_find(const char *name)
+{
+    char n[40];
+    size_t k = 0;
+    for (const char *c = name; *c && k < sizeof n - 1; c++)
+        if (*c != '-' && *c != '_' && *c != '.' && *c != ' ') n[k++] = (char)tolower((unsigned char)*c);
+    n[k] = 0;
+    static const struct { const char *alias; int e; } ALIAS[] = {
+        { "openaiapikey", ENV_OPENAI }, { "openaikey", ENV_OPENAI }, { "openai", ENV_OPENAI }, { "gpt", ENV_OPENAI },
+        { "chatgpt", ENV_OPENAI }, { "gptkey", ENV_OPENAI },
+        { "anthropicapikey", ENV_ANTHROPIC }, { "anthropickey", ENV_ANTHROPIC }, { "anthropic", ENV_ANTHROPIC },
+        { "claude", ENV_ANTHROPIC }, { "claudekey", ENV_ANTHROPIC },
+        { "tbaapikey", 2 }, { "tbakey", 2 }, { "tba", 2 }, { "bluealliance", 2 }, { "thebluealliance", 2 },
+        { "haurl", 3 }, { "homeassistanturl", 3 }, { "hatoken", 4 }, { "homeassistanttoken", 4 }, { "homeassistant", 4 },
+        { "nexusapikey", 5 }, { "nexus", 5 }, { "frceventsuser", 6 }, { "frceventstoken", 7 },
+        { "team", ENV_TEAM }, { "teamnumber", ENV_TEAM },
+        { "wifissid", ENV_WIFI_SSID }, { "wifi", ENV_WIFI_SSID }, { "ssid", ENV_WIFI_SSID }, { "network", ENV_WIFI_SSID },
+        { "wifipass", ENV_WIFI_PASS }, { "wifipassword", ENV_WIFI_PASS }, { "pass", ENV_WIFI_PASS },
+        { "password", ENV_WIFI_PASS },
+    };
+    for (size_t i = 0; i < sizeof ALIAS / sizeof ALIAS[0]; i++)
+        if (!strcmp(n, ALIAS[i].alias)) return ALIAS[i].e;
+    return -1;
 }
 
 /* Reads one KEYS.ENV into kv, then burns it. Returns a bit per ENV_KEYS entry taken; the Wi-Fi pair lands
@@ -968,8 +998,12 @@ static unsigned import_env(const char *path, char *ssid, char *pass)
         *eol = 0;
         char *name, *value;
         if (env_line(p, &name, &value) && value[0]) {
+            int want = env_find(name);
+            /* a name it doesn't know, but a value that says what it is */
+            if (want < 0 && !strncmp(value, "sk-ant-", 7)) want = ENV_ANTHROPIC;
+            else if (want < 0 && !strncmp(value, "sk-", 3)) want = ENV_OPENAI;
             for (int i = 0; i < ENV_COUNT; i++) {
-                if (strcasecmp(name, ENV_KEYS[i].name) != 0) continue;
+                if (i != want) continue;
                 if (i == ENV_WIFI_SSID) snprintf(ssid, 33, "%s", value);
                 else if (i == ENV_WIFI_PASS) snprintf(pass, 65, "%s", value);
                 else if (i == ENV_TEAM) {
@@ -1021,8 +1055,10 @@ void assist_import_card(void)
     }
     char *wifi = calloc(1, 1024); /* ssid[33] and pass[65], off the UI task's stack */
     if (wifi) {
-        static const char *const ENVS[2] = { "CATOS/KEYS.ENV", "KEYS.ENV" };
-        for (int i = 0; i < 2; i++) {
+        /* Windows hides the extension it adds, so keys.env saved from Notepad is often keys.env.txt */
+        static const char *const ENVS[6] = { "CATOS/KEYS.ENV", "KEYS.ENV", "CATOS/KEYS.ENV.TXT", "KEYS.ENV.TXT",
+                                             "CATOS/KEYS.TXT", "KEYS.TXT" };
+        for (int i = 0; i < 6; i++) {
             char path[128];
             snprintf(path, sizeof path, "%s/%s", sd, ENVS[i]);
             got |= import_env(path, wifi, wifi + 64);
