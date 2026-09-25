@@ -163,7 +163,7 @@ bool hal_resume_take(int *page, char *app, size_t n)
 }
 
 /* Restarts the tablet to reset a C6 that stopped passing anything, unless one was made too recently: 45 s
- * apart, 3 min once three came within 30 min, and with the clock unknown a start must have lasted 1 min. It
+ * apart (with the clock unknown, the start must have lasted 45 s). It
  * never gives up: Wi-Fi dead for good until someone reboots was the worst of it (the old limit went quiet
  * after three, and summed uptimes, so reflashing never cleared it). false: not yet (it says so once). */
 static bool c6_restart(const char *why)
@@ -172,13 +172,11 @@ static bool c6_restart(const char *why)
     uint32_t wall = (uint32_t)time(NULL);
     uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);
     bool clock_ok = wall > 1700000000u;
-    /* a restart is ~6 s and comes back where it was; Wi-Fi dead is worse. 10 min between restarts left it dead
-     * for minutes in a busy stretch (the C6 hung every few minutes under load): 45 s apart, 3 min in a burst */
-    bool burst = clock_ok && s_c6_restarts[0] && wall - s_c6_restarts[0] < 30 * 60;
-    uint32_t gap = burst ? 180 : 45;
-    bool wait = clock_ok ? s_c6_restarts[2] && wall - s_c6_restarts[2] < gap : up < 60;
+    /* a restart is ~6 s and comes back where it was; Wi-Fi dead is worse. Longer spacing in a busy stretch (10
+     * min, then 3) left it dead for minutes when the C6 hung every few minutes under load: 45 s apart, always */
+    bool wait = clock_ok ? s_c6_restarts[2] && wall - s_c6_restarts[2] < 45 : up < 45;
     if (wait) {
-        if (!told) ESP_LOGE(TAG, "wi-fi: %s: restarted too recently, trying again in a few minutes", why);
+        if (!told) ESP_LOGE(TAG, "wi-fi: %s: restarted under 45 s ago, trying again shortly", why);
         told = true;
         return false;
     }
