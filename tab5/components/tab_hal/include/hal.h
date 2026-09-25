@@ -185,6 +185,7 @@ void hal_wifi_rejoin(void);
 void hal_restart_planned(const char *why);
 void hal_restart_hook(void (*fn)(void));
 void hal_c6_restart_test(void); /* dev console: the watchdog's restart, now */
+void hal_c6_hold(bool on);      /* dev console "wdhold 1": the watchdog notes a hang but doesn't reset it */
 void hal_resume_note(int page, const char *app);
 bool hal_resume_take(int *page, char *app, size_t n);
 /* the C6 co-processor's firmware from a file on the card; restart after a success */

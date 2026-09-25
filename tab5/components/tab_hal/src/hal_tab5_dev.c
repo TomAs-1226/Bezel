@@ -276,6 +276,25 @@ static void run(char *line)
             vTaskDelay(pdMS_TO_TICKS(5000)); /* the C6 finishing its switch */
             hal_restart_planned("the C6 updated");
         }
+    } else if (!strncmp(line, "wdhold", 6)) {
+        hal_c6_hold(line[6] != ' ' || line[7] != '0');
+        say(line[6] == ' ' && line[7] == '0' ? "MEM watchdog restarts back on\n" : "MEM watchdog restarts held\n");
+        say("OK\n");
+    } else if (!strncmp(line, "c6kick", 6)) {
+        extern void esp_hosted_sdio_kick(int n);
+        esp_hosted_sdio_kick(line[6] == ' ' ? atoi(line + 7) : 4);
+        say("OK\n");
+    } else if (!strcmp(line, "c6dbg")) {
+        extern int esp_hosted_sdio_debug(char *out, size_t n);
+        char m[256] = "MEM ";
+        esp_hosted_sdio_debug(m + 4, sizeof m - 6);
+        strcat(m, "\n");
+        say(m);
+        extern int esp_hosted_sdio_debug2(char *out, size_t n);
+        esp_hosted_sdio_debug2(m + 4, sizeof m - 6);
+        strcat(m, "\n");
+        say(m);
+        say("OK\n");
     } else if (!strcmp(line, "wdtest")) {
         say("OK\n");
         usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(300));

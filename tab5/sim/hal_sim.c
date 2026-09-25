@@ -322,6 +322,7 @@ void hal_kv_set(const char *key, const char *value)
 void hal_wifi_rejoin(void) {}
 void hal_restart_hook(void (*fn)(void)) { (void)fn; }
 void hal_c6_restart_test(void) {}
+void hal_c6_hold(bool on) { (void)on; }
 void hal_restart_planned(const char *why) { (void)why; }
 void hal_resume_note(int page, const char *app) { (void)page; (void)app; }
 bool hal_resume_take(int *page, char *app, size_t n) { (void)page; (void)app; (void)n; return false; }

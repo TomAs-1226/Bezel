@@ -194,6 +194,47 @@ static inline int sdio_clear_intr(uint32_t interrupts)
 		sizeof(uint32_t), ACQUIRE_LOCK);
 }
 
+/* Catalyst Tab: the link as the slave's registers show it now, for the dev console's "c6dbg". Readable
+ * registers with a frozen packet length and token count mean the SDIO hardware answers but the C6's firmware
+ * has stopped moving data; a failed read means the bus itself is gone. */
+/* Catalyst Tab, dev console "c6kick N": N reads without waiting for the slave's new-packet bit. A diagnosis: if
+ * a hung link comes back after it, the slave had packets queued that the host never read. */
+static volatile int s_force_reads;
+/* the bytes of the packets actually read (header + payload), and how many: set against the slave's packet-length
+ * register, which counts what it has queued */
+static uint32_t s_rx_actual, s_rx_pkts;
+static volatile uint32_t s_rx_queued;
+void esp_hosted_sdio_kick(int n) { s_force_reads = n; }
+/* the Wi-Fi watchdog's last try before restarting the tablet: if the count says packets sit unread, n reads
+ * without the bit. true: something was queued, so reads were made */
+bool esp_hosted_sdio_kick_queued(int n)
+{
+	if (!s_rx_queued || s_rx_queued > ESP_RX_BUFFER_SIZE * 32)
+		return false;
+	s_force_reads = n;
+	return true;
+}
+
+int esp_hosted_sdio_debug(char *out, size_t n)
+{
+	uint32_t raw = 0, token = 0, plen = 0;
+	int r1 = g_h.funcs->_h_sdio_read_reg(sdio_handle, ESP_SLAVE_INT_RAW_REG, (uint8_t *)&raw, 4, ACQUIRE_LOCK);
+	int r2 = g_h.funcs->_h_sdio_read_reg(sdio_handle, ESP_SLAVE_TOKEN_RDATA, (uint8_t *)&token, 4, ACQUIRE_LOCK);
+	int r3 = g_h.funcs->_h_sdio_read_reg(sdio_handle, ESP_SLAVE_PACKET_LEN_REG, (uint8_t *)&plen, 4, ACQUIRE_LOCK);
+	uint32_t slave_bufs = (token >> 16) & ESP_TX_BUFFER_MASK;
+	return snprintf(out, n, "sdio: reads %d/%d/%d; int_raw %08lx; slave has taken %lu tx buffers, host sent %lu "
+		"(free %lu); packet_len reg %lu, host read %lu bytes",
+		r1, r2, r3, (unsigned long)raw, (unsigned long)slave_bufs, (unsigned long)sdio_tx_buf_count,
+		(unsigned long)((slave_bufs + ESP_TX_BUFFER_MAX - sdio_tx_buf_count) % ESP_TX_BUFFER_MAX),
+		(unsigned long)(plen & 0xFFFFF), (unsigned long)sdio_rx_byte_count);
+}
+
+int esp_hosted_sdio_debug2(char *out, size_t n)
+{
+	return snprintf(out, n, "sdio: packets read %lu, their bytes %lu (mod 2^20)", (unsigned long)s_rx_pkts,
+		(unsigned long)s_rx_actual);
+}
+
 static int sdio_get_tx_buffer_num(uint32_t *tx_num, bool is_lock_needed)
 {
 	uint32_t len = 0;
@@ -853,10 +894,21 @@ static void sdio_read_task(void const* pvParameters)
 			wifi_tx_throttling = 0;
 		}
 
+		/* Catalyst Tab: what the slave's packet-length register (every byte it has queued) says is still unread,
+		 * against the bytes of the packets read: kept for the Wi-Fi watchdog (esp_hosted_sdio_kick_queued).
+		 * In this mode a read takes one packet, but one new-packet bit (latched, then cleared here) can stand
+		 * for several; once the slave's send queue fills behind packets never read, no bit comes again and it
+		 * stops sending everything, RPC replies included (caught with "wdhold"/"c6dbg": the register frozen,
+		 * 20 tx buffers free; reads forced with "c6kick" brought it back). Reads are not made on this count
+		 * alone: it can be off by a packet, and a read with nothing queued wedges the bus. */
+		s_rx_queued = ((*read_len_index & ESP_SLAVE_LEN_MASK) + ESP_RX_BYTE_MAX - s_rx_actual) % ESP_RX_BYTE_MAX;
 		if (!(BIT(SDIO_INT_NEW_PACKET) & interrupts)) {
-
-			SDIO_DRV_UNLOCK();
-			continue;
+			if (s_force_reads > 0) {
+				s_force_reads--;
+			} else {
+				SDIO_DRV_UNLOCK();
+				continue;
+			}
 		}
 
 #if H_SDIO_HOST_RX_MODE == H_SDIO_ALWAYS_HOST_RX_MAX_TRANSPORT_SIZE
@@ -925,6 +977,15 @@ static void sdio_read_task(void const* pvParameters)
 
 		if (unlikely(ret))
 			continue;
+
+		{
+			struct esp_payload_header *ph = (struct esp_payload_header *)rxbuff;
+			uint16_t pl = le16toh(ph->len), po = le16toh(ph->offset);
+			if (pl && po == sizeof(struct esp_payload_header)) {
+				s_rx_actual = (s_rx_actual + pl + po) % ESP_RX_BYTE_MAX;
+				s_rx_pkts++;
+			}
+		}
 
 		if (double_buf.read_index < 0) {
 			double_buf.read_index = double_buf.write_index;

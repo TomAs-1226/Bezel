@@ -166,9 +166,45 @@ bool hal_resume_take(int *page, char *app, size_t n)
  * apart (with the clock unknown, the start must have lasted 45 s). It
  * never gives up: Wi-Fi dead for good until someone reboots was the worst of it (the old limit went quiet
  * after three, and summed uptimes, so reflashing never cleared it). false: not yet (it says so once). */
-static bool c6_restart(const char *why)
+static volatile bool s_c6_hold; /* dev console "wdhold": a hang is kept for looking at, not reset */
+void hal_c6_hold(bool on) { s_c6_hold = on; }
+
+bool esp_hosted_sdio_kick_queued(int n); /* esp_hosted's sdio_drv.c (Catalyst Tab's addition) */
+static bool gw_alive(uint32_t *gw);
+static bool rpc_ok(void)
+{
+    wifi_ap_record_t ap;
+    return esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+}
+static bool gw_ok(void)
+{
+    uint32_t gw;
+    return gw_alive(&gw);
+}
+
+/* ok: what failed, asked again after the kick (the RPCs, or the gateway) */
+static bool c6_restart(const char *why, bool (*ok)(void))
 {
     static bool told;
+    /* The C6's usual hang is packets it queued that the host never read (see sdio_drv.c): reading them
+     * without the new-packet bit frees it. Tried first when the count says they're there; if the C6 answers
+     * again within 3 s, no restart. (A read with nothing queued can wedge the bus instead: the restart below
+     * still comes, as it would have.) */
+    if (!s_c6_hold && esp_hosted_sdio_kick_queued(8)) {
+        ESP_LOGW(TAG, "wi-fi: %s: reading what the C6 queued", why);
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        if (ok()) {
+            ESP_LOGW(TAG, "wi-fi: the C6 answers again: no restart");
+            return false;
+        }
+    }
+    if (s_c6_hold) {
+        static int64_t said;
+        int64_t now = esp_timer_get_time();
+        if (now - said > 10 * 1000000LL) ESP_LOGW(TAG, "wi-fi: %s (held: not restarting)", why);
+        said = now;
+        return false;
+    }
     uint32_t wall = (uint32_t)time(NULL);
     uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);
     bool clock_ok = wall > 1700000000u;
@@ -262,7 +298,7 @@ static void rssi_task(void *arg)
                     rejoined = now;
                     esp_wifi_disconnect(); /* the disconnect handler connects again */
                 } else if (dead >= 4) {
-                    c6_restart("connected, but nothing gets through even after joining again");
+                    c6_restart("connected, but nothing gets through even after joining again", gw_ok);
                 }
             }
         }
@@ -272,7 +308,7 @@ static void rssi_task(void *arg)
             continue;
         }
         if (++misses < 2) continue;
-        c6_restart("the C6 stopped answering"); /* returns only when it has to wait: asked again in 3 s */
+        c6_restart("the C6 stopped answering", rpc_ok); /* returns only when it has to wait: asked again in 3 s */
     }
 }
 
@@ -1025,7 +1061,7 @@ static void wifi_heal(void)
     int64_t now = esp_timer_get_time();
     if (last && now - last < 120 * 1000000LL) {
         /* joined again under two minutes ago and still nothing: the C6 needs its reset */
-        if (s_http_fails >= 4) c6_restart("nothing gets through, even after joining again");
+        if (s_http_fails >= 4) c6_restart("nothing gets through, even after joining again", gw_ok);
         return;
     }
     last = now;
