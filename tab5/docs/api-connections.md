@@ -543,6 +543,14 @@ for a real, if usually brief, stretch and recovers on its own — worth knowing 
 telemetry or a failed request as a bug. All of this is `components/tab_hal/src/hal_tab5_net.c`, read in
 full this session.
 
+**The hang this machinery was built for is fixed at its cause** (2026-09-25): the host reads one packet per
+fixed 1.5 KB SDIO transfer (`CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_MAX_SIZE`), but the C6 slave had been built
+in stream mode, so one read could carry several packets and all but the first were lost; within minutes of
+steady traffic the C6 stopped sending. The slave is now built in packet mode (`firmware/c6/`, with its
+settings and how to install it over the air); stress runs went from a hang every few minutes to 30/30 mixed
+and 60/60 companion rounds with no Wi-Fi event at all. The recovery below stays as the backstop for anything
+else (a router that goes away, a real C6 fault).
+
 - **The C6 sometimes stops answering its own RPCs.** `rssi_task()` (`hal_tab5_net.c:234-287`) polls
   `esp_wifi_sta_get_ap_info()` every 3 s; two consecutive misses while the link is otherwise "up" call
   `c6_restart("the C6 stopped answering")` (`hal_tab5_net.c:284-285`).
