@@ -245,10 +245,18 @@ Source: `components/assist/src/assist.c`, `as_oai.c`, `as_oai.h` (verified this 
 - This is `AS_ROUTE_DIRECT` — the tablet talks straight to `api.anthropic.com`, over the pit Wi-Fi, with
   a key stored on the tablet itself; no PC, no Catalyst Link. Distinct from §3's Link-mediated
   `/v1/messages`, which uses the **same wire format** but never puts a key on the tablet.
-- `voice.c:726` separately posts to `/v1/chat/completions` for the companion's voice feature — same
-  OpenAI endpoint shape as §4.3; `TODO(verify)` whether this is always OpenAI or can also route through
-  Catalyst Link/Anthropic (not traced further this session — flagged for a follow-up read of
-  `components/assist/src/voice.c` end to end).
+- `components/assist/src/voice.c` (read in full this session) is always OpenAI — it has no Anthropic or
+  Catalyst Link path at all. Its single `post()` helper (`voice.c:283-328`) builds every request against
+  `V.base`, which `load_config()` sets from the `oai_base` kv or else `AS_OAI_DEFAULT_BASE`
+  (`voice.c:197-204`) — the same OpenAI base §4.3 uses, never `api.anthropic.com`. The three calls it
+  makes are all OpenAI REST endpoints: `POST <base>/v1/audio/transcriptions` for speech-to-text
+  (`voice.c:487`), `POST <base>/v1/chat/completions` for the answer (`voice.c:768`), and
+  `POST <base>/v1/audio/speech` for text-to-speech (`voice.c:862`). `voice.c` does `#include "link.h"`
+  but calls nothing from it — the only cross-module calls it makes outside `as_oai.c`/`as_tools.c` are to
+  `ccwatch.h`'s `ccw_list()`/`ccw_available()` (`voice.c:552-560`), which only read Claude Code session
+  state for the context note, not a network route. So: the voice feature always uses OpenAI's Chat
+  Completions/Whisper/TTS endpoints directly from the tablet; it cannot route through Catalyst Link or a
+  direct Anthropic key the way the text assistant (§4.4) can.
 
 ### 4.5 Home Assistant — REST API
 
@@ -272,9 +280,8 @@ Source: `components/home/src/home_ha.c` (verified this session).
   /api/services/climate/set_temperature` with `{"entity_id","temperature"}` (`home_ha.c:533-535`); a
   generic `POST /api/services/<domain>/<service>` with `{"entity_id"}` for a plain tap-to-toggle tile
   (`home_ha.c:536-540`, service resolved by `tap_service()`).
-- Poll cadence: `POLL_S` on success, faster `RETRY_S` on failure (`home_ha.c:518`, constants defined
-  earlier in the same file, not re-cited here — `TODO(verify)` exact seconds if needed; not visible in
-  the excerpt read this session).
+- Poll cadence: `POLL_S` = 5.0 s on success, `RETRY_S` = 15.0 s on failure (`home_ha.c:17-18`, applied at
+  `home_ha.c:518`).
 
 ### 4.6 FRC Events (FIRST) and frc.nexus — scaffolding only, no live call
 
@@ -307,16 +314,81 @@ enum at `ui_storage.h:18-19`):
 `cstore_*` (`ui_storage.h:22-53`) is the shared file API every app above uses: `cstore_path`,
 `cstore_layout`, `cstore_list`, `cstore_read`, `cstore_write` (atomic via a `.TMP` file), `cstore_usage`.
 
-`batteries.json` schema: not fully enumerated this session — `TODO(verify)` the exact JSON shape;
-`ui_batt.c`'s comment (`ui_batt.c:5`) says it holds "the roster without histories" when there's no card,
-implying a richer on-card shape than the in-memory one. Read `ui_batt.c` end to end for the exact field
-list before relying on this format elsewhere.
+`batteries.json` schema, confirmed from `cat_batt_to_json()`/`cat_batt_from_json()`
+(`components/catalyst/src/cat_batt.c:920-978,987-1051`, called from `ui_batt.c:193,251`):
+
+```json
+{
+  "version": 1, "updated": 1234567890, "next_uid": 13,
+  "seen": [3820147, ...],
+  "batteries": [
+    { "uid": 1, "label": "Big Red", "status": "good", "auto_watch": true, "year": 2025,
+      "notes": "", "charged": 1234567890, "base_mohm": 14.2, "uses_total": 37,
+      "uses": [
+        { "t": 1234567890, "match": "2026casj_qm34", "label": "Q34", "charge": "fresh",
+          "charged": 1234567890, "src": "pl", "v_rest": 12.90, "v_min": 11.80, "mohm": 16.0,
+          "wh": 13.5, "amps": 35.0, "peak_a": 180, "dur_s": 150, "brownouts": 0, "log": "Q34.wpilog" }
+      ] }
+  ]
+}
+```
+`status` is one of `CAT_BATT_STATUS` (`good`/`watch`/`bad`/`retired`, `cat_batt.c:15`); a use's `charge`
+is one of `CAT_BATT_CHARGE` (`""`/`fresh`/`rested`/`used`, `cat_batt.c:16`); `src` is a subset of the
+letters `p` (picked by hand), `l` (from a `.wpilog`/`.dslog`), `n` (folded in live from the robot,
+`ui_batt.c:451-477`), written in that order (`cat_batt.c:954`). Every numeric field the value isn't known
+for is simply omitted (`jb_num()`, `cat_batt.c:912-918`), not written as `null` or `0`.
+
+This is the full on-card shape — roster **and** every recorded use. `ui_batt.c:5`'s "the roster without
+histories" refers to the separate, smaller shape kept in the `batteries` kv slot (NVS) when there is no
+SD card: `save_kv()` (`ui_batt.c:200-214`) copies the fleet, zeroes `nseen` and every battery's `nuse`,
+then serializes with the same `cat_batt_to_json()` — so the kv copy is this same schema with `seen: []`
+and every `uses: []`, capped at `KV_MAX` = 3900 bytes (`ui_batt.c:46,210`).
 
 The TBA cache's file-naming rule: the URL's path after `/api/v3/` with every `/` replaced by `_`, plus
 `.json` (`card_path()`, `home_tba.c:134-145`) — e.g.
 `CATOS/DATA/tba/team_frc5805_events_2026_simple.json`.
 
-### 5.2 KEYS.ENV format
+### 5.2 Battery manager (BMS)
+
+`components/ui/src/ui_batt.c` (read in full this session) is the tablet's battery fleet manager: the
+roster, each battery's history, the checklist's "which battery goes in" picker, and (§5.1) the
+`batteries.json`/`batteries` kv persistence. It is not itself an NT4 client — the live robot numbers it
+folds in come from `cat_model.c`'s already-fetched `cat_robot_t` fields, the same struct §1.1 covers, not
+from a topic this file subscribes to directly.
+
+- **Live folding, while a battery is picked in and the robot runs.** `live_tick()`
+  (`ui_batt.c:485-512`) runs every UI refresh: if the most recent pick is under `PICK_LIVE_S` = 4 h old
+  and not already sourced from a log, and the robot reports `R->connected && R->have_battery &&
+  R->battery_v > 3`, it accumulates that pick's voltage/current into `BM.lv.acc`
+  (`cat_batt_acc_add()`/`cat_batt_acc_brown()`, `ui_batt.c:504-505`). `R->battery_v`, `R->total_current`
+  (falling back to `R->pd_total`), `R->have_mode`/`R->enabled`, and `R->browned_out` are the
+  `cat_robot_t` fields `cat_model.c`'s `read_power()` fills from `/Catalyst/Status/BatteryVolts` (or the
+  `/Catalyst/Brownout/MeasuredVoltage` / `/Catalyst/Systemcore/BatteryVolts` fallbacks),
+  `/Catalyst/Brownout/TotalCurrent`, `/SmartDashboard/<pdh>/TotalCurrent`, and
+  `/Catalyst/Systemcore/BrownedOut` respectively (`cat_model.c:160-177`) — the exact topic list and its
+  PUBLISHED/MISSING status against a given FrcCatalyst version is `docs/catalyst-integration.md`'s to
+  give, not repeated here. `live_end()`/`live_commit()` (`ui_batt.c:451-483`) close the accumulator out
+  into that use's `v_min`/`v_rest`/`amps`/`wh`/`peak_a`/`dur_s`/`brownouts` fields once the robot disables
+  for `LIVE_END_S` = 15 s (`ui_batt.c:45`), tagging the use `CU_LIVE` (written as `"n"` in
+  `batteries.json`'s `src`, §5.1).
+- **Also reads `R->battery_model`** (`ui_batt.c:857`, from `/Catalyst/Robot/Power/Battery` per
+  `cat_model.c:181`) to show the team's declared battery type/model on the roster screen — display only,
+  nothing is written back.
+- **Log scan, independent of NT4.** `scan_job()` (`ui_batt.c:333-373`), run on the assistant's worker
+  thread, reads `.wpilog`/`.dslog` files directly off the SD card root and `logs/` (not through NT4) and
+  attributes each one's numbers to a pick (`cat_fleet_attribute()`, `ui_batt.c:388`); this is the same
+  `.wpilog` parsing `docs/api-connections.md` §1.1 notes for `cat_logs.c`, but battery numbers are pulled
+  by `cat_batt_log()` (`components/catalyst/src/cat_batt.c`), a different reader.
+- **No NT4 writes.** Nothing in `ui_batt.c` calls `nt4_set_*` — §1.2's write-path grep already covers the
+  whole of `components/catalyst/src`, and `ui_batt.c` lives in `components/ui`, confirmed separately by
+  grep here: zero `nt4_set_` references in this file. The battery manager only ever writes to
+  `batteries.json` / the `batteries` kv slot (local storage, §5.1) and to the fleet's own in-memory state.
+- **The assistant tie-in.** `ask_gpt()` (`ui_batt.c:538-547`) posts the fleet's summary
+  (`cat_batt_summary()`) to the assistant's analysis pipeline (`analyze_fleet_start()`), the same
+  OpenAI/Anthropic/Link routing §4.3–4.4 describe for the rest of the assistant — not a separate
+  connection.
+
+### 5.3 KEYS.ENV format
 
 Full contract already documented in `docs/keys.md` (dotenv, comments, quoting, `export` prefix, CRLF
 tolerance, unknown/empty values ignored) — not re-derived here. The name→kv-slot table there
@@ -325,7 +397,7 @@ names): `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `TBA_API_KEY`, `HA_URL`, `HA_TOKE
 `FRC_EVENTS_USER`, `FRC_EVENTS_TOKEN`, `TEAM`, and the Wi-Fi pair (`WIFI_SSID`/`WIFI_PASS`, handled
 separately by the Wi-Fi driver, `assist.c:901-902` comment).
 
-### 5.3 USB dev console
+### 5.4 USB dev console
 
 `components/tab_hal/src/hal_tab5_dev.c` implements a line-based command console over the USB-C serial
 port (115200 baud, DTR/RTS held low so opening the port doesn't reset the tablet — `tools/tab5_dev.py:24-26`
@@ -352,12 +424,30 @@ dispatch in `hal_tab5_dev.c`:
 `tools/tab5_dev.py` is the PC-side driver for all of these (`python tools/tab5_dev.py COM9 <cmd...>`,
 commands chainable with `;`).
 
-### 5.4 NFC / Grove hardware hooks
+### 5.5 NFC / Grove hardware hooks
 
-Not found this session: a targeted grep for `nfc`, `grove`, `i2c.*grove` in `components/tab_hal` and
-`components/ui` returned no matches. **TODO(verify)** — either the tablet has no such hook in this
-checkout, or it lives under a name this session's grep terms missed; flagged rather than asserting
-either way.
+A hook exists — an earlier pass's grep terms missed it. `components/tab_hal/src/hal_tab5_nfc.c` drives an
+NFC reader on **Grove Port A**: an M5Stack Unit RFID 2 (a WS1850S speaking the MFRC522 register set over
+I2C at address `0x28`, `hal_tab5_nfc.c:1-18,33`), on its own I2C controller (`I2C_NUM_0`, SDA 53/SCL 54,
+`hal_tab5_nfc.c:5,34-35`) separate from the system bus. The Tab5 has no NFC reader of its own — this only
+works with the M5Stack unit plugged into Port A.
+
+- `hal_nfc_init()` (`hal_tab5_nfc.c:318-326`, called once from `hal_settle()` per `hal_tab5.c:2700`)
+  starts a low-priority task that waits `PROBE_DELAY_MS` = 4000 ms, switches Port A's 5 V on, and probes
+  `0x28`; nothing there and the 5 V goes back off and the task exits (`hal_tab5_nfc.c:36,273-289`).
+- Found, it polls for an ISO 14443A card every `POLL_MS` = 300 ms (WUPA + the anticollision/select
+  cascade for a 4/7/10-byte UID, `hal_tab5_nfc.c:37,193-238,291-305`).
+- `hal_nfc_present()` and `hal_nfc_card(uid, n)` (`hal_tab5_nfc.c:335,337-345`) are the public read: a
+  present flag and the last UID as hex, guarded by a mutex the UI thread also takes.
+- `hal_nfc_release()` (`hal_tab5_nfc.c:328-333`) stops the task and frees the bus for good — `hal_can_start()`
+  calls it because the CAN tap reuses the same two pins (`hal_tab5_nfc.c:13`, `hal_tab5.c:2390`): NFC and
+  the CAN tap are mutually exclusive, first one to start wins for that boot.
+- Consumer: `components/ui/src/ui_home_mode.c`'s `tag_tick()` (`ui_home_mode.c:1034-1071`) polls
+  `hal_nfc_present()`/`hal_nfc_card()` at 10 Hz and uses a paired tag's UID to trigger/leave Home mode
+  (`UI_HOME_BY_TAG`); pairing UI is `ui_home_settings.c:131` and `hm_tag_pair_begin()`/`hm_tag_pair_state()`
+  (`ui_home_mode.c:1073-1090`). The simulator stubs it with the `SIM_NFC_TAG` env var (`sim/hal_sim.c:421-423`).
+- Nothing here calls this hardware "Grove" in the API sense — no other Grove-port peripheral or protocol
+  exists in this checkout; "Grove" is only ever the physical connector name for Port A.
 
 ---
 
@@ -406,10 +496,7 @@ here.
 
 ## Open TODOs from this pass
 
-- `components/assist/src/voice.c`'s `/v1/chat/completions` call (`voice.c:726`) — confirm whether the
-  companion's voice feature always uses OpenAI, or can route through Anthropic/Link too (§4.4).
-- Home Assistant's exact `POLL_S`/`RETRY_S` values (§4.5) — not visible in the range read this session.
-- `batteries.json`'s full on-card schema (§5.1) — only the roster-vs-history distinction was confirmed,
-  not the field list.
-- Whether any NFC/Grove hardware hook exists in this checkout (§5.4) — a targeted grep found none, but
-  a different naming convention could hide one.
+All four `TODO(verify)` markers left by the previous pass were resolved by reading source this session:
+`voice.c`'s route (§4.4, always OpenAI, no Anthropic/Link path), Home Assistant's poll/retry seconds
+(§4.5, 5.0 s / 15.0 s), `batteries.json`'s full field list (§5.1), and the NFC/Grove hook (§5.5 — one
+exists, at `components/tab_hal/src/hal_tab5_nfc.c`, missed by the earlier grep). None remain open.
