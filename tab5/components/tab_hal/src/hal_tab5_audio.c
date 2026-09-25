@@ -27,6 +27,9 @@
 #include <string.h>
 
 #include "bsp/m5stack_tab5.h"
+#include "esp_audio_dec_default.h"
+#include "esp_audio_simple_dec.h"
+#include "esp_audio_simple_dec_default.h"
 #include "esp_codec_dev.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -491,4 +494,84 @@ void hal_audio_init(void)
     /* above the workers (4) and NetworkTables (5), below the SDIO and lwIP tasks: the speaker is a
      * deadline, 10 ms at a time */
     if (AU.spk) xTaskCreatePinnedToCore(out_task, "audio", 4096, NULL, 6, &AU.task, 0);
+}
+
+/* ---- MP3 speech (hal_mp3_*): esp_audio_codec's simple decoder, as the music player uses it ---- */
+
+struct hal_mp3 {
+    esp_audio_simple_dec_handle_t dec;
+    uint8_t *pcm;
+    uint32_t pcm_max;
+    int rate, ch;
+};
+
+hal_mp3_t *hal_mp3_open(void)
+{
+    static bool registered;
+    if (!registered) {
+        esp_audio_dec_register_default();
+        esp_audio_simple_dec_register_default();
+        registered = true;
+    }
+    hal_mp3_t *d = calloc(1, sizeof *d);
+    if (!d) return NULL;
+    esp_audio_simple_dec_cfg_t cfg = { .dec_type = ESP_AUDIO_SIMPLE_DEC_TYPE_MP3 };
+    d->pcm_max = 1152 * 2 * 2 * 2;
+    d->pcm = malloc(d->pcm_max);
+    if (!d->pcm || esp_audio_simple_dec_open(&cfg, &d->dec) != ESP_AUDIO_ERR_OK) {
+        free(d->pcm);
+        free(d);
+        return NULL;
+    }
+    return d;
+}
+
+bool hal_mp3_feed(hal_mp3_t *d, const uint8_t *in, int n, bool eos, hal_pcm_sink_t sink, void *user)
+{
+    if (!d) return false;
+    esp_audio_simple_dec_raw_t raw = { .buffer = (uint8_t *)in, .len = (uint32_t)(n > 0 ? n : 0), .eos = eos };
+    int stuck = 0;
+    while (raw.len > 0 || (eos && stuck == 0)) {
+        esp_audio_simple_dec_out_t o = { .buffer = d->pcm, .len = d->pcm_max };
+        esp_audio_err_t r = esp_audio_simple_dec_process(d->dec, &raw, &o);
+        if (r == ESP_AUDIO_ERR_BUFF_NOT_ENOUGH) {
+            uint8_t *np = realloc(d->pcm, o.needed_size);
+            if (!np) return false;
+            d->pcm = np;
+            d->pcm_max = o.needed_size;
+            continue;
+        }
+        if (r != ESP_AUDIO_ERR_OK) return false;
+        raw.buffer += raw.consumed;
+        raw.len -= raw.consumed;
+        if (o.decoded_size == 0) {
+            /* nothing out and nothing taken: it wants more of the stream (or the stream is done) */
+            if (raw.consumed == 0 && ++stuck > 1) break;
+            if (!raw.len) break;
+            continue;
+        }
+        stuck = 0;
+        if (!d->rate) {
+            esp_audio_simple_dec_info_t info = { 0 };
+            esp_audio_simple_dec_get_info(d->dec, &info);
+            if (info.bits_per_sample != 16 || info.channel < 1 || info.channel > 2) return false;
+            d->rate = (int)info.sample_rate;
+            d->ch = info.channel;
+            ESP_LOGI(TAG, "mp3: %d Hz, %d channel%s, %d kbps", d->rate, d->ch, d->ch > 1 ? "s" : "", (int)(info.bitrate / 1000));
+        }
+        int16_t *p = (int16_t *)(void *)d->pcm;
+        int frames = (int)(o.decoded_size / (2u * (unsigned)d->ch));
+        if (d->ch == 2)
+            for (int i = 0; i < frames; i++) p[i] = (int16_t)(((int)p[2 * i] + p[2 * i + 1]) / 2);
+        if (!sink(p, frames, d->rate, user)) return false;
+    }
+    return true;
+}
+
+void hal_mp3_close(hal_mp3_t *d)
+{
+    if (!d) return;
+    esp_audio_simple_dec_close(d->dec);
+    free(d->pcm);
+    free(d);
 }

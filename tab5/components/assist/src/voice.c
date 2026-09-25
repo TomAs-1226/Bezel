@@ -101,6 +101,7 @@ static struct {
     double last_turn;
     bool clear_hist;               /* voice_reset: forget before the next question */
     bool stt_fallback, tts_fallback;
+    bool tts_pcm;                  /* MP3 speech failed once (undecodable, or a rate the speaker won't take): PCM */
     uint32_t rev;
 } V = { .lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER };
 
@@ -833,6 +834,31 @@ static bool answer(const char *question, vo_reply_t *rep)
 /* ------------------------------------------------------------------ speech */
 
 /* Speaks `text` in the reply's mood, streaming the audio to the speaker as it arrives. */
+/* MP3 speech into the speaker: started at the stream's own rate when the first frames come out */
+typedef struct {
+    bool started, failed;
+} tts_sink_t;
+
+static bool tts_sink(const int16_t *pcm, int n, int rate, void *user)
+{
+    tts_sink_t *t = user;
+    if (!t->started) {
+        if (!hal_play_start(rate)) {
+            hal_play_stop();
+            if (!hal_play_start(rate)) {
+                t->failed = true;
+                return false;
+            }
+        }
+        t->started = true;
+    }
+    hal_play_write(pcm, n, 5000);
+    return !stopped();
+}
+
+/* Speech comes as MP3 where the tablet can decode it: a tenth of PCM's bytes. The raw 24 kHz PCM (48 KB/s,
+ * sustained) was the load under which the Wi-Fi co-processor hung: in stress runs the companion's answers hung
+ * it every few minutes while The Blue Alliance's requests alone didn't. */
 static bool speak(const vo_reply_t *rep)
 {
     voice_config_t c;
@@ -850,7 +876,11 @@ static bool speak(const vo_reply_t *rep)
         ab_str(&b, c.voice[0] ? c.voice : VO_VOICE_DEFAULT);
         ab_puts(&b, ",\"input\":");
         ab_str(&b, rep->say);
-        ab_puts(&b, ",\"response_format\":\"pcm\"");
+        pthread_mutex_lock(&V.lock);
+        bool want_pcm = V.tts_pcm;
+        pthread_mutex_unlock(&V.lock);
+        hal_mp3_t *mp3 = want_pcm ? NULL : hal_mp3_open();
+        ab_puts(&b, mp3 ? ",\"response_format\":\"mp3\"" : ",\"response_format\":\"pcm\"");
         if (!strncmp(model, "gpt-", 4)) {
             ab_fmt(&b, ",\"instructions\":\"A friendly little desk companion talking with its owner. Natural, "
                        "conversational pace. Tone: %s%s.\"",
@@ -862,6 +892,7 @@ static bool speak(const vo_reply_t *rep)
             free(hdr);
             drop_key(key);
             ab_free(&b);
+            hal_mp3_close(mp3);
             return false;
         }
         pthread_mutex_lock(&V.lock);
@@ -878,6 +909,7 @@ static bool speak(const vo_reply_t *rep)
         ab_free(&b);
         if (!h) {
             describe(&r, "speaking");
+            hal_mp3_close(mp3);
             return false;
         }
         if (r.status != 200) {
@@ -886,6 +918,7 @@ static bool speak(const vo_reply_t *rep)
             while (n < (int)sizeof e - 1 && (k = hal_http_read(h, e + n, (int)sizeof e - 1 - n)) > 0) n += k;
             e[n] = 0;
             hal_http_close(h);
+            hal_mp3_close(mp3);
             if (!c.tts_model[0] && !fb && (r.status == 400 || r.status == 403 || r.status == 404)) {
                 pthread_mutex_lock(&V.lock);
                 V.tts_fallback = true;
@@ -897,7 +930,7 @@ static bool speak(const vo_reply_t *rep)
             describe(&r, "speaking");
             return false;
         }
-        if (!hal_play_start(TTS_RATE)) {
+        if (!mp3 && !hal_play_start(TTS_RATE)) {
             hal_play_stop();
             if (!hal_play_start(TTS_RATE)) {
                 hal_http_close(h);
@@ -908,16 +941,37 @@ static bool speak(const vo_reply_t *rep)
         set_state(VO_SPEAKING);
         char *buf = malloc(4096 + 2);
         int carry = 0, rd = 0;
+        tts_sink_t sink = { 0 };
+        bool undecodable = false;
         while (buf && !stopped()) {
             rd = hal_http_read(h, buf + carry, 4096);
             if (rd <= 0) break;
+            if (mp3) {
+                if (!hal_mp3_feed(mp3, (const uint8_t *)buf, rd, false, tts_sink, &sink)) {
+                    undecodable = !stopped();
+                    break;
+                }
+                continue;
+            }
             int have = carry + rd, samples = have / 2;
             hal_play_write((const int16_t *)(void *)buf, samples, 5000);
             carry = have & 1;
             if (carry) buf[0] = buf[have - 1];
         }
+        if (mp3 && !undecodable && rd == 0 && !stopped()) undecodable = !hal_mp3_feed(mp3, NULL, 0, true, tts_sink, &sink);
         free(buf);
         hal_http_close(h);
+        hal_mp3_close(mp3);
+        if (mp3 && (undecodable || sink.failed || (rd == 0 && !sink.started && !stopped()))) {
+            /* PCM from here on; this answer stays on screen */
+            pthread_mutex_lock(&V.lock);
+            V.tts_pcm = true;
+            pthread_mutex_unlock(&V.lock);
+            if (sink.started) hal_play_stop();
+            set_err("%s", sink.failed ? "the speaker wouldn't start: the answer is on screen"
+                                      : "my voice came out garbled: the answer is on screen");
+            return false;
+        }
         if (stopped()) {
             hal_play_stop();
             return false;

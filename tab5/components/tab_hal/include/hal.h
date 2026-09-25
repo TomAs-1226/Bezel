@@ -92,6 +92,15 @@ int hal_play_write(const int16_t *pcm, int n, int timeout_ms);
 void hal_play_end(void);
 void hal_play_stop(void);
 bool hal_play_busy(void);
+/* A streaming MP3 decoder, for speech fetched as MP3 (a tenth of PCM's bytes over the Wi-Fi co-processor).
+ * feed() takes the stream as it arrives, any number of bytes (eos on the last), and hands each decoded run to
+ * sink as 16-bit mono (stereo mixed down) with its sample rate. false: undecodable, or the sink said stop.
+ * open() returns NULL where there is no decoder (the simulator): fetch PCM instead. */
+typedef struct hal_mp3 hal_mp3_t;
+typedef bool (*hal_pcm_sink_t)(const int16_t *mono, int n, int rate, void *user);
+hal_mp3_t *hal_mp3_open(void);
+bool hal_mp3_feed(hal_mp3_t *d, const uint8_t *in, int n, bool eos, hal_pcm_sink_t sink, void *user);
+void hal_mp3_close(hal_mp3_t *d);
 float hal_play_level(void);               /* loudness of what the speaker is playing now, 0..1 */
 
 /* The microphones: 16 kHz mono, for speech. Off until started; nothing listens unless asked. Blocking reads

@@ -189,6 +189,13 @@ float hal_volume(void) { return s_volume; }
 bool hal_play_start(int rate) { return rate > 0 && 48000 % rate == 0; }
 int hal_play_write(const int16_t *pcm, int n, int timeout_ms) { (void)pcm; (void)timeout_ms; return n; }
 void hal_play_end(void) {}
+hal_mp3_t *hal_mp3_open(void) { return NULL; } /* no decoder here: the companion fetches PCM */
+bool hal_mp3_feed(hal_mp3_t *d, const uint8_t *in, int n, bool eos, hal_pcm_sink_t sink, void *user)
+{
+    (void)d; (void)in; (void)n; (void)eos; (void)sink; (void)user;
+    return false;
+}
+void hal_mp3_close(hal_mp3_t *d) { (void)d; }
 void hal_play_stop(void) {}
 bool hal_play_busy(void) { return false; }
 float hal_play_level(void) { return 0; }

@@ -20,3 +20,5 @@ dependencies:
   # newest line without the esp-dl dependency and carries the fix for the ESP32-P4 crash on IDF 5.5.1
   # (2.4.5). The model goes into the "model" partition (partitions.csv), written by `idf.py flash`.
   espressif/esp-sr: "~2.4.7"
+  # Speech as MP3 (hal_mp3_*, hal_tab5_audio.c): the decoder the music player (components/home) already uses.
+  espressif/esp_audio_codec: "~2.4"
