@@ -8,6 +8,7 @@
 #include "as_snap.h"
 #include "assist.h"
 #include "link.h"
+#include "voice.h"
 #include "ui_home_mode.h"
 
 #include <math.h>
@@ -682,7 +683,7 @@ static volatile bool s_dev_pending;
 
 static bool dev_handler(const char *line)
 {
-    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw") && strcmp(line, "home")) return false;
+    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4)) return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
     s_dev_pending = true;
@@ -707,6 +708,9 @@ static void dev_run(void)
         ui_app_close();
     } else if (!strcmp(s_dev_cmd, "inv")) {
         bz_ui_trace_inv(20);
+    } else if (!strncmp(s_dev_cmd, "ask ", 4)) {
+        /* a typed question to the companion, as its keyboard would send it */
+        voice_ask(s_dev_cmd + 4);
     } else if (!strcmp(s_dev_cmd, "home")) {
         if (ui_home_mode_active()) ui_home_mode_exit();
         else ui_home_mode_enter();

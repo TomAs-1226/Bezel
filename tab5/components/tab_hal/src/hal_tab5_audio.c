@@ -422,8 +422,11 @@ bool hal_wake_ready(const char **word)
         if (AU.wd) {
             AU.wn_chunk = AU.wn->get_samp_chunksize(AU.wd);
             AU.wn_buf = heap_caps_malloc((size_t)AU.wn_chunk * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+            /* what to say, as a person reads it: the model's own word is its file name ("wn9_hiesp") */
             char *w = esp_wn_wakeword_from_name(name);
-            snprintf(AU.wn_name, sizeof AU.wn_name, "%s", w && w[0] ? w : "Hi ESP");
+            const char *say = strstr(name, "hiesp") ? "Hi ESP" : strstr(name, "hilexin") ? "Hi Lexin"
+                            : strstr(name, "hijason") ? "Hi Jason" : w && w[0] && !strchr(w, '_') ? w : "Hi ESP";
+            snprintf(AU.wn_name, sizeof AU.wn_name, "%s", say);
             ESP_LOGI(TAG, "wake word %s (%s), %d samples at %d Hz a chunk", AU.wn_name, name, AU.wn_chunk,
                      AU.wn->get_samp_rate(AU.wd));
         } else {

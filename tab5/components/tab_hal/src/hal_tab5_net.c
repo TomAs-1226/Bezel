@@ -801,6 +801,15 @@ int hal_http_read(hal_http_t *h, char *buf, int max)
 {
     if (!h || max <= 0) return -1;
     if (h->done) return 0;
+    /* all of the body already in (the last chunk came with the previous read): asking for one more byte would
+     * wait out the whole timeout for nothing — the companion sat 20 s "speaking" after every spoken answer */
+    /* (only with a length or chunks to go by: a body of unknown length, ended by the server closing, counts as
+     * "complete" from the start) */
+    if ((esp_http_client_get_content_length(h->c) > 0 || esp_http_client_is_chunked_response(h->c)) &&
+        esp_http_client_is_complete_data_received(h->c)) {
+        h->done = true;
+        return 0;
+    }
     /* esp_http_client_read() keeps reading until it has `len` body bytes, the body ends, or a read times
      * out — so asking for a buffer's worth would hold a Server-Sent Event back until more arrived behind
      * it. Instead: wait (with the request's timeout) for one byte, then take whatever else is already
