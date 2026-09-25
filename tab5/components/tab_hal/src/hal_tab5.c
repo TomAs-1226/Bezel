@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <math.h>
 #include <stdio.h>
+#include <errno.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/mman.h>
@@ -242,16 +243,22 @@ static void ina226_init(void)
     reg_write16(T.ina, 0x05, 4096);
 }
 
-/* A 2S Li-ion pack by voltage per cell: there is no fuel gauge, so this is an estimate */
-static int percent_from_cell(float v)
+/* A 2S Li-ion pack by voltage per cell: there is no fuel gauge, so this is an estimate. The curve is a
+ * typical 18650/NP-F cell's resting (open-circuit) voltage at 25 °C. */
+static float percent_from_cell(float v)
 {
-    static const float V[] = { 3.00f, 3.30f, 3.60f, 3.70f, 3.80f, 3.90f, 4.00f, 4.10f, 4.20f };
-    static const float P[] = { 0, 5, 15, 35, 55, 70, 82, 92, 100 };
+    static const float V[] = { 3.30f, 3.50f, 3.60f, 3.65f, 3.70f, 3.75f, 3.80f, 3.90f, 4.00f, 4.10f, 4.20f };
+    static const float P[] = { 0, 5, 12, 20, 30, 40, 50, 65, 78, 90, 100 };
+    int n = sizeof V / sizeof V[0];
     if (v <= V[0]) return 0;
-    for (int i = 1; i < 9; i++)
-        if (v <= V[i]) return (int)(P[i - 1] + (P[i] - P[i - 1]) * (v - V[i - 1]) / (V[i] - V[i - 1]));
+    for (int i = 1; i < n; i++)
+        if (v <= V[i]) return P[i - 1] + (P[i] - P[i - 1]) * (v - V[i - 1]) / (V[i] - V[i - 1]);
     return 100;
 }
+
+/* the pack's internal resistance (two cells, wiring and protection): a 1 A draw pulls the terminals
+ * ~0.15 V under the resting voltage, which the curve would read as 10-15 % gone */
+#define PACK_OHMS 0.15f
 
 bool hal_battery(hal_battery_t *o)
 {
@@ -262,7 +269,37 @@ bool hal_battery(hal_battery_t *o)
     if (reg_read(T.ina, 0x04, b, 2)) o->amps = (int16_t)(b[0] << 8 | b[1]) * 250e-6f;
     o->charging = o->amps > 0.05f; /* positive current is charging (M5's demo) */
     o->external = o->charging;
-    o->percent = percent_from_cell(o->volts / 2);
+    /* On USB power with the pack idle, the monitor reads ~4.28 V for seconds at a time between ~8.39 V
+     * readings (the charger probing the pack, as far as can be told from here): half a 2S pack, which no
+     * working pack ever is. Below 5.5 V (2.75 V a cell, under the protection's cut-off) the reading is
+     * not the pack: the last estimate stands. */
+    static int last_pct = -1;
+    if (o->volts < 5.5f) {
+        if (last_pct < 0) return false;
+        o->percent = last_pct;
+        o->ok = true;
+        return true;
+    }
+    /* the resting voltage: what the terminals would read with no current flowing either way */
+    float rest = o->volts - o->amps * PACK_OHMS;
+    float raw = percent_from_cell(rest / 2);
+    /* the charge changes over minutes; the reading jumps with every load step (the backlight, Wi-Fi, a
+     * PPA burst). Filtered over ~2 minutes, and while discharging it never climbs (a load that eases off
+     * isn't charge coming back) */
+    static float soc = -1;
+    static double at;
+    double now = hal_seconds();
+    if (soc < 0 || now - at > 600) soc = raw; /* first reading, or a long gap (asleep, off) */
+    else {
+        float k = (float)((now - at) / 120.0);
+        if (k > 1) k = 1;
+        float next = soc + (raw - soc) * k;
+        if (!o->charging && next > soc) next = soc;
+        soc = next;
+    }
+    at = now;
+    o->percent = (int)lroundf(soc);
+    last_pct = o->percent;
     o->ok = true;
     return true;
 }
@@ -1610,8 +1647,10 @@ void hal_set_volume(float v)
 
 /* ------------------------------------------------------------------ camera */
 
-#define CAM_OUT_W 960
-#define CAM_OUT_H 540
+/* the preview: 800×450 is more than the lens app's box shows after LVGL scales it, and two of them (1.4 MB)
+ * still fit in PSRAM beside the camera's own two 1.8 MB capture buffers */
+#define CAM_OUT_W 800
+#define CAM_OUT_H 450
 static struct {
     int fd;
     bool on, started;
@@ -1648,7 +1687,7 @@ static void cam_task(void *arg)
             if (clip_taking_frames()) clip_take(C.bufs[b.index]);
             s_clip_taking = false;
         }
-        /* scale 1280×720 to 960×540 on the PPA straight into the frame the UI will show */
+        /* scale 1280×720 to the preview's size on the PPA straight into the frame the UI will show */
         ppa_srm_oper_config_t op = {
             .in = { .buffer = C.bufs[b.index], .pic_w = (uint32_t)C.src_w, .pic_h = (uint32_t)C.src_h,
                     .block_w = (uint32_t)C.src_w, .block_h = (uint32_t)C.src_h, .srm_cm = PPA_SRM_COLOR_MODE_RGB565 },
@@ -1659,7 +1698,12 @@ static void cam_task(void *arg)
             .scale_y = (float)CAM_OUT_H / C.src_h,
             .mode = PPA_TRANS_MODE_BLOCKING,
         };
-        ppa_do_scale_rotate_mirror(T.ppa_cam, &op);
+        static bool said;
+        if (ppa_do_scale_rotate_mirror(T.ppa_cam, &op) != ESP_OK && !said) {
+            said = true;
+            ESP_LOGE(TAG, "camera: scale %p (%ux%u) -> %p failed", C.bufs[b.index], (unsigned)C.src_w,
+                     (unsigned)C.src_h, C.frames[w]);
+        }
         C.ready = w;
         w ^= 1;
         ioctl(C.fd, VIDIOC_QBUF, &b);
@@ -1670,18 +1714,46 @@ bool hal_camera_start(void)
 {
     if (C.on) return true;
     if (!C.started) {
-        bsp_camera_cfg_t cfg = { 0 };
-        if (bsp_camera_start(&cfg) != ESP_OK) return false;
-        C.fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDONLY);
-        if (C.fd < 0) return false;
+        /* the video devices register once: a second bsp_camera_start() fails on the ISP already there */
+        static bool bsp_up;
+        if (!bsp_up) {
+            bsp_camera_cfg_t cfg = { 0 };
+            esp_err_t e = bsp_camera_start(&cfg);
+            if (e != ESP_OK) {
+                ESP_LOGE(TAG, "camera: bsp start: %s", esp_err_to_name(e));
+                return false;
+            }
+            bsp_up = true;
+        }
+        if (C.fd <= 0) C.fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDONLY);
+        if (C.fd < 0) {
+            ESP_LOGE(TAG, "camera: open %s: errno %d", ESP_VIDEO_MIPI_CSI_DEVICE_NAME, errno);
+            return false;
+        }
         struct v4l2_format f = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
         ioctl(C.fd, VIDIOC_G_FMT, &f);
+        /* G_FMT copies the stream's stored format over all of it, type included, and before a first
+         * S_FMT that type is 0: S_FMT would then find no stream and fail with EINVAL, silently */
+        f.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
         f.fmt.pix.pixelformat = V4L2_PIX_FMT_RGB565;
-        if (ioctl(C.fd, VIDIOC_S_FMT, &f) != 0) return false;
+        for (int i = 0; i < 12; i++) {
+            struct v4l2_fmtdesc d = { .index = (uint32_t)i, .type = V4L2_BUF_TYPE_VIDEO_CAPTURE };
+            if (ioctl(C.fd, VIDIOC_ENUM_FMT, &d) != 0) break;
+            ESP_LOGI(TAG, "camera: offers %.4s (%s)", (const char *)&d.pixelformat, (const char *)d.description);
+        }
+        ESP_LOGI(TAG, "camera: now %.4s %ux%u", (const char *)&f.fmt.pix.pixelformat, (unsigned)f.fmt.pix.width,
+                 (unsigned)f.fmt.pix.height);
+        if (ioctl(C.fd, VIDIOC_S_FMT, &f) != 0) {
+            ESP_LOGE(TAG, "camera: RGB565 at %ux%u refused: errno %d", (unsigned)f.fmt.pix.width, (unsigned)f.fmt.pix.height, errno);
+            return false;
+        }
         C.src_w = (int)f.fmt.pix.width;
         C.src_h = (int)f.fmt.pix.height;
         struct v4l2_requestbuffers req = { .count = 2, .type = V4L2_BUF_TYPE_VIDEO_CAPTURE, .memory = V4L2_MEMORY_MMAP };
-        if (ioctl(C.fd, VIDIOC_REQBUFS, &req) != 0) return false;
+        if (ioctl(C.fd, VIDIOC_REQBUFS, &req) != 0) {
+            ESP_LOGE(TAG, "camera: buffers refused: errno %d", errno);
+            return false;
+        }
         for (int i = 0; i < 2; i++) {
             struct v4l2_buffer b = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE, .memory = V4L2_MEMORY_MMAP, .index = (uint32_t)i };
             ioctl(C.fd, VIDIOC_QUERYBUF, &b);
@@ -1691,11 +1763,23 @@ bool hal_camera_start(void)
         }
         C.frames[0] = psram_aligned(CAM_OUT_W * CAM_OUT_H * 2);
         C.frames[1] = psram_aligned(CAM_OUT_W * CAM_OUT_H * 2);
+        if (!C.frames[0] || !C.frames[1]) {
+            ESP_LOGE(TAG, "camera: no PSRAM for the preview (%u free, %u in one piece)",
+                     (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+                     (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+            free(C.frames[0]);
+            free(C.frames[1]);
+            C.frames[0] = C.frames[1] = NULL;
+            return false;
+        }
         xTaskCreatePinnedToCore(cam_task, "cam", 4096, NULL, 5, &C.task, 0);
         C.started = true;
     }
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(C.fd, VIDIOC_STREAMON, &type) != 0) return false;
+    if (ioctl(C.fd, VIDIOC_STREAMON, &type) != 0) {
+        ESP_LOGE(TAG, "camera: stream on: errno %d", errno);
+        return false;
+    }
     C.on = true;
     return true;
 }

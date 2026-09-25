@@ -161,6 +161,13 @@ static void run(char *line)
         localtime_r(&tv.tv_sec, &tm);
         hal_rtc_set(&tm);
         say("OK\n");
+    } else if (!strcmp(line, "bat")) {
+        hal_battery_t bt;
+        char buf[120];
+        if (hal_battery(&bt)) snprintf(buf, sizeof buf, "MEM battery %.3f V %.3f A, %d %%%s\n", bt.volts, bt.amps, bt.percent, bt.charging ? ", charging" : "");
+        else snprintf(buf, sizeof buf, "MEM battery: no reading\n");
+        say(buf);
+        say("OK\n");
     } else if (!strcmp(line, "mem")) {
         /* internal RAM (the scarce kind) and PSRAM: free, the lowest it has been, the largest block; then
          * each task's stack headroom */

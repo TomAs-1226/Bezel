@@ -651,7 +651,7 @@ static volatile bool s_dev_pending;
 
 static bool dev_handler(const char *line)
 {
-    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw")) return false;
+    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw") && strcmp(line, "home")) return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
     s_dev_pending = true;
@@ -676,6 +676,9 @@ static void dev_run(void)
         ui_app_close();
     } else if (!strcmp(s_dev_cmd, "inv")) {
         bz_ui_trace_inv(20);
+    } else if (!strcmp(s_dev_cmd, "home")) {
+        if (ui_home_mode_active()) ui_home_mode_exit();
+        else ui_home_mode_enter();
     } else if (!strcmp(s_dev_cmd, "redraw")) {
         /* the whole screen drawn again: a panel shot before and after shows what a present left stale */
         lv_obj_invalidate(lv_screen_active());
