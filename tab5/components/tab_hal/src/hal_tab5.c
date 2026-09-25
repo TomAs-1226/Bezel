@@ -851,7 +851,7 @@ static void fb_catch_up(int b, const bz_present_t *areas, int n, bool cover_full
     }
 }
 
-/* PROFILING: gaps between consecutive hand-overs while something moves (under 200 ms), bucketed by how
+/* dev console "perf": gaps between consecutive hand-overs while something moves (under 200 ms), bucketed by how
  * many vsyncs they span: 1, 2, 3, more */
 static int s_gap[4];
 static double s_lw, s_lmax;
@@ -916,7 +916,7 @@ static void fb_handover(int b, const bz_present_t *areas, int n, bool full, int 
     }
 }
 
-/* PROFILING: seconds per stage of hal_present since the last hal_present_prof() */
+/* dev console "perf": seconds per stage of hal_present since the last hal_present_prof() */
 static double s_pp[5];
 static int s_ppn;
 void hal_present_prof(double out[6])
@@ -1789,7 +1789,6 @@ static struct {
     volatile int upright;       /* that frame (-1 none) */
     bool frame_flip[2];         /* the picture's turn each frame was made for */
     volatile uint32_t gen;      /* frames made */
-    double ppa_s;               /* PROFILING: the PPA's time for them */
     TaskHandle_t task;
     jpeg_encoder_handle_t jpeg;
 } C = { .fd = -1, .ready = -1, .reading = -1, .upright = -1 };
@@ -1897,28 +1896,16 @@ static void cam_task(void *arg)
         bool skip = (C.plane && C.freeze && !C.want_upright) || w == C.reading || w == C.upright;
         if (!skip && !upright) {
             bool flip = s_flip;
-            double t0 = hal_seconds();
             /* the capture came in by DMA: what the cache holds of this buffer is last time's */
             esp_cache_msync(C.bufs[b.index], (C.lens[b.index] + 127) & ~(size_t)127, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
-            static double sync_s;
-            sync_s += hal_seconds() - t0;
-            if (!((C.gen + 1) % 150)) {
-                ESP_LOGI(TAG, "camera: %.1f ms of it the cache", sync_s * 1000 / 150); /* PROFILING */
-                sync_s = 0;
-            }
             /* The camera is fixed to the body, as the panel is: when the picture turns 180° (the tablet held
              * the other way up), the scene has turned with the body too, and the two cancel. So the frame is
              * laid out as the unturned panel's, whatever the picture's turn; only where it goes follows it. */
             (void)flip;
             plane_turn(C.bufs[b.index], C.src_w, C.src_h, C.frames[w], CAM_OUT_W, CAM_OUT_H, false);
-            C.ppa_s += hal_seconds() - t0;
             C.frame_flip[w] = flip;
             C.ready = w;
             C.gen++;
-            if (!(C.gen % 150)) {
-                ESP_LOGI(TAG, "camera: %.1f ms to turn a frame", C.ppa_s * 1000 / 150); /* PROFILING */
-                C.ppa_s = 0;
-            }
         } else if (!skip) {
             /* scale 1280×720 to the preview's size on the PPA, upright (the LVGL preview, a snapshot) */
             bool flip = s_flip;
@@ -1935,13 +1922,11 @@ static void cam_task(void *arg)
                 .mode = PPA_TRANS_MODE_BLOCKING,
             };
             static bool said;
-            double t0 = hal_seconds();
             if (ppa_do_scale_rotate_mirror(T.ppa_cam, &op) != ESP_OK && !said) {
                 said = true;
                 ESP_LOGE(TAG, "camera: scale %p (%ux%u) -> %p failed", C.bufs[b.index], (unsigned)C.src_w,
                          (unsigned)C.src_h, C.frames[w]);
             }
-            C.ppa_s += hal_seconds() - t0;
             if (C.plane && C.want_upright) {
                 C.upright = w;
                 C.want_upright = false;
@@ -1949,10 +1934,6 @@ static void cam_task(void *arg)
                 C.frame_flip[w] = flip;
                 C.ready = w;
                 C.gen++;
-                if (!(C.gen % 150)) {
-                    ESP_LOGI(TAG, "camera: %.1f ms of PPA a frame", C.ppa_s * 1000 / 150); /* PROFILING */
-                    C.ppa_s = 0;
-                }
             }
         }
         ioctl(C.fd, VIDIOC_QBUF, &b);

@@ -745,7 +745,7 @@ static bool dev_handler(const char *line)
     return true;
 }
 
-/* PROFILING: seconds spent in each part of shell_frame since the last "perf" */
+/* the dev console's "perf": seconds spent in each part of shell_frame since it last asked */
 static double s_prof[12];
 static const char *const s_prof_name[12] = { "slide", "caches", "dock", "orient", "windows", "perf", "model",
                                              "assist", "island", "pages", "app", "rest" };
@@ -1749,8 +1749,8 @@ static void perf_frame(double now)
 
 /* ------------------------------------------------------------------ frame */
 
-static double s_pf[12]; /* PROFILING: this frame's sections */
-#define PROF_MARK(i) do { double t_ = bz_ui_clock(); s_prof[i] += t_ - p_; s_pf[i] += t_ - p_; p_ = t_; } while (0)
+/* the dev console's "perf": each section's time, summed until it asks */
+#define PROF_MARK(i) do { double t_ = bz_ui_clock(); s_prof[i] += t_ - p_; p_ = t_; } while (0)
 
 static void shell_frame(double now, double dt, void *user)
 {
@@ -1864,18 +1864,6 @@ static void shell_frame(double now, double dt, void *user)
         }
     }
     PROF_MARK(11);
-    {
-        double tot = 0;
-        for (int k = 0; k < 12; k++) tot += s_pf[k];
-        if (tot > 0.015) {
-            char line[200];
-            int o = snprintf(line, sizeof line, "slow shell frame %.1f ms:", tot * 1000);
-            for (int k = 0; k < 12 && o < (int)sizeof line - 20; k++)
-                if (s_pf[k] > 0.002) o += snprintf(line + o, sizeof line - o, " %s %.1f", s_prof_name[k], s_pf[k] * 1000);
-            puts(line); /* PROFILING */
-        }
-        memset(s_pf, 0, sizeof s_pf);
-    }
 }
 
 void ui_init(const ui_config_t *cfg)
