@@ -1428,7 +1428,16 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
     if (!dy) return true;
     lv_area_t obs[SCROLL_OBS];
     int nobs = 0;
-    if (U.frozen || U.offscreen || U.thaw >= 0 || abs(dy) >= h || lv_obj_get_style_radius(clip, 0) ||
+    /* While a slide or a sheet holds the glass, LVGL's damage is taken off its list every frame (late,
+     * sheet_dirty), where a later step of this scroll can't move it with the list: the strips revealed step by
+     * step landed where they were revealed, not where the list had gone, and a fling during a page's settle
+     * left the list half the old rows and half empty tiles. Held, the list is simply drawn again whole once the
+     * glass is back. */
+    bool held = false;
+#if BZ_LEAN
+    held = U.sliding || U.sheeting;
+#endif
+    if (held || U.frozen || U.offscreen || U.thaw >= 0 || abs(dy) >= h || lv_obj_get_style_radius(clip, 0) ||
         !unobstructed(clip, &a, obs, &nobs)) {
         lv_obj_invalidate(clip); /* what a plain move would have: both positions, clipped to the list */
         return false;

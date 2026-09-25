@@ -535,6 +535,8 @@ void ui_cc_init(void)
     bz_motion_init(&C.p, 0, 0.001f);
     bz_motion_init(&C.boot, bz_ui_calm() ? 0 : 1, 0.001f);
     for (int i = 0; i < NMOD; i++) C.last_y[i] = C.last_opa[i] = -1;
+    /* the sheet starts put away: the cascade hid the modules on its first frame, the sheet never does */
+    if (C.sheet_mode) cc_show(false);
     bz_ui_on_frame(cc_frame, NULL);
     ui_on_refresh(cc_refresh, NULL);
 }
