@@ -6,6 +6,12 @@ publishes, with `file:line` on both sides. `docs/catalyst-contract.md`, `docs/sy
 `docs/link-api.md` describe the contract at the level a technician needs; this page is for changing
 the library side of it and does not repeat their prose.
 
+**See also `docs/api-connections.md`** for the tablet's complete API surface, including what this page
+does not cover: NT4 topics the tablet *writes* (not just reads), the Catalyst Link HTTP API, the cloud
+APIs called directly by the firmware (The Blue Alliance, OpenAI, Anthropic, Open-Meteo, Home Assistant),
+and the tablet's local interfaces (SD card layout, dev console). This page remains the authoritative
+library cross-reference for NT4/HTTP-vs-FrcCatalyst specifically.
+
 **Checkouts read for this page:**
 
 - Tablet: `tab5/` at `C:\Users\yu_th\dev\_worktrees\Bezel-tab5\tab5`, branch `tab5-pr1`.
