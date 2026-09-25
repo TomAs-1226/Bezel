@@ -40,6 +40,8 @@ static struct {
      * (bz_ui_sheet_*); `open` is where it rests, `sheet` a pull or settle under way, `sheet_mode` once
      * the platform has shown it can (the older per-module cascade is the fallback) */
     bool sheet, open, sheet_mode;
+    bool want_open;        /* an orb tap came while another sheet slid: open when it's done */
+    double want_at;
     lv_obj_t *panel;
     /* the notifications, under the modules */
     lv_obj_t *notes, *note_row[NOTE_ROWS], *note_icon[NOTE_ROWS], *note_text[NOTE_ROWS], *note_age[NOTE_ROWS],
@@ -269,7 +271,20 @@ static void cc_frame(double now, double dt, void *user)
         C.sheet = false;
         return;
     }
-    if (C.sheet_mode) return; /* resting: nothing moves, cc_show set it all */
+    if (C.sheet_mode) {
+        /* resting: nothing moves, cc_show set it all. A pull or an orb tap whose sheet was refused (a page or an
+         * app was sliding) left the pull's target at open with nothing shown, and the edge pull (which needs the
+         * target at closed) dead from then on: the rest state is put back, and a tap is tried again once the
+         * other sheet is done. */
+        float rest = C.open ? 1.0f : 0.0f;
+        if (!C.edge && (C.p.target != rest || C.p.value != rest)) bz_motion_set(&C.p, rest, 0);
+        if (C.want_open && (C.open || hal_seconds() - C.want_at > 2.0)) C.want_open = false; /* opened, or stale */
+        if (C.want_open && !bz_ui_sheeting()) {
+            C.want_open = false;
+            ui_cc_open();
+        }
+        return;
+    }
     float p = C.p.value < 0 ? 0 : C.p.value;
     bool shown = p > 0.002f || C.dragging;
     /* power-on: the page starts under the frosted blind and it lifts, a beat after the first frame */
@@ -382,8 +397,13 @@ bool ui_cc_is_open(void) { return C.open || C.sheet; }
 
 void ui_cc_open(void)
 {
-    if (C.open) return;
+    if (C.open || C.sheet) return;
     sheet_start(true);
+    if (C.sheet_mode && !C.sheet) {
+        C.want_open = true; /* another sheet is sliding: open once it's done (cc_frame) */
+        C.want_at = hal_seconds();
+        return;
+    }
     cc_to(1, 0);
 }
 
