@@ -27,8 +27,8 @@
 #define LW 420                      /* the left column */
 #define RX (PAD + LW + BZ_GAP)
 #define RW (W - PAD - RX)
-#define EV_H 140
-#define NX_H 226
+#define EV_H 150                    /* label, name, place and "updated": at 140 the last two lines overlapped */
+#define NX_H 216
 #define ST_H (APP_H - EV_H - NX_H - 2 * BZ_GAP)
 #define IN(w) ((w) - 2 * BZ_PAD_TILE)
 #define ROW_H 96                    /* a match */
@@ -273,7 +273,12 @@ static void left_update(const tba_state_t *s, time_t now)
 {
     char b[48];
     if (s->have_event) {
-        ui_text(TB.ev_name, "%s", s->event_name[0] ? s->event_name : s->event_key);
+        const char *nm = s->event_name[0] ? s->event_name : s->event_key;
+        ui_text(TB.ev_name, "%s", nm);
+        /* a long event name a step down rather than cut at "FIRST California Southe..." */
+        lv_point_t sz;
+        lv_text_get_size(&sz, nm, bz_font(BZ_F_NAME), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        bz_set_font(TB.ev_name, sz.x > IN(LW) ? BZ_F_BODY : BZ_F_NAME);
         ui_text(TB.ev_where, "%s%s%.5s - %.5s%s", s->event_where, s->event_where[0] ? " \xc2\xb7 " : "", s->start + 5,
                 s->end + 5, s->live ? " \xc2\xb7 today" : "");
     } else {
@@ -301,12 +306,18 @@ static void left_update(const tba_state_t *s, time_t now)
         side_set(&TB.nx_side[0], nx->red, s->team);
         side_set(&TB.nx_side[1], nx->blue, s->team);
     } else {
+        /* words, and no alliance bars with nobody beside them (two lone stripes under a dash read as a glitch) */
         static const int NONE[3] = { 0, 0, 0 };
-        ui_text(TB.nx_label, "%s", "\xe2\x80\x94");
+        ui_text(TB.nx_label, "%s", s->nmatches ? "all played" : "none yet");
         ui_text(TB.nx_when, " ");
-        ui_text(TB.nx_note, "%s", s->nmatches ? "no more matches here" : "no schedule yet");
+        ui_text(TB.nx_note, "%s", s->nmatches ? "no more of ours at this event" : "no schedule yet");
         side_set(&TB.nx_side[0], NONE, 0);
         side_set(&TB.nx_side[1], NONE, 0);
+    }
+    bz_set_color(TB.nx_label, nx ? BZ_C_INK : BZ_C_DIM);
+    for (int k = 0; k < 2; k++) {
+        if (nx) lv_obj_remove_flag(TB.nx_side[k].bar, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(TB.nx_side[k].bar, LV_OBJ_FLAG_HIDDEN);
     }
 
     if (s->have_status && s->rank > 0) {
@@ -318,6 +329,11 @@ static void left_update(const tba_state_t *s, time_t now)
     }
     ui_text(TB.st_alliance, "%s%s%s", s->alliance, s->alliance[0] && s->playoff[0] ? " \xc2\xb7 " : "", s->playoff);
     ui_text(TB.st_line, "%s", s->status_line[0] ? s->status_line : " ");
+    /* TBA's status sentence takes the alliance's line when there is none, and stops at the tile's bottom
+     * with an ellipsis rather than running into its padding */
+    int y = s->alliance[0] || s->playoff[0] ? 110 : 84, h = ST_H - 2 * BZ_PAD_TILE - y;
+    if (lv_obj_get_y(TB.st_line) != y) lv_obj_set_y(TB.st_line, y);
+    if (lv_obj_get_style_height(TB.st_line, 0) != h) lv_obj_set_height(TB.st_line, h);
 }
 
 /* ------------------------------------------------------------------ the app */
@@ -343,7 +359,7 @@ static void tba_build(lv_obj_t *b)
 
     lv_obj_t *t = column_tile(b, APP_Y, EV_H, "event");
     TB.ev_name = bz_label_line(t, "", BZ_F_NAME, BZ_C_INK, IN(LW));
-    lv_obj_set_pos(TB.ev_name, 0, 24);
+    lv_obj_set_pos(TB.ev_name, 0, 22);
     TB.ev_where = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, IN(LW));
     lv_obj_set_pos(TB.ev_where, 0, 56);
     TB.ev_as_of = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, IN(LW));
@@ -368,8 +384,8 @@ static void tba_build(lv_obj_t *b)
     TB.st_alliance = bz_label_line(t, "", BZ_F_BODY_S, BZ_C_INK, IN(LW));
     lv_obj_set_pos(TB.st_alliance, 0, 84);
     TB.st_line = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
-    lv_label_set_long_mode(TB.st_line, LV_LABEL_LONG_WRAP);
-    lv_obj_set_width(TB.st_line, IN(LW));
+    lv_label_set_long_mode(TB.st_line, LV_LABEL_LONG_DOT);
+    lv_obj_set_size(TB.st_line, IN(LW), ST_H - 2 * BZ_PAD_TILE - 110);
     lv_obj_set_pos(TB.st_line, 0, 110);
 
     TB.wrap_m = bz_box(b);

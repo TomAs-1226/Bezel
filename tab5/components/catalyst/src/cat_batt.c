@@ -163,11 +163,11 @@ bool cat_batt_watch_due(const cat_batt_t *b, char *why, size_t n)
     float r = cat_batt_r_now(b, &m);
     if (m < 2 || !KNOWN(r)) return false;
     if (r > CAT_BATT_WATCH_MOHM) {
-        snprintf(why, n, "%.0f m\xce\xa9, over %.0f", r, CAT_BATT_WATCH_MOHM);
+        snprintf(why, n, "%.0f mohm, over %.0f", r, CAT_BATT_WATCH_MOHM);
         return true;
     }
     if (KNOWN(b->r_base) && m >= 4 && r > b->r_base * (1 + CAT_BATT_WATCH_RISE)) {
-        snprintf(why, n, "%.0f m\xce\xa9, up %.0f %% from %.0f", r, (r / b->r_base - 1) * 100, b->r_base);
+        snprintf(why, n, "%.0f mohm, up %.0f %% from %.0f", r, (r / b->r_base - 1) * 100, b->r_base);
         return true;
     }
     return false;
@@ -276,8 +276,8 @@ int cat_fleet_rank(const cat_fleet_t *f, int64_t now, cat_batt_rank_t *out, int 
         float r = cat_batt_r_now(b, &m);
         if (KNOWN(r)) {
             p[np].w = (22 - r) * 1.5f;
-            if (r <= lowest + 0.05f && avail > 1) snprintf(p[np++].text, sizeof p[0].text, "lowest resistance (%.0f m\xce\xa9)", r);
-            else snprintf(p[np++].text, sizeof p[0].text, "%.0f m\xce\xa9", r);
+            if (r <= lowest + 0.05f && avail > 1) snprintf(p[np++].text, sizeof p[0].text, "lowest resistance (%.0f mohm)", r);
+            else snprintf(p[np++].text, sizeof p[0].text, "%.0f mohm", r);
             if (KNOWN(b->r_base) && m >= 4 && r > b->r_base * 1.15f) {
                 p[np].w = -8;
                 snprintf(p[np++].text, sizeof p[0].text, "resistance rising (%.0f to %.0f)", b->r_base, r);
