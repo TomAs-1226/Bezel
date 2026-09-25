@@ -270,32 +270,41 @@ bool hal_battery(hal_battery_t *o)
     o->charging = o->amps > 0.05f; /* positive current is charging (M5's demo) */
     o->external = o->charging;
     /* On USB power with the pack idle, the monitor reads ~4.28 V for seconds at a time between ~8.39 V
-     * readings (the charger probing the pack, as far as can be told from here): half a 2S pack, which no
-     * working pack ever is. Below 5.5 V (2.75 V a cell, under the protection's cut-off) the reading is
-     * not the pack: the last estimate stands. */
+     * readings (the charger probing the pack, as far as can be told from here), and at power-on it reads
+     * low until the rails settle. A pack's voltage can't jump: a reading more than 0.3 V from the last
+     * accepted one counts only once it has held for 20 s, and anything under 5.5 V (2.75 V a cell, under
+     * the protection's cut-off) never does. Until a reading is accepted the last estimate stands. */
     static int last_pct = -1;
-    if (o->volts < 5.5f) {
+    static float last_v = -1;
+    static double off_since;
+    double now = hal_seconds();
+    bool odd = o->volts < 5.5f;
+    if (!odd && last_v > 0 && fabsf(o->volts - last_v) > 0.3f) {
+        if (!off_since) off_since = now;
+        odd = now - off_since < 20;
+    }
+    if (odd) {
         if (last_pct < 0) return false;
         o->percent = last_pct;
         o->ok = true;
         return true;
     }
+    off_since = 0;
+    last_v = o->volts;
     /* the resting voltage: what the terminals would read with no current flowing either way */
     float rest = o->volts - o->amps * PACK_OHMS;
     float raw = percent_from_cell(rest / 2);
-    /* the charge changes over minutes; the reading jumps with every load step (the backlight, Wi-Fi, a
-     * PPA burst). Filtered over ~2 minutes, and while discharging it never climbs (a load that eases off
-     * isn't charge coming back) */
+    /* the charge changes over minutes; the reading moves with every load step (the backlight, Wi-Fi, a
+     * PPA burst). Filtered over ~2 minutes (the first minute after power-on settles fast), and while not
+     * charging it climbs four times slower than it falls: a load easing off isn't charge coming back */
     static float soc = -1;
     static double at;
-    double now = hal_seconds();
     if (soc < 0 || now - at > 600) soc = raw; /* first reading, or a long gap (asleep, off) */
     else {
-        float k = (float)((now - at) / 120.0);
+        float k = (float)((now - at) / (now < 60 ? 3.0 : 120.0));
+        if (!o->charging && raw > soc && now >= 60) k *= 0.25f;
         if (k > 1) k = 1;
-        float next = soc + (raw - soc) * k;
-        if (!o->charging && next > soc) next = soc;
-        soc = next;
+        soc += (raw - soc) * k;
     }
     at = now;
     o->percent = (int)lroundf(soc);
