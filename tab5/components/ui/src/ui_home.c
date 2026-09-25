@@ -17,6 +17,7 @@ static struct {
     lv_obj_t *al_count, *al_mark, *al_line;
     lv_obj_t *tb_batt, *tb_icon, *tb_foot;
     lv_obj_t *ln_robot, *ln_wifi, *ln_usb;
+    lv_obj_t *team;
 } HM;
 
 static void open_app_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
@@ -39,9 +40,10 @@ static void home_refresh(void *u)
     localtime_r(&now, &tm);
     if (tm.tm_year > 120) {
         ui_text(HM.time, "%d:%02d", tm.tm_hour, tm.tm_min);
+        /* not strftime's %e: it pads a one-digit day with a space ("September  5") */
         char d[40];
-        strftime(d, sizeof d, "%A, %B %e", &tm);
-        ui_text(HM.date, "%s", d);
+        strftime(d, sizeof d, "%A, %B", &tm);
+        ui_text(HM.date, "%s %d", d, tm.tm_mday);
         ui_text(HM.greet, "%s", tm.tm_hour < 5 ? "late night" : tm.tm_hour < 12 ? "good morning" : tm.tm_hour < 18 ? "good afternoon" : "good evening");
     } else {
         ui_text(HM.time, "--:--");
@@ -54,13 +56,15 @@ static void home_refresh(void *u)
     bz_mark_set(HM.rb_mark, !r->connected ? BZ_STALE : r->estop ? BZ_FAULT : r->enabled ? BZ_WARN : BZ_OK);
     ui_text(HM.rb_mode, "%s", r->connected ? cat_mode_name(r) : "offline");
     ui_text(HM.rb_batt, "%s v", bz_fmt(b, sizeof b, r->have_battery, "%.2f", r->battery_v));
+    bz_set_color(HM.rb_batt, r->have_battery ? BZ_C_INK : BZ_C_FAINT); /* no reading: faint, not a value */
     if (r->connected) ui_text(HM.rb_foot, "%s · %.0f ms", r->have_identity ? r->name : r->address, r->rtt_ms);
     else ui_text(HM.rb_foot, "looking for team %d", S.team);
 
     if (!r->connected) {
-        ui_text(HM.al_count, "\xe2\x80\x94");
+        /* words, not a lone dash beside the mark: a bare "—" in the name face reads as a glitch */
+        ui_text(HM.al_count, "no robot");
         bz_mark_set(HM.al_mark, BZ_STALE);
-        ui_text(HM.al_line, "no robot");
+        ui_text(HM.al_line, "waiting for the robot");
     } else if (r->n_errors || r->n_warnings) {
         ui_text(HM.al_count, "%d · %d", r->n_errors, r->n_warnings);
         bz_mark_set(HM.al_mark, r->n_errors ? BZ_FAULT : BZ_WARN);
@@ -78,7 +82,12 @@ static void home_refresh(void *u)
     if (hal_battery(&bt) && bt.ok) {
         ui_text(HM.tb_batt, "%d%%", bt.percent);
         ui_text(HM.tb_foot, "%.2f v%s", bt.volts, bt.charging ? " · charging" : bt.external ? " · external" : "");
+    } else {
+        ui_text(HM.tb_batt, "\xe2\x80\x94");
+        ui_text(HM.tb_foot, "battery not reporting");
     }
+    /* the team can change in settings: the head follows */
+    ui_text(HM.team, "team %d", S.team);
     hal_net_t n;
     hal_net(&n);
     hal_tether_t t;
@@ -93,7 +102,7 @@ void ui_page_home(lv_obj_t *page)
     lv_obj_t *head = ui_head(page, "Catalyst Tab", NULL);
     char team[16];
     snprintf(team, sizeof team, "team %d", S.team);
-    bz_label_line(head, team, BZ_F_LABEL, BZ_C_DIM, ui_head_width("Catalyst Tab"));
+    HM.team = bz_label_line(head, team, BZ_F_LABEL, BZ_C_DIM, ui_head_width("Catalyst Tab"));
 
     /* the time, big */
     lv_obj_t *c = bz_tile(page, CLOCK_W, TOP_H);

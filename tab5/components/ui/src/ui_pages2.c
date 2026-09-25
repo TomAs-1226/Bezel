@@ -96,13 +96,9 @@ static void devices_rebuild(const cat_robot_t *r)
             }
         }
     }
-    if (!nb) {
-        lv_obj_t *t = bz_tile(D.scroll, W - 2 * PAD, 160);
-        bz_label(t, R->connected ? "the robot declares no CAN devices" : "not connected", BZ_F_BODY, BZ_C_DIM);
-        lv_obj_t *l = bz_label(t, "Catalyst publishes /Catalyst/CAN/Devices from 1.12; the can tap hears the bus directly.",
-                               BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    }
+    if (!nb)
+        ui_empty(D.scroll, W - 2 * PAD, R->connected ? "the robot declares no can devices" : "not connected",
+                 "Catalyst publishes /Catalyst/CAN/Devices from 1.12; the can tap app hears the bus directly.");
 }
 
 static void devices_refresh(void *u)
@@ -169,6 +165,7 @@ static void power_refresh(void *u)
     const cat_robot_t *r = R;
     char b[24];
     ui_text(PW.batt, "%s", bz_fmt(b, sizeof b, r->have_battery, "%.2f", r->battery_v));
+    bz_set_color(PW.batt, r->have_battery ? BZ_C_INK : BZ_C_FAINT);
     if (r->have_battery) {
         bz_mark_set(PW.mark, ui_battery_status(r->battery_v));
         int band = cat_battery_band(r->battery_v);
@@ -179,6 +176,7 @@ static void power_refresh(void *u)
     }
     double total = r->have_pd_live ? r->pd_total : r->total_current;
     ui_text(PW.total, "%s", bz_fmt(b, sizeof b, total == total, "%.0f", total));
+    bz_set_color(PW.total, total == total ? BZ_C_INK : BZ_C_FAINT);
     if (ui_now() - PW.last >= 0.5) {
         PW.last = ui_now();
         if (r->have_battery) bz_spark_push(PW.spark, (float)r->battery_v);
@@ -189,9 +187,14 @@ static void power_refresh(void *u)
         bz_spark_clear(PW.curr_spark);
     }
     char pv[16], fl[16];
-    ui_text(PW.foot, "brownout floor %s v · predicted %s v%s", bz_fmt(fl, sizeof fl, r->brownout_v == r->brownout_v, "%.2f", r->brownout_v),
-            bz_fmt(pv, sizeof pv, r->predicted_v == r->predicted_v, "%.1f", r->predicted_v), r->brownout_risk ? " · at risk" : "");
-    ui_text(PW.head, "%s%s%d of 24 in use", r->pd_module[0] ? r->pd_module : "", r->pd_module[0] ? " · " : "", r->nchannels);
+    if (r->connected)
+        ui_text(PW.foot, "brownout floor %s v · predicted %s v%s", bz_fmt(fl, sizeof fl, r->brownout_v == r->brownout_v, "%.2f", r->brownout_v),
+                bz_fmt(pv, sizeof pv, r->predicted_v == r->predicted_v, "%.1f", r->predicted_v), r->brownout_risk ? " · at risk" : "");
+    else ui_text(PW.foot, "no robot");
+    bz_set_color(PW.foot, r->brownout_risk ? BZ_C_WARN : BZ_C_DIM);
+    if (r->connected)
+        ui_text(PW.head, "%s%s%d of 24 in use", r->pd_module[0] ? r->pd_module : "", r->pd_module[0] ? " · " : "", r->nchannels);
+    else ui_text(PW.head, "no robot");
 
     for (int ch = 0; ch < 24; ch++) {
         const cat_channel_t *c = NULL;
@@ -268,6 +271,7 @@ void ui_page_power(lv_obj_t *page)
     lv_obj_set_pos(PW.curr_spark, 0, 276);
     bz_spark_color(PW.curr_spark, BZ_C_ICE);
     PW.foot = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(PW.foot, PW_RIGHT - 2 * BZ_PAD_TILE); /* "· at risk" wraps inside the tile, not past it */
     lv_obj_align(PW.foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     ui_on_page_refresh(PG_POWER, power_refresh, NULL);
 }
@@ -279,6 +283,7 @@ void ui_page_power(lv_obj_t *page)
 static struct {
     lv_obj_t *swerve, *pose, *heading, *speed;
     lv_obj_t *grid;
+    uint32_t swerve_sig;  /* what the drawing shows: redrawn only when it changes */
     lv_obj_t *mt[CAT_MAX_MECHS], *mname[CAT_MAX_MECHS], *mstate[CAT_MAX_MECHS], *mval[CAT_MAX_MECHS],
         *munit[CAT_MAX_MECHS], *msp[CAT_MAX_MECHS], *mmark[CAT_MAX_MECHS], *mfoot[CAT_MAX_MECHS], *mgoal[CAT_MAX_MECHS];
     int nm;
@@ -350,19 +355,36 @@ static void swerve_draw(lv_event_t *e)
     }
 }
 
+/* The arrows as drawn, to the pixel's worth: a robot at rest (or none) redraws nothing. */
+static uint32_t swerve_sig(const cat_robot_t *r)
+{
+    uint32_t h = 2166136261u ^ (uint32_t)r->nmodules ^ (uint32_t)r->have_targets << 8;
+    for (int i = 0; i < 4; i++) {
+        float v[4] = { (float)r->module_speed[i], (float)r->module_angle[i], (float)r->target_speed[i], (float)r->target_angle[i] };
+        for (int k = 0; k < 4; k++) {
+            int32_t q = v[k] == v[k] ? (int32_t)lroundf(v[k] * 50) : INT32_MIN;
+            h = (h ^ (uint32_t)q) * 16777619u;
+        }
+    }
+    return h;
+}
+
 static void motion_rebuild(const cat_robot_t *r)
 {
     lv_obj_clean(MO.grid);
-    MO.nm = r->nmechs;
+    MO.nm = r->nmechs < CAT_MAX_MECHS ? r->nmechs : CAT_MAX_MECHS;
     int w = (W - 2 * PAD - MO_SWERVE - BZ_GAP - BZ_GAP) / 2;
-    for (int i = 0; i < r->nmechs && i < 6; i++) {
+    for (int i = 0; i < MO.nm; i++) {
         lv_obj_t *t = bz_tile(MO.grid, w, 186);
         MO.mt[i] = t;
-        MO.mname[i] = bz_label(t, r->mechs[i].name, BZ_F_LABEL, BZ_C_DIM);
+        /* the name and the state share the top line: each cut to its half, never over the other */
+        MO.mname[i] = bz_label_line(t, r->mechs[i].name, BZ_F_LABEL, BZ_C_DIM, w - 2 * BZ_PAD_TILE - 158);
         lv_obj_t *sr = bz_row(t, 8);
         lv_obj_align(sr, LV_ALIGN_TOP_RIGHT, 0, 0);
         MO.mmark[i] = bz_mark(sr, BZ_STALE, 10);
-        MO.mstate[i] = bz_label(sr, "", BZ_F_LABEL, BZ_C_INK);
+        MO.mstate[i] = bz_label_line(sr, "", BZ_F_LABEL, BZ_C_INK, 132);
+        lv_obj_set_width(MO.mstate[i], LV_SIZE_CONTENT); /* hugs its mark; one line, at most 132 px */
+        lv_obj_set_style_max_width(MO.mstate[i], 132, 0);
         lv_obj_t *vr = bz_row(t, 8);
         lv_obj_set_flex_align(vr, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
         lv_obj_set_pos(vr, 0, 28);
@@ -376,28 +398,23 @@ static void motion_rebuild(const cat_robot_t *r)
         MO.mfoot[i] = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
         lv_obj_align(MO.mfoot[i], LV_ALIGN_BOTTOM_LEFT, 0, 0);
     }
-    if (!r->nmechs) {
-        lv_obj_t *t = bz_tile(MO.grid, 2 * w + BZ_GAP, 186);
-        bz_label(t, "no mechanisms published", BZ_F_BODY, BZ_C_DIM);
-        lv_obj_t *l = bz_label(t, "Catalyst mechanisms publish AngleDegrees, PositionMeters or VelocityRPS under /Catalyst/<name>/.",
-                               BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_set_width(l, 2 * w - 2 * BZ_PAD_TILE);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    }
+    if (!r->nmechs)
+        ui_empty(MO.grid, 2 * w + BZ_GAP, R->connected ? "no mechanisms published" : "not connected",
+                 "Catalyst mechanisms publish AngleDegrees, PositionMeters or VelocityRPS under /Catalyst/<name>/.");
 }
 
 static void motion_refresh(void *u)
 {
     (void)u;
     const cat_robot_t *r = R;
-    uint32_t sig = 2166136261u ^ (uint32_t)r->nmechs;
+    uint32_t sig = 2166136261u ^ (uint32_t)r->nmechs ^ (uint32_t)r->connected << 24;
     for (int i = 0; i < r->nmechs; i++)
         for (const char *p = r->mechs[i].name; *p; p++) sig = (sig ^ (uint8_t)*p) * 16777619u;
     if (sig != MO.sig) {
         MO.sig = sig;
         motion_rebuild(r);
     }
-    for (int i = 0; i < r->nmechs && i < 6; i++) {
+    for (int i = 0; i < MO.nm && i < r->nmechs; i++) {
         const cat_mech_t *m = &r->mechs[i];
         const char *fmt = m->kind == CAT_MECH_LINEAR ? "%.3f" : m->kind == CAT_MECH_FLYWHEEL ? "%.1f" : "%.1f";
         char b[24], sp[24];
@@ -419,11 +436,17 @@ static void motion_refresh(void *u)
         ui_text(MO.pose, "x %s  y %s m", bz_fmt(b1, sizeof b1, true, "%.2f", r->pose_x), bz_fmt(b2, sizeof b2, true, "%.2f", r->pose_y));
     else ui_text(MO.pose, "no pose");
     ui_text(MO.heading, "%s°", bz_fmt(b3, sizeof b3, r->heading_deg == r->heading_deg, "%.1f", r->heading_deg));
+    bz_set_color(MO.heading, r->heading_deg == r->heading_deg ? BZ_C_INK : BZ_C_FAINT);
     double spd = 0;
     for (int i = 0; i < r->nmodules; i++) spd += fabs(r->module_speed[i]);
     if (r->nmodules) ui_text(MO.speed, "%.2f m/s", spd / r->nmodules);
     else ui_text(MO.speed, " ");
-    lv_obj_invalidate(MO.swerve);
+    /* the drawing only when what it shows moved: it was redrawn 10 times a second, robot or not */
+    uint32_t ss = swerve_sig(r);
+    if (ss != MO.swerve_sig) {
+        MO.swerve_sig = ss;
+        lv_obj_invalidate(MO.swerve);
+    }
 }
 
 void ui_page_motion(lv_obj_t *page)
@@ -445,11 +468,20 @@ void ui_page_motion(lv_obj_t *page)
     MO.speed = bz_label(t, "", BZ_F_LABEL, BZ_C_INK);
     lv_obj_align(MO.speed, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 
-    MO.grid = bz_row(page, BZ_GAP);
+    /* the mechanisms scroll: a third row of them sat under the dock, and past six they weren't shown at all */
+    int gw = W - 2 * PAD - MO_SWERVE - BZ_GAP;
+    lv_obj_t *wrap = bz_box(page);
+    lv_obj_set_pos(wrap, PAD + MO_SWERVE + BZ_GAP, BODY_Y);
+    lv_obj_t *col = ui_scroller(wrap, gw, BODY_H);
+    MO.grid = bz_row(col, BZ_GAP);
     lv_obj_set_flex_flow(MO.grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_width(MO.grid, W - 2 * PAD - MO_SWERVE - BZ_GAP);
-    lv_obj_set_pos(MO.grid, PAD + MO_SWERVE + BZ_GAP, BODY_Y);
+    lv_obj_set_flex_align(MO.grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_row(MO.grid, BZ_GAP, 0);
+    lv_obj_set_width(MO.grid, gw);
+    lv_obj_t *sp = bz_box(col); /* the last row clear of the dock */
+    lv_obj_set_height(sp, DOCK_CLEAR);
     MO.sig = 1;
+    MO.swerve_sig = 1;
     ui_on_page_refresh(PG_MOTION, motion_refresh, NULL);
 }
 
@@ -471,7 +503,7 @@ static const app_entry_t APPS_ROBOT[] = {
     { &APP_STATES, BZ_I_ACCOUNT_TREE, "states", "timelines" },
     { &APP_CONTROLS, BZ_I_SPORTS_ESPORTS, "controls", "bindings" },
     { &APP_TBA, BZ_I_BAR_CHART, "blue alliance", "matches, ranks" },
-    { &APP_BATT, BZ_I_BATTERY_CHARGING_FULL, "batteries", "fleet, next pick" },
+    { &APP_BATT, BZ_I_BATTERY_CHARGING_FULL, "batteries", "fleet, the pick" },
 };
 static const app_entry_t APPS_DIAG[] = {
     { &APP_SYSTEMCORE, BZ_I_DEVELOPER_BOARD, "systemcore", "cores, buses" },
@@ -489,8 +521,8 @@ static const app_entry_t APPS_TABLET[] = {
     { &APP_LINK, BZ_I_COMPUTER, "link", "pc, patches" },
     { &APP_PAIR, BZ_I_LINK, "pair pc", "a code, once" },
     { &APP_COMPANION, BZ_I_VISIBILITY, "companion", "desk mode" },
-    { &HOME_MODE_TILE, BZ_I_HOME, "home mode", "desk, music, lights" },
-    { &APP_TIMER, BZ_I_TIMER, "timer", "match, stopwatch" },
+    { &HOME_MODE_TILE, BZ_I_HOME, "home mode", "desk, music" },
+    { &APP_TIMER, BZ_I_TIMER, "timer", "match, laps" },
     { &APP_CALC, BZ_I_CALCULATE, "calculator", "ratios, units" },
     { &APP_NOTES, BZ_I_EDIT_NOTE, "notes", "pit notebook" },
     { &APP_CHECK, BZ_I_CHECKLIST_RTL, "checklist", "before a match" },
