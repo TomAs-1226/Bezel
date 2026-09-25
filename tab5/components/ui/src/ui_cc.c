@@ -509,7 +509,10 @@ void ui_cc_init(void)
         lv_obj_set_pos(r, 0, 48 + i * 40);
         lv_obj_set_flex_align(r, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         C.note_icon[i] = bz_icon(r, BZ_I_INFO, 24, BZ_C_DIM);
-        C.note_text[i] = bz_label_line(r, "", BZ_F_BODY_S, BZ_C_INK, iw - 24 - 14 - 90 - 14);
+        /* the words take what the icon and the age leave: fixed widths added up past the row and pushed the
+         * age ("4 min") out of the card */
+        C.note_text[i] = bz_label_line(r, "", BZ_F_BODY_S, BZ_C_INK, 100);
+        lv_obj_set_flex_grow(C.note_text[i], 1);
         C.note_age[i] = bz_label_line(r, "", BZ_F_CAPTION, BZ_C_DIM, 90);
         lv_obj_set_style_text_align(C.note_age[i], LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_add_flag(r, LV_OBJ_FLAG_HIDDEN);

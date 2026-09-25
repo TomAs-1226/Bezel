@@ -1418,11 +1418,13 @@ static void display_init(void)
     /* PSRAM is shared by the panel's scan-out (DW-GDMA, ~110 MB/s, a hard deadline), DMA2D (a scrolled list
      * moves ~3 MB a frame), the PPA and the CPU's cache. Every master starts at QoS 0, equal: a long DMA2D
      * copy could hold off the scan-out until its FIFO ran dry, and an underrun shows as a cyan screen. The
-     * scan-out's reads go first now, the cache next, the copy engines last. */
+     * scan-out's reads go first, always. The copy engines come next, then the cache: below the cache, DMA2D
+     * took 14.4 ms to shift a full-page list and scrolled at 30 fps; above it, 11.4 ms (its own ~60 Mpx/s,
+     * where any higher priority stops helping) and a third of the frames at 60. */
     axi_icm_ll_set_dw_gdma_qos_arbiter_prio(0, 8, 15);
     axi_icm_ll_set_dw_gdma_qos_arbiter_prio(1, 8, 15);
     axi_icm_ll_set_cache_qos_arbiter_prio(6, 6);
-    axi_icm_ll_set_dma2d_qos_arbiter_prio(2, 2);
+    axi_icm_ll_set_dma2d_qos_arbiter_prio(7, 7);
     T.vsync = xSemaphoreCreateBinary();
     esp_lcd_dpi_panel_event_callbacks_t cbs = { .on_refresh_done = on_refresh_done };
     esp_lcd_dpi_panel_register_event_callbacks(T.lcd.panel, &cbs, NULL);
