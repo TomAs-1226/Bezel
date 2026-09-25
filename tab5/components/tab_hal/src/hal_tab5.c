@@ -287,6 +287,7 @@ bool hal_battery(hal_battery_t *o)
     }
     if (odd) {
         if (last_pct < 0) return false;
+        o->volts = last_v;
         o->percent = last_pct;
         o->ok = true;
         return true;
@@ -1670,6 +1671,7 @@ static struct {
     int src_w, src_h;
     uint16_t *frames[2];
     volatile int ready;         /* index of the newest complete frame, -1 none */
+    volatile bool busy;         /* the camera task is between taking a frame and giving it back */
     TaskHandle_t task;
     jpeg_encoder_handle_t jpeg;
 } C = { .fd = -1, .ready = -1 };
@@ -1682,12 +1684,14 @@ static void cam_task(void *arg)
 {
     int w = 0;
     for (;;) {
-        if (!C.on) {
+        C.busy = C.on;
+        if (!C.busy) {
             vTaskDelay(pdMS_TO_TICKS(100));
             continue;
         }
         struct v4l2_buffer b = { .type = V4L2_BUF_TYPE_VIDEO_CAPTURE, .memory = V4L2_MEMORY_MMAP };
         if (ioctl(C.fd, VIDIOC_DQBUF, &b) != 0) {
+            C.busy = false;
             vTaskDelay(pdMS_TO_TICKS(10));
             continue;
         }
@@ -1718,6 +1722,7 @@ static void cam_task(void *arg)
         C.ready = w;
         w ^= 1;
         ioctl(C.fd, VIDIOC_QBUF, &b);
+        C.busy = false;
     }
 }
 
@@ -1736,7 +1741,7 @@ bool hal_camera_start(void)
             }
             bsp_up = true;
         }
-        if (C.fd <= 0) C.fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDONLY);
+        if (C.fd < 0) C.fd = open(ESP_VIDEO_MIPI_CSI_DEVICE_NAME, O_RDONLY);
         if (C.fd < 0) {
             ESP_LOGE(TAG, "camera: open %s: errno %d", ESP_VIDEO_MIPI_CSI_DEVICE_NAME, errno);
             return false;
@@ -1783,7 +1788,7 @@ bool hal_camera_start(void)
             C.frames[0] = C.frames[1] = NULL;
             return false;
         }
-        xTaskCreatePinnedToCore(cam_task, "cam", 4096, NULL, 5, &C.task, 0);
+        if (!C.task) xTaskCreatePinnedToCore(cam_task, "cam", 4096, NULL, 5, &C.task, 0);
         C.started = true;
     }
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -1795,14 +1800,25 @@ bool hal_camera_start(void)
     return true;
 }
 
+/* Everything the camera holds goes back: its two 1.8 MB capture buffers (freed when the device closes)
+ * and the two previews, 5 MB of PSRAM in all. Kept open, the lens app left the rest of the system with
+ * ~0.5 MB, and every allocation after that failed (garbage on the panel, then a hang). */
 void hal_camera_stop(void)
 {
-    if (!C.on) return;
+    if (!C.started) return;
     hal_clip_stop();
     C.on = false;
+    for (int i = 0; i < 50 && C.busy; i++) vTaskDelay(pdMS_TO_TICKS(4));
     int type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     ioctl(C.fd, VIDIOC_STREAMOFF, &type);
     C.ready = -1;
+    close(C.fd);
+    C.fd = -1;
+    free(C.frames[0]);
+    free(C.frames[1]);
+    C.frames[0] = C.frames[1] = NULL;
+    C.bufs[0] = C.bufs[1] = NULL;
+    C.started = false;
 }
 
 const uint16_t *hal_camera_frame(int *w, int *h)
