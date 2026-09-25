@@ -471,6 +471,7 @@ static const app_entry_t APPS_ROBOT[] = {
     { &APP_STATES, BZ_I_ACCOUNT_TREE, "states", "timelines" },
     { &APP_CONTROLS, BZ_I_SPORTS_ESPORTS, "controls", "bindings" },
     { &APP_TBA, BZ_I_BAR_CHART, "blue alliance", "matches, ranks" },
+    { &APP_BATT, BZ_I_BATTERY_CHARGING_FULL, "batteries", "fleet, next pick" },
 };
 static const app_entry_t APPS_DIAG[] = {
     { &APP_SYSTEMCORE, BZ_I_DEVELOPER_BOARD, "systemcore", "cores, buses" },

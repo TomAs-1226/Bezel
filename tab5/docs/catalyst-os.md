@@ -90,6 +90,7 @@ Two paths, chosen per motion:
 | voice | `components/assist/src/voice.c` | the companion's own conversation: wake word or tap, energy VAD, OpenAI transcription, a JSON reply with a feeling, OpenAI speech streamed to the speaker |
 | match alerts | `ui_match.c`, `components/home/src/home_tba.c` | alarms before the team's matches from The Blue Alliance; schedule changes as notifications (below) |
 | log analysis | `components/assist/src/analyze.c`, `components/catalyst/src/cat_logs.c` | a log's digest read by a GPT pit engineer (below) |
+| battery fleet | `ui_batt.c`, `components/catalyst/src/cat_batt.c` | the team's batteries: which went in when, what the logs measured, which goes in next (below) |
 | home mode | `ui_home_mode.c`, `components/home` | the desk surface (time, weather, the PC's music, Home Assistant, the companion) and its launcher: music, smart home, weather, calendar, timer, alarms, photos (and a photos screensaver); comes up by hand, at boot, on the stand, or from an NFC tag on a Unit RFID 2 in Port A |
 
 #### Match alerts
@@ -150,6 +151,49 @@ The logs app (the card's root, `logs/`, and the recorder's `runs/`) and the reco
 - **The answer** shows in the logs app (scrollable), goes to the island and the notifications ("analysis of
   <file>: <verdict>"), and **save** writes `CATOS/DOCS/MMDDHHMM.MD` with the answer and the digest that was sent.
 
+#### Battery fleet
+
+The robot can't know which of the team's batteries is in it (`RobotIdentity.battery("MK ES17-12")` is the model,
+`/Catalyst/Robot/Power/Battery`, shown in the app's footer), so the tablet is the source of truth for that.
+
+- **The roster** (the **batteries** app, robot group; 12 by default, "1".."12", renamable, add and remove, 24 at
+  most): each battery's status (good, watch, bad, retired), notes, year bought, "off the charger now", and its last 30
+  uses. A tile shows its resistance now (the median of its last three measured uses), its charge state and uses.
+- **The checklist** has a battery row at the top: a tap opens a picker of big tiles (the recommended one in ice, bad
+  and retired ones greyed), charge chips (fresh off charger, rested, not charged), and **mark bad**. A pick records the
+  battery, the time, the next match from TBA (its key, `2026casj_qm34`, and label) and the charge. A second pick
+  within 20 min for the same match, with nothing measured yet, replaces the first (a correction).
+- **The logs.** `.wpilog` and `.dslog` in the card's root and `logs/` are read on the assistant's worker
+  (`assist_post_job`, 6 a job, each once: a hash of name, size and time is kept), 40 s after start-up, when the
+  batteries or logs app opens, and on **read logs**. A log goes to the pick of its qualification match (FMS
+  `MatchNumber`/`MatchType`, or the `FRC_<date>_<time>_<event>_Q34` file name), else to the newest pick at most 4 h
+  before it started (or 10 min after). Its numbers: resting voltage before the load (before `DS:enabled`, or 8 A),
+  lowest voltage, brownouts (the controller's flag, else dips under 6.8 V), energy (Wh), mean and peak current, and
+  the internal resistance: V = V0 - I·R fitted by least squares in 8 s windows with at least 15 A of spread, the
+  median of the windows (a steady load gives none, as in Catalyst's `BatteryResistanceIdentifier`). Voltage from
+  `/Catalyst/Brownout/MeasuredVoltage`, `Status/BatteryVolts` or `Systemcore/BatteryVolts` first, then
+  `…BatteryVoltage`, then the DS's; current from `…/TotalCurrent`. A `.dslog` has no total current: voltage and
+  brownouts only.
+- **Live.** While a pick is under 4 h old and has no log yet, the robot's battery voltage and
+  `/Catalyst/Brownout/TotalCurrent` (else a PDH's `TotalCurrent`) are folded in at 10 Hz; a session ends 15 s after
+  the robot is disabled. A log's numbers replace live ones.
+- **The recommendation** ranks every battery with its reasons in words ("#7: lowest resistance (18 mΩ), rested 2 h,
+  charged"): charged since its last use (+), rested 30 min off the charger (+), resistance (lower better, rising 15 %
+  over its baseline −), brownouts in its last three uses (−), on watch (−), and uses today against the fleet's mean.
+  Bad, retired, or in within the last 2 h and not marked charged since: out. A battery whose resistance is over
+  25 mΩ (two measured uses) or 30 % over its baseline (the median of its first three) goes on watch by itself, with a
+  notification. The match alarm's screen says "battery: #7 · …" (or "battery in: #7" once picked).
+- **ask gpt** sends a summary (`cat_batt_summary`: each battery, its last six uses, the tablet's ranking) to the
+  analysis path with a battery lead's brief (`analyze_fleet_start`); the answer shows in the app and the island.
+- **Data.** `CATOS/DATA/batteries.json`: `{version, updated, next_uid, seen: [hashes], batteries: [{uid, label, status,
+  auto_watch, year, notes, charged, base_mohm, uses_total, uses: [{t, match, label, charge, charged, src ("p" pick,
+  "l" log, "n" live), v_rest, v_min, mohm, wh, amps, peak_a, dur_s, brownouts, log}]}]}`; times are unix seconds; a
+  number not measured is absent, never 0. Written from the UI thread after each change, retried every 2 s for a
+  minute (the card's EIO after start-up). Without a card, the roster alone goes to kv `batteries`.
+- **Testing.** `python tools/tab5_dev.py COM9 bms` prints the ranking and the alarm line; `bms demo` fills made-up
+  history on the first six, `bms reset` restores the default 12, `bms pick 7`, `bms scan`, `bms gpt`, `bms json`.
+  Unit tests: `test/test_batt.c`.
+
 ### 4. The shell
 
 Home, robot, devices, power, motion and the app library as pages; the status bar and the island (status
@@ -158,7 +202,7 @@ the orb (the assistant, over the pages only).
 
 ### 5. Apps
 
-Today every app is built in: a `ui_app_t` with build/open/close/refresh/frame, 33 of them in four groups
+Today every app is built in: a `ui_app_t` with build/open/close/refresh/frame, 34 of them in four groups
 (robot, diagnose, everyday, this tablet).
 
 Next, apps installed from the microSD card: native code loaded with Espressif's `elf_loader` component

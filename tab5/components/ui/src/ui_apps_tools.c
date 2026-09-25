@@ -781,7 +781,8 @@ static void an_watch(void *u)
     seen = g;
     char *name = NULL, *answer = NULL;
     an_phase_t ph = analyze_get(&name, &answer, NULL, NULL, 0);
-    if (ph == AN_DONE || ph == AN_FAILED) {
+    bool fleet = name && !strcmp(name, ANALYZE_FLEET_NAME); /* the batteries app says its own */
+    if (!fleet && (ph == AN_DONE || ph == AN_FAILED)) {
         char v[80], msg[96];
         verdict(answer ? answer : "", v, sizeof v);
         home_fold_text(v);
@@ -972,6 +973,7 @@ static void logs_open(void)
     lg_back(NULL, NULL);
     lv_obj_add_flag(LG.ai, LV_OBJ_FLAG_HIDDEN);
     ui_text(LG.title, "%d log%s on the card", LG.nfiles, LG.nfiles == 1 ? "" : "s");
+    ui_batt_logs_changed(); /* new logs: the battery fleet reads their battery numbers too */
     if (s_an_pending[0]) {
         /* from the recorder's analyze button: the run's analysis, asked for already */
         ai_open(s_an_pending, false);

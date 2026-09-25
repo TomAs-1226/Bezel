@@ -139,6 +139,17 @@ void ui_match_test(double delay_s);              /* a made-up match's alarm in d
 bool ui_match_next_line(char *out, size_t n);    /* "next: Q34 · 14:52 · red with 1234, 5678"; false: none */
 void ui_match_settings(lv_obj_t *pane, int w);   /* the tba app's alerts view, into a flex column */
 void ui_match_settings_refresh(void);            /* its status line, while shown */
+/* The battery fleet (ui_batt.c): the roster and histories in <sd>/CATOS/DATA/batteries.json, the checklist's
+ * "which battery goes in", each use's numbers from the logs and the robot, and the one to put in next.
+ * ui_batt_boot once at start-up. */
+extern const ui_app_t APP_BATT;
+void ui_batt_boot(void);
+void ui_batt_check_row(lv_obj_t *col, lv_obj_t *body, int w); /* the checklist's battery row and its picker */
+void ui_batt_check_refresh(void);                             /* from the checklist's refresh */
+void ui_batt_logs_changed(void);                              /* the card's logs may have changed: read new ones */
+/* the alarm screen's line: "battery in: #7" (picked for match_label) or "battery: #7 · lowest resistance..." */
+bool ui_batt_alarm_line(const char *match_label, char *out, size_t n);
+void ui_batt_dev(const char *args);                           /* the dev console's "bms ..." */
 /* The logs app straight onto a log's (or a recorder run's) analysis: the recorder's analyze button. */
 void ui_logs_analyze(const char *path);
 /* Catalyst OS's everyday apps (ui_apps_os.c), on the card's CATOS layout (ui_storage.h). */

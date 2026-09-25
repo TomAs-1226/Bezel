@@ -225,6 +225,8 @@ static void logs(void)
 
 /* test_sc.c: catalyst-agent, motor history, controls, state lanes, the recorder's CSV */
 void test_sc(int *checks, int *fails);
+/* test_batt.c: the battery fleet: the resistance fit, a log's battery numbers, the JSON, the ranking */
+void test_batt(int *checks, int *fails);
 
 int main(void)
 {
@@ -235,6 +237,7 @@ int main(void)
     logs();
     test_assist(&checks, &fails);
     test_sc(&checks, &fails);
+    test_batt(&checks, &fails);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }
