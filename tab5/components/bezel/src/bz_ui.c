@@ -266,6 +266,7 @@ static void flush_glass_body(lv_display_t *d, const lv_area_t *a, uint8_t *px)
     lv_display_flush_ready(d);
 }
 
+#if !BZ_LEAN
 static lv_obj_t *clickable_at(lv_obj_t *scr, int x, int y)
 {
     lv_point_t p = { x, y };
@@ -276,6 +277,7 @@ static lv_obj_t *clickable_at(lv_obj_t *scr, int x, int y)
     }
     return NULL;
 }
+#endif
 
 static void read_content(lv_indev_t *in, lv_indev_data_t *data)
 {

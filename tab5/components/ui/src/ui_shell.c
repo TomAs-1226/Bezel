@@ -491,8 +491,15 @@ static void pg_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
     if ((dx < -W / 6 || vx < -600) && U.page < NPAGES - 1) aim = U.page + 1;
     else if ((dx > W / 6 || vx > 600) && U.page > 0) aim = U.page - 1;
     if (aim != U.page && (SL.side != aim - U.page || !SL.ready)) {
-        /* released before its neighbour finished drawing: finish it now (a frame's hitch) */
-        SL.side = aim - U.page;
+        /* released before its neighbour finished drawing: finish it now (a frame's hitch). When the release
+         * aims at the other side from the one being drawn (a drag that turned back, then a flick), that
+         * neighbour starts over from its first band: carrying on from the other page's count left the other
+         * page in the top bands, and the slide came to rest on the two pages spliced. */
+        if (SL.side != aim - U.page) {
+            SL.side = aim - U.page;
+            SL.band = 0;
+            SL.ready = false;
+        }
         if (!SL.ready) {
             for (; SL.band < SL_BANDS; SL.band++) slide_band(U.page + SL.side, SL.band);
             SL.ready = true;
