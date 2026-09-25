@@ -97,6 +97,33 @@ isn't running" from "this looks like a roboRIO, catalyst-agent doesn't run there
 Both clients hit exactly the same two routes at exactly the same port — no drift between the "systemcore
 screen" path and the "ask the assistant" path.
 
+### 2.3 The assistant's desk (`get_matches`, `get_batteries`) — not a network route, but an internal one
+
+Two more read-only tools are declared in `components/assist/src/as_tooldefs.c:57-66` (`get_matches`,
+`get_batteries`, both `AS_T_READ`) and both implemented by one function, `t_desk()`
+(`components/assist/src/as_tools.c:718-737`), dispatched at `as_tools.c:1688-1689`. Neither one makes a
+network call itself; both just hand back the latest text the UI already posted to "the desk"
+(`components/assist/src/as_desk.c`), a small one-writer-many-readers text cache keyed by `as_desk_t`
+(`AS_DESK_MATCHES`, `AS_DESK_BATTERIES`, `AS_DESK_NOW`, `assist.h:145`): `assist_desk_post()` copies a
+string in under a lock, `assist_desk_get()` copies it back out (`as_desk.c:15-37`).
+
+- **`get_matches`** reads whatever `desk_matches()` last posted (`components/ui/src/ui_match.c:701-788`):
+  the event name/place/dates, rank and record, the next unplayed match spelled out, then every one of the
+  team's matches with its time, alliance and partners, and whether reminders are on. It's posted whenever
+  TBA's data generation changes (`ma_tick()`, `ui_match.c:654-660`), i.e. after a successful poll — see
+  §4.1's cadence.
+- **`get_batteries`** reads whatever `desk_post()` last posted (`components/ui/src/ui_batt.c:552-564`):
+  `cat_batt_summary()`'s text for the whole fleet. It's posted whenever the battery manager's generation
+  (`BM.gen`) changes, and otherwise at most once a minute (`ui_batt.c:556-558`), from `bm_tick()`
+  (`ui_batt.c:566-576`, the battery manager's own per-refresh tick).
+- **`AS_DESK_NOW`** is a third, shorter slot neither tool reads directly: `desk_now()`
+  (`ui_match.c:790-808`) posts one line — the next match, and the battery pick's summary if there is one —
+  every 30 s (`ui_match.c:661-664`, `MA.next_desk`), and immediately whenever `desk_matches()` runs.
+  `voice.c`'s `context_note()` fetches it with `assist_desk_get(AS_DESK_NOW)` (`voice.c:565-567`) and folds
+  it into the bracketed `[tablet: ...]` note every question carries (`answer()` prepends this note to the
+  question text at `voice.c:748-753`) — so the companion always has the next match and current battery
+  pick in view even when it never calls a tool.
+
 ---
 
 ## 3. Catalyst Link — the PC companion's HTTP API
@@ -200,6 +227,8 @@ Source: `components/home/src/home_tba.c` (verified in full this session).
   from the last successful poll.
 - A `401` is surfaced as "the blue alliance refused the key" (`say()`, `home_tba.c:510-515`) and short-
   circuits further per-event fetches (`home_tba.c:561,568`).
+- TBA's data also reaches the assistant: `ui_match.c`'s `desk_matches()`/`desk_now()` post it to the
+  "desk" (`AS_DESK_MATCHES`/`AS_DESK_NOW`) whenever a poll here changes `tba_gen()` — see §2.3.
 
 ### 4.2 Open-Meteo (weather + geocoding)
 
@@ -245,18 +274,41 @@ Source: `components/assist/src/assist.c`, `as_oai.c`, `as_oai.h` (verified this 
 - This is `AS_ROUTE_DIRECT` — the tablet talks straight to `api.anthropic.com`, over the pit Wi-Fi, with
   a key stored on the tablet itself; no PC, no Catalyst Link. Distinct from §3's Link-mediated
   `/v1/messages`, which uses the **same wire format** but never puts a key on the tablet.
-- `components/assist/src/voice.c` (read in full this session) is always OpenAI — it has no Anthropic or
-  Catalyst Link path at all. Its single `post()` helper (`voice.c:283-328`) builds every request against
-  `V.base`, which `load_config()` sets from the `oai_base` kv or else `AS_OAI_DEFAULT_BASE`
-  (`voice.c:197-204`) — the same OpenAI base §4.3 uses, never `api.anthropic.com`. The three calls it
-  makes are all OpenAI REST endpoints: `POST <base>/v1/audio/transcriptions` for speech-to-text
-  (`voice.c:487`), `POST <base>/v1/chat/completions` for the answer (`voice.c:768`), and
-  `POST <base>/v1/audio/speech` for text-to-speech (`voice.c:862`). `voice.c` does `#include "link.h"`
-  but calls nothing from it — the only cross-module calls it makes outside `as_oai.c`/`as_tools.c` are to
-  `ccwatch.h`'s `ccw_list()`/`ccw_available()` (`voice.c:552-560`), which only read Claude Code session
-  state for the context note, not a network route. So: the voice feature always uses OpenAI's Chat
-  Completions/Whisper/TTS endpoints directly from the tablet; it cannot route through Catalyst Link or a
-  direct Anthropic key the way the text assistant (§4.4) can.
+- `components/assist/src/voice.c` (re-read in full this pass; every citation below re-derived, since the
+  file has grown since the previous pass and old line numbers no longer line up) is always OpenAI — it
+  has no Anthropic or Catalyst Link path at all. Its single `post()` helper (`voice.c:286-331`) builds
+  every request against `V.base`, which `load_config()` sets from the `oai_base` kv or else
+  `AS_OAI_DEFAULT_BASE` (`voice.c:200-207`) — the same OpenAI base §4.3 uses, never `api.anthropic.com`.
+  The three calls it makes are all OpenAI REST endpoints: `POST <base>/v1/audio/transcriptions` for
+  speech-to-text (`voice.c:490`), `POST <base>/v1/chat/completions` for the answer (`voice.c:775`), and
+  `POST <base>/v1/audio/speech` for text-to-speech (built at `voice.c:899`, opened at `voice.c:906`).
+  `voice.c` does `#include "link.h"` but calls nothing from it — the only cross-module calls it makes
+  outside `as_oai.c`/`as_tools.c` are to `ccwatch.h`'s `ccw_list()`/`ccw_available()` (`voice.c:555-563`,
+  inside `context_note()`), which only read Claude Code session state for the context note, not a network
+  route. So: the voice feature always uses OpenAI's Chat Completions/Whisper/TTS endpoints directly from
+  the tablet; it cannot route through Catalyst Link or a direct Anthropic key the way the text assistant
+  (§4.4) can.
+- **Text-to-speech asks for MP3 when there's a decoder, PCM otherwise.** `speak()` opens a decoder with
+  `hal_mp3_open()` (`voice.c:882`) and picks the request's `response_format` from whether that succeeded
+  (`voice.c:883`: `"mp3"` when `mp3` is non-NULL, `"pcm"` otherwise). On real hardware `hal_mp3_open()`
+  (`components/tab_hal/src/hal_tab5_audio.c:508-527`) opens `esp_audio_codec`'s simple MP3 decoder and
+  normally succeeds; the Linux simulator's `hal_mp3_open()` (`sim/hal_sim.c:192`) always returns `NULL` —
+  "no decoder here: the companion fetches PCM" — so the simulator always requests `"pcm"`. MP3 is worth a
+  tenth of PCM's bytes over the C6 (the comment at `voice.c:859-861` ties this directly to the Wi-Fi
+  co-processor hangs under sustained 24 kHz PCM load — see the new §5.6).
+- **A stream that won't decode falls back to PCM for good.** `V.tts_pcm` (declared `voice.c:104`) is
+  checked before every attempt to open the decoder (`voice.c:880-882`: `want_pcm` skips `hal_mp3_open()`
+  entirely once set) and is set to `true` the first time an MP3 stream comes back undecodable, the sink
+  fails to start, or nothing ever plays (`voice.c:965-969`). Nothing in `voice.c` ever clears it, so once
+  one TTS reply fails to decode, every later reply in that boot asks for `"pcm"` — the same permanent
+  downgrade `V.stt_fallback`/`V.tts_fallback` (`voice.c:103`) apply to the transcription and speech
+  *models* when the configured one is refused.
+- **Speech is skipped below 2% volume.** `turn()` gates whether an answer is spoken at all on
+  `V.enabled && hal_volume() > 0.02f` (`voice.c:1039`, `can_speak`); below that, `rep->spoken` stays
+  false and the answer is only shown on screen (`voice.c:1041-1042`) — `speak()` (and so the
+  `/v1/audio/speech` request) is never called (`voice.c:1047` only calls it `if (rep->spoken)`).
+  `hal_volume()` returns the speaker's last-set level, 0..1 (`hal.h:83`; real implementation
+  `hal_tab5.c:1766`, simulator `sim/hal_sim.c:187`).
 
 ### 4.5 Home Assistant — REST API
 
@@ -402,24 +454,59 @@ separately by the Wi-Fi driver, `assist.c:901-902` comment).
 `components/tab_hal/src/hal_tab5_dev.c` implements a line-based command console over the USB-C serial
 port (115200 baud, DTR/RTS held low so opening the port doesn't reset the tablet — `tools/tab5_dev.py:24-26`
 comment). Full command set, confirmed by grepping every `strcmp(line,...)`/`strncmp(line,...)`/`sscanf(line,...)`
-dispatch in `hal_tab5_dev.c`:
+dispatch in `hal_tab5_dev.c`'s `run()` (line numbers below are into that function, re-checked this pass —
+the file has grown since the table was last written and every line number had shifted):
 
 | Command | Effect | Source |
 |---|---|---|
-| `shot` / `pshot` | capture the current frame (RLE RGB565 over serial), `pshot` is the portrait/no-flip variant | `hal_tab5_dev.c:156,158` |
-| `tap x y` | synthetic press+release at `(x,y)` | `hal_tab5_dev.c:160` |
-| `swipe x0 y0 x1 y1 ms` | synthetic press-move-release | `hal_tab5_dev.c:163` |
-| `up` | release any held synthetic touch | `hal_tab5_dev.c:172` |
-| `settime <epoch> [tz]` | set the tablet's clock and POSIX TZ | `hal_tab5_dev.c:175` |
-| `bat` | battery status line | `hal_tab5_dev.c:190` |
-| `net` | Wi-Fi/network status | `hal_tab5_dev.c:197` |
-| `putbegin <path> <len>` / `puthex <off> <hex>` / `putend <crc32>` | push a file onto the SD card in 512-byte hex-coded chunks, checked by CRC-32 | `hal_tab5_dev.c:204,223,245` |
-| `c6ota ...` | OTA the companion MCU (C6) | `hal_tab5_dev.c:254` |
-| `rejoin` | rejoin Wi-Fi | `hal_tab5_dev.c:268` |
-| `mem` | heap/task memory report | `hal_tab5_dev.c:271` |
-| `scan` | Wi-Fi AP scan, results as `AP ...` lines | `hal_tab5_dev.c:305` |
-| `keybegin` / `keyhex <hex>` / `keyend` | push a `KEYS.ENV`-shaped file over serial (hex-coded, never printed); the tablet restarts and imports it | `hal_tab5_dev.c:315,323,330`, `tools/tab5_dev.py:135-144` |
-| `flip` | toggle screen orientation | `hal_tab5_dev.c:364` |
+| `shot` / `pshot` | capture the current frame (RLE RGB565 over serial), `pshot` is the portrait/no-flip variant | `hal_tab5_dev.c:167,169` |
+| `tap x y` | synthetic press+release at `(x,y)` | `hal_tab5_dev.c:171` |
+| `swipe x0 y0 x1 y1 ms` | synthetic press-move-release | `hal_tab5_dev.c:174` |
+| `down x y` / `move x y` | hold (or move) a synthetic finger without releasing it | `hal_tab5_dev.c:177` |
+| `up` | release any held synthetic touch | `hal_tab5_dev.c:183` |
+| `settime <epoch> [tz]` | set the tablet's clock and POSIX TZ | `hal_tab5_dev.c:186` |
+| `bat` | battery status line | `hal_tab5_dev.c:201` |
+| `net [host]` | Wi-Fi/network status (`net` alone, or a reachability check against `host`) | `hal_tab5_dev.c:208` |
+| `putbegin <path> <len>` / `puthex <off> <hex>` / `putend <crc32>` | push a file onto the SD card in 512-byte hex-coded chunks, checked by CRC-32 | `hal_tab5_dev.c:215,234,256` |
+| `c6ota <path>` | OTA the companion MCU (C6) from a file already on the card, then a planned restart | `hal_tab5_dev.c:265` |
+| `wdhold [0]` | hold the C6 watchdog's restart for inspection (bare) or let it resume (`wdhold 0`) | `hal_tab5_dev.c:279` |
+| `c6dbg` | esp-hosted's own SDIO debug line (`esp_hosted_sdio_debug()`) | `hal_tab5_dev.c:283` |
+| `wdtest` | force the watchdog's restart path on demand, without a hung C6 | `hal_tab5_dev.c:290`, `hal_tab5_net.c:141-147` |
+| `rejoin` | rejoin Wi-Fi | `hal_tab5_dev.c:294` |
+| `mem` | heap/task memory report | `hal_tab5_dev.c:297` |
+| `scan` | Wi-Fi AP scan, results as `AP ...` lines | `hal_tab5_dev.c:331` |
+| `keybegin` / `keyhex <hex>` / `keyend` | push a `KEYS.ENV`-shaped file over serial (hex-coded, never printed); the tablet restarts and imports it | `hal_tab5_dev.c:341,349,356`, `tools/tab5_dev.py:135-144` |
+| `ant 0\|1` | select the internal or external Wi-Fi antenna | `hal_tab5_dev.c:386` |
+| `flip` | toggle screen orientation | `hal_tab5_dev.c:390` |
+
+`put <local> <remote>` and `keys <file>` are `tools/tab5_dev.py`-side conveniences, not device commands:
+`put` wraps `putbegin`/`puthex`/`putend` for one local file (`tools/tab5_dev.py:104-130`), and `keys`
+wraps `keybegin`/`keyhex`/`keyend` for a `KEYS.ENV`-shaped file (`tools/tab5_dev.py:135-144`) — read only
+to confirm this table, never run, and never opened as a `KEYS.ENV`/`keys.env` file itself. Any other
+command (including `wdtest`) goes over the wire exactly as typed (`tools/tab5_dev.py:146-152`).
+
+Commands not recognized by any of the above fall through to `s_handler`, a hook the UI installs
+(`hal_dev_set_handler()`, `hal_tab5_dev.c:145-146,393-395`) so a handful of dev commands can reach the
+UI thread instead of `tab_hal`. `components/ui/src/ui_shell.c`'s `dev_handler()`
+(`ui_shell.c:743-753`, registered at `ui_shell.c:1933`) accepts these and queues them for `dev_run()`
+(`ui_shell.c:760` on) to execute on the next UI frame:
+
+| Command | Effect | Source |
+|---|---|---|
+| `open <app>` | open an app by name, as its launcher icon would | `ui_shell.c:763-765` |
+| `page <n>` | close any open app and go to page `n` | `ui_shell.c:766-768` |
+| `close` | close the current app | `ui_shell.c:769-770` |
+| `alarm test [n] [match\|chime]` | fire a made-up match's queue/match reminder (or schedule-change chime) in `n` s (default 5) | `ui_shell.c:771-777` |
+| `match fake [n]` | track a made-up match of ours `n` minutes out (default 30) as if real; `match fake 0` clears it | `ui_shell.c:778-782` |
+| `say <text>` | post `text` from the island, as any notification would | `ui_shell.c:783-785` |
+| `accent <name\|n>` | switch the accent colour, by name or index | `ui_shell.c:786-792` |
+| `settings <page>` | open the settings app to a specific page | `ui_shell.c:793-794` |
+| `bms [args]` | the battery manager's own sub-console (bare ranks the fleet; `scan`, `pick <label>`, `demo`, `reset`, `gpt`, `json`) | `ui_shell.c:795-797` |
+| `inv` | trace the next 20 LVGL invalidations | `ui_shell.c:798-799` |
+| `ask <text>` | a typed question to the companion, as its keyboard would send it | `ui_shell.c:800-802` |
+| `home` | enter or leave Home mode | `ui_shell.c:803-805` |
+| `redraw` | invalidate and redraw the whole screen | `ui_shell.c:806-809` |
+| `perf` | print per-frame timing (hooks/LVGL/refresh/render/present) since the last `perf` | `ui_shell.c:810-822` |
 
 `tools/tab5_dev.py` is the PC-side driver for all of these (`python tools/tab5_dev.py COM9 <cmd...>`,
 commands chainable with `;`).
@@ -448,6 +535,60 @@ works with the M5Stack unit plugged into Port A.
   (`ui_home_mode.c:1073-1090`). The simulator stubs it with the `SIM_NFC_TAG` env var (`sim/hal_sim.c:421-423`).
 - Nothing here calls this hardware "Grove" in the API sense — no other Grove-port peripheral or protocol
   exists in this checkout; "Grove" is only ever the physical connector name for Port A.
+
+### 5.6 Wi-Fi co-processor (ESP32-C6 over esp-hosted SDIO)
+
+Why this belongs here: every cloud API in §4 and the NT4 client in §1 ride over this link, and it drops
+for a real, if usually brief, stretch and recovers on its own — worth knowing before reading a gap in
+telemetry or a failed request as a bug. All of this is `components/tab_hal/src/hal_tab5_net.c`, read in
+full this session.
+
+- **The C6 sometimes stops answering its own RPCs.** `rssi_task()` (`hal_tab5_net.c:234-287`) polls
+  `esp_wifi_sta_get_ap_info()` every 3 s; two consecutive misses while the link is otherwise "up" call
+  `c6_restart("the C6 stopped answering")` (`hal_tab5_net.c:284-285`).
+- **The C6 sometimes reports "connected" while nothing actually gets through.** The same task probes the
+  gateway with a 2 s TCP connect to port 80 (`gw_alive()`, `hal_tab5_net.c:205-232`) — every 15 s
+  normally, every 3 s once the gateway has gone quiet (`hal_tab5_net.c:260-261`,
+  `if (++cycle >= 5 || dead)`). It only acts on a gateway that has answered before (`gw &&
+  gw == answered`, `hal_tab5_net.c:267`) — one that has never answered is left alone, since silence from
+  it is not news. Two quiet probes in a row rejoin the network (`esp_wifi_disconnect()`,
+  `hal_tab5_net.c:270-273`, rate-limited to once a minute), four quiet probes in a row call
+  `c6_restart("connected, but nothing gets through even after joining again")`
+  (`hal_tab5_net.c:274-275`).
+- **A separate watchdog catches it from the HTTP side.** `wifi_heal()` (`hal_tab5_net.c:1030-1045`) is
+  called from `hal_http_open()`'s own failure path (`hal_tab5_net.c:1119`) — so both the assistant's and
+  the companion's request failures count towards it. Three failed requests while Wi-Fi reports "up"
+  trigger a rejoin (rate-limited to once every 2 minutes, `hal_tab5_net.c:1036`); if a fourth failure
+  lands within 2 minutes of the last rejoin, it calls `c6_restart()` directly
+  (`hal_tab5_net.c:1038`).
+- **A restart to reset the C6 is spaced at least 45 s from the last one, always.** `c6_restart()`
+  (`hal_tab5_net.c:172-201`) refuses to restart again inside 45 s of the last one it made
+  (`hal_tab5_net.c:187`, tracked in `RTC_NOINIT_ATTR` state that survives the restart,
+  `hal_tab5_net.c:116`) and never gives up permanently — the comment at `hal_tab5_net.c:165-168` notes
+  this replaced an older backoff (10 minutes, then summed across boots) that could leave Wi-Fi dead for
+  good until someone power-cycled the tablet. The restart itself is quick — "~6 s and comes back where
+  it was" (`hal_tab5_net.c:185` comment) — which is why 45 s, not longer, is the floor. The dev console's
+  `wdhold`/`wdtest` commands (§5.4) can hold this off for inspection or trigger it on demand.
+- **esp-hosted can restart the host itself.** `esp_hosted_host_restarting()` (`hal_tab5_net.c:133-138`) is
+  a weak hook esp-hosted's own `os_wrapper.c` calls when it decides the link is unrecoverable — most
+  likely the C6 reset on its own (its own watchdog after a hang). Once boot has settled
+  (`hal_boot_settled()`, `hal_tab5_net.c:135`) this is treated as the same kind of recovery as a
+  `c6_restart()`: it notes where the UI was and marks the coming restart planned
+  (`hal_restart_mark_planned()`, `hal_tab5_net.c:136-137`), rather than counting as a crash. Before boot
+  has settled, it's left alone — so a C6 that never comes up ends in safe mode instead of restarting
+  forever.
+- **A planned restart resumes to the same page or app.** `ui_shell.c` registers `note_where()` as the
+  restart hook (`hal_restart_hook(note_where)`, `ui_shell.c:1926`), which calls `hal_resume_note()` with
+  the current page and open app (`ui_shell.c:414`, backed by `RTC_NOINIT_ATTR` state,
+  `hal_tab5_net.c:119-124`); on the next boot `ui_shell.c:422` calls `hal_resume_take()` once to read it
+  back and reopen the same place.
+- **What this means for an integration:** a Wi-Fi-dependent connection to this tablet (NT4, §1; the
+  Systemcore agent, §2; any cloud API, §4) can drop for anywhere from a few seconds (a quick RPC-miss
+  restart) up to roughly a minute (a gateway-silence sequence: up to 15 s to notice, a rejoin, more quiet
+  probes, then the restart), and won't retry a restart more often than every 45 s even under sustained
+  failure. None of this needs the robot side to do anything — the tablet reconnects and resumes on its
+  own — but a robot-side integration polling this tablet's own HTTP/NT4 surface (there is none today,
+  per §6) should expect exactly this kind of gap, not treat it as a hang.
 
 ---
 
@@ -496,7 +637,27 @@ here.
 
 ## Open TODOs from this pass
 
-All four `TODO(verify)` markers left by the previous pass were resolved by reading source this session:
-`voice.c`'s route (§4.4, always OpenAI, no Anthropic/Link path), Home Assistant's poll/retry seconds
-(§4.5, 5.0 s / 15.0 s), `batteries.json`'s full field list (§5.1), and the NFC/Grove hook (§5.5 — one
-exists, at `components/tab_hal/src/hal_tab5_nfc.c`, missed by the earlier grep). None remain open.
+All four `TODO(verify)` markers left by the previous pass were resolved by reading source in an earlier
+session: `voice.c`'s route (§4.4, always OpenAI, no Anthropic/Link path), Home Assistant's poll/retry
+seconds (§4.5, 5.0 s / 15.0 s), `batteries.json`'s full field list (§5.1), and the NFC/Grove hook (§5.5 —
+one exists, at `components/tab_hal/src/hal_tab5_nfc.c`, missed by an earlier grep).
+
+This pass re-read `voice.c` end to end and corrected every citation into that file (the previous pass's
+line numbers had drifted as the file grew — see §4.4), added the MP3/PCM text-to-speech behaviour, the
+permanent `V.tts_pcm` fallback, and the sub-2%-volume speech gate, all new since the previous pass. It
+also added §2.3 (the assistant's "desk" and the two tools it feeds, `get_matches`/`get_batteries`), the
+missing dev-console commands in §5.4 (both `hal_tab5_dev.c`'s own set and the UI-forwarded set in
+`ui_shell.c`, with every line number in that table re-derived for the same reason as `voice.c`), and
+§5.6 (the Wi-Fi co-processor's recovery behaviour: the RPC and gateway watchdogs, the 45 s restart floor,
+and the planned-restart/resume mechanism).
+
+Nothing new is marked `TODO(verify)` this pass — every number and function name added above was read
+directly from the cited source line. Two things worth a human's attention rather than a marker:
+
+- §5.6's "anywhere from a few seconds up to roughly a minute" downtime estimate is composed from several
+  independently-cited numbers (3 s poll, 15 s/3 s gateway probe, ~6 s restart per the `hal_tab5_net.c:185`
+  comment, 45 s floor) rather than a single constant in source; treat it as a derived estimate, not a
+  guaranteed bound.
+- §6 is left unchanged this pass: the desk mechanism (§2.3) turned out to be entirely tablet-local (The
+  Blue Alliance and the on-card battery roster, neither reaching NT4), so nothing about it suggests a
+  concrete new library-side publisher or consumer beyond what §6 already lists.
