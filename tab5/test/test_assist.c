@@ -7,6 +7,7 @@
 #include "as_oai.h"
 #include "as_sse.h"
 #include "as_tools.h"
+#include "assist.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -727,6 +728,27 @@ static void openai(void)
     as_hist_free(&h);
 }
 
+/* the desk: what the UI posts is what the tools read, a copy each way; the tools are there and read-only */
+static void desk(void)
+{
+    CHECK(assist_desk_get(AS_DESK_MATCHES) == NULL);
+    assist_desk_post(AS_DESK_MATCHES, "next match: Q12 today 14:05");
+    char *t = assist_desk_get(AS_DESK_MATCHES);
+    CHECK(t && !strcmp(t, "next match: Q12 today 14:05"));
+    free(t);
+    assist_desk_post(AS_DESK_MATCHES, "next match: Q13 today 14:20");
+    t = assist_desk_get(AS_DESK_MATCHES);
+    CHECK(t && strstr(t, "Q13"));
+    free(t);
+    assist_desk_post(AS_DESK_MATCHES, "");
+    CHECK(assist_desk_get(AS_DESK_MATCHES) == NULL);
+    CHECK(assist_desk_get(AS_DESK_BATTERIES) == NULL);
+    CHECK(assist_desk_get((as_desk_t)AS_DESK_N) == NULL);
+    const as_tooldef_t *m = as_tool_find("get_matches"), *b = as_tool_find("get_batteries");
+    CHECK(m && m->kind == AS_T_READ);
+    CHECK(b && b->kind == AS_T_READ);
+}
+
 void test_assist(int *checks, int *fails)
 {
     g_checks = checks;
@@ -740,4 +762,5 @@ void test_assist(int *checks, int *fails)
     fallback_echo();
     trimming();
     openai();
+    desk();
 }

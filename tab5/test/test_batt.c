@@ -13,8 +13,9 @@ static int *g_checks, *g_fails;
 
 #define R_TRUE 0.018 /* ohms */
 
-/* the robot's load: rest, then a match of varied current */
-static double load(double t) { return t < 5 ? 1.5 : 60 + 55 * sin(t * 1.7) + 25 * sin(t * 0.37); }
+/* the robot's load: rest, then a match of varied current (never below zero: a PDH's total isn't, and the
+ * accumulator drops readings under -5 A as bad, which put the energy 1.1 % off a load that dipped to -20 A) */
+static double load(double t) { return t < 5 ? 1.5 : 70 + 50 * sin(t * 1.7) + 20 * sin(t * 0.37); }
 static double volts(double t, double i) { return 12.85 - 0.002 * t - i * R_TRUE; } /* V0 sags slowly over the match */
 
 static void acc(void)
