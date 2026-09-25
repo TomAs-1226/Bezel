@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -843,7 +845,7 @@ static void trim_key(char *k)
 
 /* ---- keys from the card ---- */
 
-static char g_import_note[64];
+static char *g_import_note; /* heap (PSRAM on the tablet): what the island says once, names only */
 
 /* The first line of the file, without a BOM or whitespace; NULL when there is no file. Caller wipes. */
 static char *read_key_file(const char *path, size_t *filesize)
@@ -881,47 +883,174 @@ static void burn_key_file(const char *path, size_t n)
     }
 }
 
-/* UI thread at boot (it writes NVS: the UI task's stack is internal RAM). */
-static void import_keys(void)
+/* KEYS.ENV: the names it knows, and the kv key each is kept under (the one its own settings screen reads).
+ * WIFI_* go to the Wi-Fi driver instead (hal_wifi_join: the driver keeps the network in its own NVS). */
+enum { ENV_OPENAI, ENV_ANTHROPIC, ENV_TEAM = 8, ENV_WIFI_SSID, ENV_WIFI_PASS, ENV_COUNT };
+static const struct {
+    const char *name, *kv;
+} ENV_KEYS[ENV_COUNT] = {
+    { "OPENAI_API_KEY", "oai_key" },       /* the assistant's OpenAI route, the companion's voice */
+    { "ANTHROPIC_API_KEY", "ai_key" },     /* the assistant's direct route */
+    { "TBA_API_KEY", "tba_key" },          /* The Blue Alliance, read API v3 (X-TBA-Auth-Key) */
+    { "HA_URL", "ha_url" },                /* Home Assistant, as home mode keeps it */
+    { "HA_TOKEN", "ha_token" },
+    { "NEXUS_API_KEY", "nexus_key" },      /* frc.nexus (Nexus-Api-Key): kept for later */
+    { "FRC_EVENTS_USER", "frc_ev_user" },  /* FIRST's FRC Events API: kept for later */
+    { "FRC_EVENTS_TOKEN", "frc_ev_token" },
+    { "TEAM", "team" },                    /* the team number the shell looks for */
+    { "WIFI_SSID", NULL },
+    { "WIFI_PASS", NULL },
+};
+
+/* One "NAME=value" line, dotenv style, cut in place: an optional "export ", spaces around the '=', a value
+ * in single or double quotes (\" and \\ inside double) or bare with a " # comment" after it. false for a
+ * blank line, a comment, or anything without an '='. */
+static bool env_line(char *line, char **name, char **value)
+{
+    char *p = line;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!*p || *p == '#') return false;
+    if (!strncmp(p, "export", 6) && (p[6] == ' ' || p[6] == '\t')) {
+        p += 6;
+        while (*p == ' ' || *p == '\t') p++;
+    }
+    char *eq = strchr(p, '=');
+    if (!eq || eq == p) return false;
+    char *ne = eq;
+    while (ne > p && (ne[-1] == ' ' || ne[-1] == '\t')) ne--;
+    *ne = 0;
+    char *v = eq + 1;
+    while (*v == ' ' || *v == '\t') v++;
+    if (*v == '"' || *v == '\'') {
+        char q = *v++, *w = v, *r = v;
+        for (; *r && *r != q; r++) {
+            if (q == '"' && *r == '\\' && (r[1] == '"' || r[1] == '\\')) r++;
+            *w++ = *r;
+        }
+        *w = 0;
+    } else {
+        for (char *c = v; *c; c++)
+            if (*c == '#' && c > v && (c[-1] == ' ' || c[-1] == '\t')) {
+                *c = 0;
+                break;
+            }
+        size_t l = strlen(v);
+        while (l && (v[l - 1] == ' ' || v[l - 1] == '\t' || v[l - 1] == '\r')) v[--l] = 0;
+    }
+    *name = p;
+    *value = v;
+    return true;
+}
+
+/* Reads one KEYS.ENV into kv, then burns it. Returns a bit per ENV_KEYS entry taken; the Wi-Fi pair lands
+ * in ssid (33 bytes) and pass (65) for the caller. */
+static unsigned import_env(const char *path, char *ssid, char *pass)
+{
+    struct stat st;
+    if (stat(path, &st) != 0) return 0;
+    size_t size = (size_t)st.st_size, cap = size < 16384 ? size : 16384;
+    size_t alloc = cap + 1 < 1024 ? 1024 : cap + 1; /* >= 1 KB: PSRAM on the tablet, not internal RAM */
+    char *buf = calloc(1, alloc);
+    FILE *f = buf ? fopen(path, "rb") : NULL;
+    if (!f) {
+        free(buf);
+        return 0;
+    }
+    size_t n = fread(buf, 1, cap, f);
+    fclose(f);
+    buf[n] = 0;
+    unsigned got = 0;
+    char *p = buf;
+    if ((unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF) p += 3;
+    while (*p) {
+        char *eol = p + strcspn(p, "\r\n");
+        char *next = *eol ? eol + 1 : eol;
+        *eol = 0;
+        char *name, *value;
+        if (env_line(p, &name, &value) && value[0]) {
+            for (int i = 0; i < ENV_COUNT; i++) {
+                if (strcasecmp(name, ENV_KEYS[i].name) != 0) continue;
+                if (i == ENV_WIFI_SSID) snprintf(ssid, 33, "%s", value);
+                else if (i == ENV_WIFI_PASS) snprintf(pass, 65, "%s", value);
+                else if (i == ENV_TEAM) {
+                    int t = atoi(value);
+                    if (t <= 0 || t > 99999) break; /* not a team number: not taken */
+                    char num[8];
+                    snprintf(num, sizeof num, "%d", t);
+                    hal_kv_set(ENV_KEYS[i].kv, num);
+                } else {
+                    if (!strcmp(ENV_KEYS[i].kv, "ha_url")) { /* home mode appends /api/...: no trailing / */
+                        size_t l = strlen(value);
+                        while (l > 1 && value[l - 1] == '/') value[--l] = 0;
+                    }
+                    hal_kv_set(ENV_KEYS[i].kv, value);
+                }
+                got |= 1u << i;
+                break;
+            }
+        }
+        p = next;
+    }
+    memset(buf, 0, alloc);
+    free(buf);
+    burn_key_file(path, size);
+    return got;
+}
+
+/* UI thread at boot, before anything reads the settings (it writes NVS: the UI task's stack is internal RAM). */
+void assist_import_card(void)
 {
     const char *sd = hal_sd_root();
     if (!sd) return;
+    unsigned got = 0;
     static const char *const FILES[2] = { "OPENAI.TXT", "ANTHROPIC.TXT" };
-    bool got[2] = { false, false };
     for (int i = 0; i < 2; i++) {
         char path[128];
         snprintf(path, sizeof path, "%s/CATOS/KEYS/%s", sd, FILES[i]);
         size_t n = 0;
         char *k = read_key_file(path, &n);
         if (!k) continue;
+        int e = i == 0 ? ENV_OPENAI : ENV_ANTHROPIC;
         if (strlen(k) >= 20) { /* a key, not an empty or placeholder file */
-            if (i == 0) assist_set_openai(k, NULL);
-            else assist_set_anthropic(k, NULL);
-            got[i] = true;
+            hal_kv_set(ENV_KEYS[e].kv, k);
+            got |= 1u << e;
         }
         memset(k, 0, 512);
         free(k);
         burn_key_file(path, n);
     }
-    if (!got[0] && !got[1]) return;
-    /* with no route chosen yet, the same default as a fresh start: a key on the tablet over the Link */
-    char v[16];
-    if (!hal_kv_get("ai_route", v, sizeof v) || !v[0]) {
-        pthread_mutex_lock(&A.lock);
-        A.cfg.route = A.cfg.api_key[0] ? AS_ROUTE_DIRECT : A.cfg.oai_key[0] ? AS_ROUTE_OPENAI : AS_ROUTE_LINK;
-        pthread_mutex_unlock(&A.lock);
+    char *wifi = calloc(1, 1024); /* ssid[33] and pass[65], off the UI task's stack */
+    if (wifi) {
+        static const char *const ENVS[2] = { "CATOS/KEYS.ENV", "KEYS.ENV" };
+        for (int i = 0; i < 2; i++) {
+            char path[128];
+            snprintf(path, sizeof path, "%s/%s", sd, ENVS[i]);
+            got |= import_env(path, wifi, wifi + 64);
+        }
+        if (got & 1u << ENV_WIFI_SSID) hal_wifi_join(wifi, wifi + 64); /* no WIFI_PASS: an open network */
+        memset(wifi, 0, 1024);
+        free(wifi);
     }
-    snprintf(g_import_note, sizeof g_import_note, "%s imported from the card",
-             got[0] && got[1] ? "OpenAI and Claude keys" : got[0] ? "OpenAI key" : "Claude key");
+    if (!got) return;
+    /* the island names what came in, never a value; assist_init() and the settings read the values from kv */
+    g_import_note = calloc(1, 1024);
+    if (!g_import_note) return;
+    int len = snprintf(g_import_note, 1024, "from the card:"), shown = 0, more = 0;
+    for (int i = 0; i < ENV_COUNT; i++) {
+        if (!(got & 1u << i)) continue;
+        if (len + (int)strlen(ENV_KEYS[i].name) + 2 > 84) more++; /* the island's line, and a note's 96 */
+        else len += snprintf(g_import_note + len, 1024 - (size_t)len, "%s %s", shown++ ? "," : "", ENV_KEYS[i].name);
+    }
+    if (more) snprintf(g_import_note + len, 1024 - (size_t)len, " +%d more", more);
 }
 
 const char *assist_import_note(void)
 {
-    static char out[64];
-    if (!g_import_note[0]) return NULL;
-    snprintf(out, sizeof out, "%s", g_import_note);
-    g_import_note[0] = 0;
-    return out;
+    static char *handed; /* the last one given out: freed on the next call */
+    free(handed);
+    handed = g_import_note;
+    g_import_note = NULL;
+    return handed;
 }
 
 void assist_init(void)
@@ -953,7 +1082,6 @@ void assist_init(void)
         free(k);
     }
     if (!start) return;
-    import_keys();
     snap_init();
     link_init();
     hal_thread("assist", worker, NULL, 48 * 1024); /* TLS plus a tool's buffers */

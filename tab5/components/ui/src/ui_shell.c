@@ -1588,6 +1588,7 @@ void ui_init(const ui_config_t *cfg)
 {
     U.cfg = *cfg;
     R = calloc(1, sizeof *R);
+    assist_import_card(); /* keys and settings dropped on the card: into kv before anything reads kv */
     settings_load();
     if (cfg->team > 0 && !hal_kv_get("team", (char[8]){ 0 }, 8)) S.team = cfg->team;
     cat_model_init(cfg->nt);
