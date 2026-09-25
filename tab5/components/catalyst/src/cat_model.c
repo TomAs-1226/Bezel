@@ -177,6 +177,8 @@ static void read_power(cat_robot_t *r)
     r->browned_out = flag("/Catalyst/Systemcore/BrownedOut", false);
 
     str("/Catalyst/Robot/Power/Module", r->pd_module, sizeof r->pd_module);
+    /* the battery model RobotIdentity declares (.battery("MK ES17-12")): which one of the team's is in, the tablet knows */
+    str("/Catalyst/Robot/Power/Battery", r->battery_model, sizeof r->battery_model);
     r->nchannels = 0;
     char buf[2048];
     const char *items[CAT_MAX_CHANNELS];

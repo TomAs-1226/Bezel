@@ -684,7 +684,7 @@ static volatile bool s_dev_pending;
 static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
-        strncmp(line, "alarm test", 10))
+        strncmp(line, "alarm test", 10) && strncmp(line, "bms", 3))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -712,6 +712,9 @@ static void dev_run(void)
         /* a made-up match's queue alarm, in 5 s or "alarm test N" s: time to switch apps or let it sleep */
         double d = s_dev_cmd[10] == ' ' ? atof(s_dev_cmd + 11) : 5;
         ui_match_test(d > 0 ? d : 5);
+    } else if (!strncmp(s_dev_cmd, "bms", 3)) {
+        /* the battery fleet: "bms" ranks it; scan, pick <label>, demo, reset, gpt, json */
+        ui_batt_dev(s_dev_cmd + 3);
     } else if (!strcmp(s_dev_cmd, "inv")) {
         bz_ui_trace_inv(20);
     } else if (!strncmp(s_dev_cmd, "ask ", 4)) {
@@ -1694,6 +1697,7 @@ void ui_init(const ui_config_t *cfg)
     ui_cc_init();
     ui_lock_init();
     ui_match_boot(); /* after the lock screen: the alarm screen goes over it */
+    ui_batt_boot();  /* the battery fleet off the card, its log reading and the robot's live numbers */
     ui_orb_init();
     ui_home_mode_init(home_changed);
     snap_init();

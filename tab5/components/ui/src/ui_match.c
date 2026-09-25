@@ -76,7 +76,7 @@ static struct {
     double test_at;
     long shown_min;
     /* the alarm screen */
-    lv_obj_t *root, *bar, *kind_l, *title, *with_l, *vs_l, *check_btn, *dismiss_btn;
+    lv_obj_t *root, *bar, *kind_l, *title, *with_l, *vs_l, *batt_l, *check_btn, *dismiss_btn;
     /* the settings view (the tba app's) */
     lv_obj_t *on_chip, *sound_chip, *q_chips[6], *m_chips[4], *next_l;
 } MA;
@@ -201,6 +201,8 @@ static void screen_build(void)
     lv_obj_set_pos(MA.with_l, x, 236);
     MA.vs_l = bz_label_line(r, "", BZ_F_BODY, BZ_C_DIM, tw);
     lv_obj_set_pos(MA.vs_l, x, 300);
+    MA.batt_l = bz_label_line(r, "", BZ_F_NAME, BZ_C_ICE, tw);
+    lv_obj_set_pos(MA.batt_l, x, 352);
     lv_obj_t *row = bz_row(r, 40);
     lv_obj_set_size(row, W, 124);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -229,6 +231,10 @@ static void screen_show(void)
     hhmm(MA.al.when, at, sizeof at);
     ui_text(MA.with_l, "%s", with);
     ui_text(MA.vs_l, "%s \xc2\xb7 %s %s", vs, m->predicted ? "predicted" : "scheduled", at);
+    /* the battery for it: the one picked, else the one recommended (ui_batt.c) */
+    char bl[160];
+    if (ui_batt_alarm_line(m->label, bl, sizeof bl)) ui_text(MA.batt_l, "%s", bl);
+    else ui_text(MA.batt_l, " ");
     lv_obj_remove_style_all(MA.bar);
     lv_obj_add_style(MA.bar, bz_style_fill(m->ours == 2 ? BZ_C_ICE : BZ_C_AMBER), 0);
     lv_obj_set_style_bg_opa(MA.bar, LV_OPA_COVER, 0);

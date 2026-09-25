@@ -59,7 +59,7 @@ if(TEST_SOURCES)
   add_executable(catalyst_tab_tests ${TEST_SOURCES}
     ${ROOT}/components/nt4/src/mpack_lite.c ${ROOT}/components/nt4/src/json_lite.c
     ${ROOT}/components/bezel/src/bz_motion.c
-    ${ROOT}/components/catalyst/src/cat_can.c ${ROOT}/components/catalyst/src/cat_logs.c
+    ${ROOT}/components/catalyst/src/cat_can.c ${ROOT}/components/catalyst/src/cat_logs.c ${ROOT}/components/catalyst/src/cat_batt.c
     ${ROOT}/components/assist/src/as_json.c ${ROOT}/components/assist/src/as_sse.c
     ${ROOT}/components/assist/src/as_conv.c ${ROOT}/components/assist/src/as_tooldefs.c
     ${ROOT}/components/assist/src/as_oai.c

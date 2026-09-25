@@ -94,12 +94,46 @@ static const char PROMPT[] =
     "- what is missing, and what to record next time\n"
     "If the log looks healthy, say that in the verdict and keep the rest short.";
 
+/* The battery fleet's brief: the batteries app's ask gpt (analyze_fleet_start). */
+static const char FLEET_PROMPT[] =
+    "You are the battery lead of an FRC team, in the pit. The team's Catalyst Tab keeps its fleet of 12 V SLA robot "
+    "batteries (typically 18 Ah, MK ES17-12 or similar): which battery went in for each match, how it was charged, "
+    "and what the logs measured each time: the resting voltage before the match, the lowest voltage, brownouts, the "
+    "energy drawn, and the internal resistance fitted from voltage sag against the robot's total current (V = V0 - "
+    "I*R, the same model as Catalyst's BatteryResistanceIdentifier). You are given that summary and the tablet's own "
+    "ranking, and you advise the technician.\n"
+    "\n"
+    "What you know\n"
+    "- A healthy FRC battery measures about 11-20 mOhm under a robot's load; over ~25 mOhm it sags hard and browns "
+    "out; a rise of 30 % or more over its own baseline means it is aging or sulfating, or has a bad lug, Anderson "
+    "connector or cell. A single high reading can be a loose connector or a cold battery rather than the battery.\n"
+    "- Resting voltage after charging and resting is ~12.8-13.0 V; under ~12.3 V at rest it wasn't charged, or can't "
+    "hold charge. A battery straight off the charger reads high (surface charge) and runs warm; 30+ minutes of rest "
+    "is better. A battery just used must be recharged before it goes in again.\n"
+    "- Rotate so none is used much more than the others; a battery drawn deeply several times in a day heats and "
+    "ages faster. Brownouts with a low-resistance battery point at the robot (current limits, a stall), not the "
+    "battery.\n"
+    "- Absent numbers were not measured: never read them as zero or as fine.\n"
+    "\n"
+    "Answer format: plain text for a small screen, no markdown emphasis, no # headings, no tables, under about 220 "
+    "words, exactly these lowercase sections:\n"
+    "verdict: one sentence: the battery for the next match and why.\n"
+    "next matches:\n"
+    "- the order to use them in, with the reason for each\n"
+    "watch:\n"
+    "- batteries to test, retire or check the lugs of, with the numbers that say so\n"
+    "charging:\n"
+    "- what to put on the charger now\n"
+    "can't tell:\n"
+    "- what is missing (a battery never measured, logs without current), and what to record";
+
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct {
     an_phase_t phase;
     bool busy;
     int team;
-    char *path, *name, *answer, *digest;
+    bool fleet;                 /* the battery fleet's summary (G.text), not a log */
+    char *path, *name, *answer, *digest, *text;
     char model[48];
 } G;
 static unsigned g_gen;
@@ -166,19 +200,20 @@ static char *make_digest(const char *path, const char *name, char *why, size_t w
 }
 
 /* The request's body: the brief as the system message, the digest as the user's. */
-static char *request(const char *model, int team, const char *digest)
+static char *request(const char *model, int team, const char *digest, bool fleet)
 {
     ab_t b;
     ab_init(&b);
     ab_puts(&b, "{\"model\":");
     ab_str(&b, model);
     ab_puts(&b, ",\"messages\":[{\"role\":\"system\",\"content\":");
-    ab_str(&b, PROMPT);
+    ab_str(&b, fleet ? FLEET_PROMPT : PROMPT);
     ab_puts(&b, "},{\"role\":\"user\",\"content\":");
     ab_t u;
     ab_init(&u);
     if (team > 0) ab_fmt(&u, "Team %d. ", team);
-    ab_puts(&u, "What does this log say about the robot? The digest follows.\n\n");
+    ab_puts(&u, fleet ? "Which battery goes in next, and what needs attention? The fleet follows.\n\n"
+                      : "What does this log say about the robot? The digest follows.\n\n");
     ab_puts(&u, digest);
     ab_strn(&b, u.p ? u.p : "", u.n);
     ab_free(&u);
@@ -217,12 +252,14 @@ static void job(void *arg)
 {
     (void)arg;
     pthread_mutex_lock(&g_lock);
-    char *path = G.path, *name = as_strdup(G.name ? G.name : "");
+    char *path = G.path, *name = as_strdup(G.name ? G.name : ""), *text = G.text;
     int team = G.team;
-    G.path = NULL;
+    bool fleet = G.fleet;
+    G.path = G.text = NULL;
     pthread_mutex_unlock(&g_lock);
     char why[160] = "out of memory";
-    char *digest = path && name ? make_digest(path, name, why, sizeof why) : NULL;
+    char *digest = fleet ? text : path && name ? make_digest(path, name, why, sizeof why) : NULL;
+    if (!fleet) free(text);
     free(path);
     free(name);
     if (!digest) {
@@ -240,7 +277,7 @@ static void job(void *arg)
     pthread_mutex_lock(&g_lock);
     snprintf(G.model, sizeof G.model, "%s", model);
     pthread_mutex_unlock(&g_lock);
-    char *body = request(model, team, digest);
+    char *body = request(model, team, digest, fleet);
     if (!body) {
         memset(hdr, 0, sizeof hdr);
         fail("out of memory", digest);
@@ -305,21 +342,21 @@ static void job(void *arg)
     else fail(why, digest);
 }
 
-bool analyze_start(const char *path, int team)
+/* a log (p) or the fleet's summary (text): taken over either way */
+static bool start(char *p, char *n, char *text, int team)
 {
-    if (!path || !path[0]) return false;
-    char *p = as_strdup(path);
-    const char *base = strrchr(path, '/');
-    char *n = as_strdup(base ? base + 1 : path);
     pthread_mutex_lock(&g_lock);
-    bool ok = !G.busy && p && n;
+    bool ok = !G.busy && n && (p || text);
     if (ok) {
         free(G.path);
         free(G.name);
         free(G.answer);
         free(G.digest);
+        free(G.text);
         G.path = p;
         G.name = n;
+        G.text = text;
+        G.fleet = text != NULL;
         G.answer = G.digest = NULL;
         G.model[0] = 0;
         G.team = team;
@@ -330,12 +367,14 @@ bool analyze_start(const char *path, int team)
     if (!ok) {
         free(p);
         free(n);
+        free(text);
         return false;
     }
     if (!assist_post_job(job, NULL)) {
         pthread_mutex_lock(&g_lock);
         free(G.path);
-        G.path = NULL;
+        free(G.text);
+        G.path = G.text = NULL;
         G.busy = false;
         G.phase = AN_FAILED;
         G.answer = as_strdup("the assistant is busy with another job: try again in a moment");
@@ -345,6 +384,19 @@ bool analyze_start(const char *path, int team)
     }
     bump();
     return true;
+}
+
+bool analyze_start(const char *path, int team)
+{
+    if (!path || !path[0]) return false;
+    const char *base = strrchr(path, '/');
+    return start(as_strdup(path), as_strdup(base ? base + 1 : path), NULL, team);
+}
+
+bool analyze_fleet_start(const char *summary, int team)
+{
+    if (!summary || !summary[0]) return false;
+    return start(NULL, as_strdup(ANALYZE_FLEET_NAME), as_strdup(summary), team);
 }
 
 bool analyze_busy(void)

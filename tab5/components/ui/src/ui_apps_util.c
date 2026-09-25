@@ -555,6 +555,7 @@ static void check_build(lv_obj_t *b)
     lv_obj_set_pos(wrap, PAD, APP_Y);
     lv_obj_t *col = ui_scroller(wrap, W - 2 * PAD, APP_H);
     int cw = (W - 2 * PAD - BZ_GAP) / 2;
+    ui_batt_check_row(col, b, W - 2 * PAD); /* which battery goes in: first, since it decides the first item */
     CK.meter = bz_meter(col, W - 2 * PAD, 12);
     lv_obj_t *grid = bz_row(col, BZ_GAP);
     lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
@@ -580,7 +581,10 @@ static void check_build(lv_obj_t *b)
     ck_show();
 }
 
-const ui_app_t APP_CHECK = { .name = "checklist", .icon = BZ_I_CHECKLIST_RTL, .build = check_build };
+static void check_refresh(void) { ui_batt_check_refresh(); }
+
+const ui_app_t APP_CHECK = { .name = "checklist", .icon = BZ_I_CHECKLIST_RTL, .build = check_build,
+                             .refresh = check_refresh };
 
 /* ================================================================== flashlight */
 

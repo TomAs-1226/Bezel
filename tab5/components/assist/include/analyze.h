@@ -28,6 +28,10 @@ typedef enum {
 /* Starts an analysis of the log at `path` (.wpilog, .dslog, .dsevents, or a recorder .csv) for `team`.
  * false while one is under way, or when the assistant's worker isn't running. Any thread. */
 bool analyze_start(const char *path, int team);
+/* The same path with the battery lead's brief, over the fleet's summary (cat_batt_summary, copied): the batteries
+ * app's ask gpt. Its state below then carries the name ANALYZE_FLEET_NAME. */
+#define ANALYZE_FLEET_NAME "battery fleet"
+bool analyze_fleet_start(const char *summary, int team);
 bool analyze_busy(void);
 unsigned analyze_gen(void);              /* cheap, no lock: changes with anything below */
 /* The state as it stands: the log's file name, the answer (or why it failed), what was sent, and the model

@@ -111,6 +111,7 @@ typedef struct {
     bool browned_out, brownout_risk;
     int nchannels;
     char pd_module[16];
+    char battery_model[32]; /* /Catalyst/Robot/Power/Battery: the model, not which battery */
     cat_channel_t channels[CAT_MAX_CHANNELS];
     bool have_pd_live;
     double pd_voltage, pd_total;
