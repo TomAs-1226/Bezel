@@ -28,9 +28,11 @@ static struct {
     lv_obj_t *place, *icon, *temp, *desc, *range, *feels, *humid, *wind, *sun, *msg, *set_btn;
     lv_obj_t *h_hour[COLS], *h_temp[COLS], *h_pop[COLS], *spark;
     lv_obj_t *d_day[HOME_WX_DAYS], *d_desc[HOME_WX_DAYS], *d_pop[HOME_WX_DAYS], *d_temp[HOME_WX_DAYS];
+    lv_obj_t *h_empty, *d_empty;   /* what the two forecast cards say while they have nothing */
     home_forecast_t fc;            /* PSRAM (the ui component's statics) */
     unsigned gen;
     const char *glyph;
+    double asked_at;               /* "asking again..." shows until an answer, or this plus 20 s */
 } WX;
 
 static void set_place(lv_obj_t *o, void *u)
@@ -42,8 +44,16 @@ static void set_place(lv_obj_t *o, void *u)
 static void again(lv_obj_t *o, void *u)
 {
     (void)o; (void)u;
+    home_weather_t w;
+    home_weather_get(&w);
+    if (!w.configured) {
+        /* nothing to ask about: "asking again..." would have stayed up for good */
+        ui_island_say(BZ_I_PIN_DROP, "set a place first: settings, home");
+        return;
+    }
     home_weather_refresh();
     ui_text(WX.place, "%s", "asking again...");
+    WX.asked_at = hal_seconds();
 }
 
 static lv_obj_t *line(lv_obj_t *parent, bz_font_role_t f, bz_color_role_t c, int x, int y, int w)
@@ -98,6 +108,7 @@ static void weather_build(lv_obj_t *b)
     bz_spark_min_span(WX.spark, 4);
     bz_spark_color(WX.spark, BZ_C_ICE);
     lv_obj_set_pos(WX.spark, 0, 118);
+    WX.h_empty = line(t, BZ_F_BODY_S, BZ_C_DIM, 0, 40, IN(RW));
 
     /* the week */
     t = bz_tile(b, RW, WEEK_H);
@@ -111,6 +122,7 @@ static void weather_build(lv_obj_t *b)
         WX.d_temp[i] = line(t, BZ_F_BODY, BZ_C_INK, IN(RW) - 190, y, 190);
         lv_obj_set_style_text_align(WX.d_temp[i], LV_TEXT_ALIGN_RIGHT, 0);
     }
+    WX.d_empty = line(t, BZ_F_BODY_S, BZ_C_DIM, 0, 40, IN(RW));
 }
 
 static void vis(lv_obj_t *o, bool on)
@@ -126,8 +138,11 @@ static void weather_refresh(void)
     home_want(HOME_WANT_WEATHER);
     home_weather_t w;
     home_weather_get(&w);
+    /* an answer that never came: the head says the place again rather than "asking again..." for good */
+    if (WX.asked_at && hal_seconds() - WX.asked_at > 20) WX.gen = 0;
     if (w.gen == WX.gen && WX.gen) return;
     WX.gen = w.gen ? w.gen : 1;
+    WX.asked_at = 0;
     home_weather_forecast(&WX.fc);
     const home_forecast_t *f = &WX.fc;
     const char *deg = "\xc2\xb0";
@@ -174,6 +189,10 @@ static void weather_refresh(void)
     }
     bz_spark_clear(WX.spark);
     for (int k = 0; ok && f->ok && k < f->nhours; k++) bz_spark_push(WX.spark, f->hour[k].temp);
+    /* the two cards say why they're empty, rather than stand blank */
+    const char *why = !w.configured ? "The forecast shows here once a place is set." : "Waiting for the forecast...";
+    ui_text(WX.h_empty, "%s", ok && f->ok ? "" : why);
+    ui_text(WX.d_empty, "%s", ok && f->ok ? "" : why);
 
     for (int i = 0; i < HOME_WX_DAYS; i++) {
         bool have = ok && f->ok && i < f->ndays;

@@ -90,7 +90,13 @@ static void cc_show(bool on)
         }
     }
     C.shown = on;
-    if (on) cc_refresh(NULL);
+    if (on) {
+        /* settings, an alarm or home mode may have moved them since: the levels as they are now */
+        bz_level_set(C.bright, S.brightness, false);
+        bz_level_set(C.vol, S.volume, false);
+        C.notes_gen = ~0u; /* the ages ("now", "4 min") are read again */
+        cc_refresh(NULL);
+    }
 }
 
 /* drawing the sheet's other picture, a band at a time: opening, the sheet itself; closing, the page */
@@ -289,6 +295,9 @@ static void cc_frame(double now, double dt, void *user)
                 lv_obj_set_style_bg_opa(C.scrim, LV_OPA_80, 0);
             }
             lv_obj_remove_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+            bz_level_set(C.bright, S.brightness, false);
+            bz_level_set(C.vol, S.volume, false);
+            C.notes_gen = ~0u;
             cc_refresh(NULL);
         } else {
             lv_obj_add_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
@@ -412,18 +421,20 @@ void ui_cc_init(void)
     lv_obj_set_flex_flow(m, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(m, 8, 0);
     bz_label(m, "link", BZ_F_LABEL, BZ_C_DIM);
+    /* each line inside the module, a long network name or address ending in "…" rather than past its edge */
+    const int lw = 414 - 2 * 22 - 24 - 10;
     lv_obj_t *row = bz_row(m, 10);
     bz_icon(row, BZ_I_SMART_TOY, 24, BZ_C_INK);
-    C.link_robot = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    C.link_robot = bz_label_line(row, "", BZ_F_BODY_S, BZ_C_INK, lw);
     row = bz_row(m, 10);
     bz_icon(row, BZ_I_WIFI, 24, BZ_C_INK);
-    C.link_wifi = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    C.link_wifi = bz_label_line(row, "", BZ_F_BODY_S, BZ_C_INK, lw);
     row = bz_row(m, 10);
     bz_icon(row, BZ_I_USB, 24, BZ_C_INK);
-    C.link_usb = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    C.link_usb = bz_label_line(row, "", BZ_F_BODY_S, BZ_C_INK, lw);
     row = bz_row(m, 10);
     bz_icon(row, BZ_I_BATTERY_5_BAR, 24, BZ_C_INK);
-    C.link_batt = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    C.link_batt = bz_label_line(row, "", BZ_F_BODY_S, BZ_C_INK, lw);
 
     /* brightness and volume: Bezel's levels, fills crisp inside the glass */
     m = module(1, 570, 70, 580, 84, 42, 0.06f);

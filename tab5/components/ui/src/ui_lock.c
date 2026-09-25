@@ -94,18 +94,21 @@ static void lock_text(void)
     localtime_r(&now, &tm);
     if (tm.tm_min != LK.last_min) {
         LK.last_min = tm.tm_min;
-        char b[48];
+        char b[48], m[24];
         strftime(b, sizeof b, "%H:%M", &tm);
         ui_text(LK.clock, "%s", b);
-        strftime(b, sizeof b, "%A, %B %d", &tm);
-        ui_text(LK.date, "%s", b);
+        strftime(b, sizeof b, "%A", &tm);
+        strftime(m, sizeof m, "%B", &tm);
+        ui_text(LK.date, "%s, %s %d", b, m, tm.tm_mday); /* "September 5", not "September 05" */
+        LK.seen_gen = ~0u; /* the notifications' ages ("now", "4 min") move on with the clock */
     }
     hal_battery_t bt;
     const cat_robot_t *r = R;
     char batt[40] = "";
-    if (hal_battery(&bt)) snprintf(batt, sizeof batt, "%d %%%s", bt.percent, bt.charging ? " \xc2\xb7 charging" : "");
-    if (r->connected) ui_text(LK.status, "%s \xc2\xb7 robot %s \xc2\xb7 %s", batt, cat_mode_name(r), r->address);
-    else ui_text(LK.status, "%s \xc2\xb7 looking for team %d", batt, S.team);
+    if (hal_battery(&bt) && bt.ok)
+        snprintf(batt, sizeof batt, "%d %%%s \xc2\xb7 ", bt.percent, bt.charging ? " \xc2\xb7 charging" : "");
+    if (r->connected) ui_text(LK.status, "%srobot %s \xc2\xb7 %s", batt, cat_mode_name(r), r->address);
+    else ui_text(LK.status, "%slooking for team %d", batt, S.team);
     if (LK.seen_gen == ui_notify_gen()) return;
     LK.seen_gen = ui_notify_gen();
     for (int i = 0; i < LK_NOTES; i++) {

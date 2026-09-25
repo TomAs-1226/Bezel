@@ -702,7 +702,8 @@ static void sys_refresh(void)
     hal_battery_t bt;
     if (hal_battery(&bt) && bt.ok) {
         ui_text(SY.v[SY_BATT], "%d %% · %.2f v", bt.percent, bt.volts);
-        ui_text(SY.v[SY_POWER], "%s%s", bt.charging ? "charging" : "on battery", bt.external ? " · external power" : "");
+        /* one state, short enough for the column ("on battery · external power" contradicted itself, cut short) */
+        ui_text(SY.v[SY_POWER], "%s", bt.charging ? "charging" : bt.external ? "plugged in" : "on battery");
     }
     hal_net_t n;
     hal_net(&n);
@@ -763,7 +764,15 @@ static void files_load(void)
     if (!FI.path[0] || strncmp(FI.path, root, strlen(root))) snprintf(FI.path, sizeof FI.path, "%s", root);
     ui_text(FI.path_lbl, "%s", FI.path);
     DIR *d = opendir(FI.path);
-    if (!d) return;
+    if (!d) {
+        /* a card just put in, or one that stopped answering: say so rather than show an empty list */
+        lv_obj_t *t = bz_tile(FI.list, W - 2 * PAD, LV_SIZE_CONTENT);
+        lv_obj_t *l = bz_label(t, "This folder can't be read right now. Take the card out and put it back, then open files again.",
+                               BZ_F_BODY, BZ_C_DIM);
+        lv_obj_set_width(l, W - 2 * PAD - 2 * BZ_PAD_TILE);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        return;
+    }
     static char names[64][64];
     int k = 0;
     if (strlen(FI.path) > strlen(root)) {
@@ -785,7 +794,9 @@ static void files_load(void)
         lv_obj_set_flex_align(t, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(t, 16, 0);
         bz_icon(t, dir ? BZ_I_FOLDER : BZ_I_DESCRIPTION, 32, dir ? BZ_C_ICE : BZ_C_DIM);
-        bz_label_line(t, e->d_name, BZ_F_BODY, BZ_C_INK, 760);
+        /* the name takes the row; the size sits against its right end, one column down the list */
+        lv_obj_t *nm = bz_label_line(t, e->d_name, BZ_F_BODY, BZ_C_INK, 760);
+        lv_obj_set_flex_grow(nm, 1);
         char sz[24] = "";
         if (!dir) {
             double s = st.st_size;
@@ -793,7 +804,8 @@ static void files_load(void)
             else if (s < 1048576) snprintf(sz, sizeof sz, "%.1f kb", s / 1024);
             else snprintf(sz, sizeof sz, "%.1f mb", s / 1048576);
         }
-        bz_label(t, dir ? "folder" : sz, BZ_F_LABEL, BZ_C_DIM);
+        lv_obj_t *sl = bz_label_line(t, dir ? "folder" : sz, BZ_F_LABEL, BZ_C_DIM, 140);
+        lv_obj_set_style_text_align(sl, LV_TEXT_ALIGN_RIGHT, 0);
         if (dir) {
             lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
             bz_on_tap(t, fi_open, names[k]);
@@ -807,6 +819,7 @@ static void files_build(lv_obj_t *b)
 {
     lv_obj_t *hr = head_right(b);
     FI.path_lbl = bz_label_line(hr, "", BZ_F_LABEL, BZ_C_DIM, 420);
+    lv_obj_set_style_text_align(FI.path_lbl, LV_TEXT_ALIGN_RIGHT, 0); /* against the orb, as other heads' words are */
     lv_obj_t *wrap = bz_box(b);
     lv_obj_set_pos(wrap, PAD, APP_Y);
     FI.list = ui_scroller(wrap, W - 2 * PAD, APP_H);
