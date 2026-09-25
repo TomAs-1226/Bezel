@@ -130,10 +130,19 @@ An alarm before each of the team's matches at its current event (team from setti
   network.
 - **Settings.** The blue alliance app's **alerts** chip: on/off, sound, queue lead (off, 15-40 min), match lead
   (off, 3-10 min), the next alarm, and a test alarm. kv `matchalert` = `on,queue,match,sound`.
-- **Home mode** shows "next: Q34 · 14:52 · red with 1234, 5678" under the date.
+- **Home mode** shows "next: Q34 · 14:52 · red with 1234, 5678" under the date; the **home page**'s clock card
+  shows the same line in place of the greeting (and opens the blue alliance app when tapped).
+- **The assistant knows it.** `ui_match.c` posts the event as text to the assistant's desk (`as_desk.c`): now,
+  the event and its dates, rank and record, a `next match:` line (or why there is none: the event is over, not
+  started, nothing scheduled), every match of ours with its day, alliance, partners, opponents and result, and
+  the reminder settings. The Assist app and the companion read it with the `get_matches` tool, and every question
+  carries a one-line context ("our next: Q34 · 14:52 · red with ... · battery: #7 ..."). `ui_batt.c` posts the
+  fleet the same way for `get_batteries`.
 - **Testing.** `python tools/tab5_dev.py COM9 alarm test` rings a made-up Q34 queue alarm in 5 s
   (`alarm test 30`: in 30 s, time to switch apps or let the screen sleep); `alarm test 5 match` the match
   reminder, `alarm test 5 chime` a made-up schedule change (message and chime). The alerts view has a button.
+  `match fake 40` tracks a made-up Q99 of ours 40 min out as if TBA had it (reminders, home, the assistant);
+  `match fake 0` removes it, and TBA's next answer drops it anyway.
 
 #### Log analysis
 

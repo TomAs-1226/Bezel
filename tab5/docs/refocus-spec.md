@@ -161,8 +161,8 @@ Rules for v1:
 
 ## 6. What Claude can do with the Tab as a tool
 
-**On-device assist** (`components/assist/`, 26 tools in `as_tooldefs.c`): reads everything the UI
-reads — `robot_overview`, `get_alerts`, `get_mechanisms`, `get_power`, `get_can`, `get_vision`,
+**On-device assist** (`components/assist/`, 29 tools in `as_tooldefs.c`): reads everything the UI
+reads — the team's event and battery fleet (`get_matches`, `get_batteries`, from the UI's desk), `robot_overview`, `get_alerts`, `get_mechanisms`, `get_power`, `get_can`, `get_vision`,
 `run_preflight`, `list_topics`/`read_topics`, `list_tunables`, `list_autos`, `list_snapshots`,
 `list_logs`/`summarize_log`, `systemcore_health`, `motor_history`, plus PC-repo tools forwarded
 through Link (`code_tree`, `code_read`, `code_search`, `list_patches`, `list_work_orders`). It
