@@ -164,7 +164,7 @@ static void gear_build(lv_obj_t *b)
     gr_readout(t, "torque at the limit", &GR.lim, &GR.lim_sub, IN(w3));
     GR.current = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(GR.current, IN(w3));
-    lv_obj_t *note = bz_label(t, "Ideal: no losses. Real mechanisms reach roughly 80\xe2\x80\x93" "90 % of these.", BZ_F_CAPTION,
+    lv_obj_t *note = bz_label(t, "ideal: no losses. real mechanisms reach roughly 80\xe2\x80\x93" "90 % of these.", BZ_F_CAPTION,
                               BZ_C_FAINT);
     lv_obj_set_width(note, IN(w3));
     gr_show();
@@ -220,7 +220,7 @@ static void ru_draw(lv_event_t *e)
         ld.p2.x = x;
         ld.p2.y = base - len;
         lv_draw_line(layer, &ld);
-        if (num && i > 0) {
+        if (num && i > 0 && x + 16 <= a.x2) { /* a number the edge would cut in half is left off */
             char s[8];
             snprintf(s, sizeof s, "%d", RU.inches ? i / 16 : i / 10);
             td.text = s;
@@ -326,9 +326,10 @@ static const char *const RF_TEXT[RF_COUNT] = {
     "Red, white, brown or yellow for +12 V; black or blue for ground.\n"
     "Tug-test every crimp and Wago. A connection that is warm after a match is failing.",
     /* can */
-    "Two 120 \xce\xa9 terminators, one at each end of the chain.\n"
-    "Power off, meter CAN-H to CAN-L: about 60 \xce\xa9 is healthy; about 120 \xce\xa9 means one terminator is "
-    "missing; near 40 \xce\xa9 means one too many; open means a break.\n"
+    /* "ohm", not the sign: the faces have no Ω and drew nothing in its place */
+    "Two 120 ohm terminators, one at each end of the chain.\n"
+    "Power off, meter CAN-H to CAN-L: about 60 ohm is healthy; about 120 ohm means one terminator is "
+    "missing; near 40 ohm means one too many; open means a break.\n"
     "Yellow is CAN-H, green is CAN-L.\n"
     "Devices dropping out together: look where the chain passes them (connector, pinched wire), not at the "
     "devices. Keep bus load well under 80 %.",
@@ -336,8 +337,8 @@ static const char *const RF_TEXT[RF_COUNT] = {
     "Resting (off the charger for an hour, robot off):\n"
     "\xe2\x80\x94 12.8-13.0 V: full \xc2\xb7 about 12.4 V: charge it before a match\n"
     "Under load the voltage sags; the controller browns out near 6.8 V and cuts the motors first.\n"
-    "Internal resistance (a battery analyser) is the real test: under about 0.015 \xce\xa9 is match-ready; "
-    "a battery that climbs past about 0.02 \xce\xa9 is for practice.\n"
+    "Internal resistance (a battery analyser) is the real test: under about 15 mohm is match-ready; "
+    "a battery that climbs past about 20 mohm is for practice.\n"
     "Check the lugs are tight and the heat-shrink is whole: a loose lug looks like a bad battery.",
     /* network: filled in from the team number */
     "",

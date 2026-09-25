@@ -32,21 +32,36 @@ static lv_obj_t *head_right(lv_obj_t *body)
 /* A big reading: value in a fixed, right-aligned box (so it never re-flows), unit and caption beside. */
 typedef struct { lv_obj_t *label, *value, *unit, *caption; } reading_t;
 
+static void reading_place_unit(reading_t *r);
+
 static void reading(lv_obj_t *tile, reading_t *r, const char *label, bz_font_role_t f, const char *unit, int y)
 {
     r->label = bz_label(tile, label, BZ_F_LABEL, BZ_C_DIM);
     lv_obj_set_pos(r->label, 0, y);
-    r->value = bz_label(tile, "\xe2\x80\x94", f, BZ_C_INK);
+    r->value = bz_label(tile, "\xe2\x80\x94", f, BZ_C_FAINT);
     lv_obj_set_pos(r->value, -4, y + (f == BZ_F_CLOCK ? 34 : 20)); /* the clock face runs tall: clear of the label */
     r->unit = bz_label(tile, unit ? unit : "", BZ_F_NAME, BZ_C_DIM);
-    lv_obj_align_to(r->unit, r->value, LV_ALIGN_OUT_RIGHT_BOTTOM, 8, -12);
+    reading_place_unit(r);
+}
+
+/* A degree sign rides at the top of the figures, as it's written; other units sit on the baseline. At the
+ * baseline "°" read as a stray small "o" beside the number. */
+static void reading_place_unit(reading_t *r)
+{
+    const char *u = lv_label_get_text(r->unit);
+    if (u && !strcmp(u, "\xc2\xb0")) lv_obj_align_to(r->unit, r->value, LV_ALIGN_OUT_RIGHT_TOP, 4, 2);
+    else lv_obj_align_to(r->unit, r->value, LV_ALIGN_OUT_RIGHT_BOTTOM, 8, -12);
 }
 
 static void reading_set(reading_t *r, const char *fmt, double v, bool have)
 {
     char b[32];
-    ui_text(r->value, "%s", bz_fmt(b, sizeof b, have, fmt, v));
-    lv_obj_align_to(r->unit, r->value, LV_ALIGN_OUT_RIGHT_BOTTOM, 8, -12);
+    const char *cur = lv_label_get_text(r->value);
+    bz_fmt(b, sizeof b, have, fmt, v);
+    if (cur && !strcmp(cur, b)) return; /* unchanged: nothing moves, nothing redraws */
+    ui_text(r->value, "%s", b);
+    bz_set_color(r->value, have ? BZ_C_INK : BZ_C_FAINT); /* an absent value is a faint dash */
+    reading_place_unit(r);
 }
 
 /* ================================================================== level */
@@ -129,8 +144,30 @@ static void level_frame(double now, double dt)
     LV.pitch += (pitch - LV.pitch) * k;
     LV.roll += (roll - LV.roll) * k;
     LV.flat = fabsf(m.az) > 0.8f;
+    /* the dial only when what it draws moved by a tenth of a degree: it was redrawn, and frames kept coming at
+     * the full rate, every frame the app was open, even with the tablet lying still */
+    static float drawn[3] = { 1e9f, 1e9f, 1e9f };
+    static bool drawn_flat;
+    float now3[3] = { LV.edge - LV.zero, LV.pitch, LV.roll };
+    bool moved = LV.flat != drawn_flat;
+    for (int i = 0; i < 3; i++) moved |= fabsf(now3[i] - drawn[i]) >= 0.1f;
+    if (!moved) return;
+    for (int i = 0; i < 3; i++) drawn[i] = now3[i];
+    drawn_flat = LV.flat;
     lv_obj_invalidate(LV.dial);
     bz_ui_keep_alive();
+}
+
+/* a mechanism chip picks what the tablet is compared with (the chips had no tap: only the first could be read) */
+static void lv_pick_mech(lv_obj_t *o, void *u)
+{
+    (void)o;
+    int i = (int)(intptr_t)u;
+    if (i < 0 || i >= R->nmechs) return;
+    LV.mech = i;
+    for (int k = 0; k < R->nmechs && k < CAT_MAX_MECHS; k++)
+        if (LV.mech_chips[k]) ui_chip_set(LV.mech_chips[k], k == LV.mech);
+    hal_tone(1500, 8, S.volume * 0.4f);
 }
 
 static void level_refresh(void)
@@ -155,7 +192,7 @@ static void level_refresh(void)
         for (int i = 0; i < r->nmechs && i < CAT_MAX_MECHS; i++) {
             LV.mech_chips[i] = NULL;
             if (r->mechs[i].kind != CAT_MECH_ROTATIONAL) continue;
-            LV.mech_chips[i] = ui_chip(LV.mech_row, r->mechs[i].name, NULL, NULL);
+            LV.mech_chips[i] = ui_chip(LV.mech_row, r->mechs[i].name, lv_pick_mech, (void *)(intptr_t)i);
             if (LV.mech < 0) LV.mech = i;
         }
     }
@@ -564,6 +601,8 @@ static void cantap_refresh(void)
     if (!R->connected) ui_text(CT.silent, "connect to the robot to compare with the devices it declares");
     else if (!CT.bus.frames) ui_text(CT.silent, " ");
     else ui_text(CT.silent, "%s%s", o ? "declared, not heard here: " : "every declared device is talking", silent);
+    /* amber only for devices missing from the bus: a hint to connect isn't a warning */
+    bz_set_color(CT.silent, R->connected && CT.bus.frames && o ? BZ_C_WARN : BZ_C_DIM);
 }
 
 static void cantap_open(void)
