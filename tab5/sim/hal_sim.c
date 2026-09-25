@@ -182,7 +182,9 @@ bool hal_battery(hal_battery_t *o)
 /* A gearbox: a whine whose frequency follows a motor ramping between two speeds, its second and third
  * harmonics, a tooth-mesh sideband and broadband noise. */
 void hal_tone(float hz, int ms, float v) { (void)hz; (void)ms; (void)v; }
-void hal_set_volume(float v) { (void)v; }
+static float s_volume = 0.5f;
+void hal_set_volume(float v) { s_volume = v; }
+float hal_volume(void) { return s_volume; }
 /* no sound card: speech is swallowed at once, and nothing listens */
 bool hal_play_start(int rate) { return rate > 0 && 48000 % rate == 0; }
 int hal_play_write(const int16_t *pcm, int n, int timeout_ms) { (void)pcm; (void)timeout_ms; return n; }

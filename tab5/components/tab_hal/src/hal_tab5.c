@@ -1743,6 +1743,8 @@ void hal_set_volume(float v)
     hal_audio_volume(v);
 }
 
+float hal_volume(void) { return T.volume; }
+
 /* ------------------------------------------------------------------ camera */
 
 /* The preview: 960×540 (the PPA scales in sixteenths: 3/4 of the sensor's 1280×720) when two of them fit in

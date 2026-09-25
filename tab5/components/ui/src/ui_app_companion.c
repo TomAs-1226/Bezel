@@ -230,8 +230,11 @@ static struct {
     int mw, mh, dh[3], dstate;
     uint32_t mrgb;
     bool mouth_on, dots_on, cap_on, status_on, bar_on;
+    int cap_h;                 /* the caption's height as set: shorter while the controls are up */
     /* the conversation */
     uint32_t vrev, arev, reply_seq;
+    double err_at;             /* the voice's last failure note, as already shown */
+    bool talk_on_open;         /* opened by "tap to talk": listen as soon as it's up */
     double cap_at;             /* when the caption last changed; it hides CAPTION_S after its answer is done */
     bool cap_has;              /* there is a caption to show */
     vo_state_t vstate;
@@ -460,9 +463,21 @@ static void status_line(double now, char *out, size_t n)
         return;
     }
     char vn[160];
-    double at = voice_note(vn, sizeof vn);
-    if (vn[0] && now - at < 5.0) {
+    bool verr = false;
+    double at = voice_note(vn, sizeof vn, &verr);
+    if (vn[0] && now - at < (verr ? 10.0 : 5.0)) {
         snprintf(out, n, "%s", vn);
+        return;
+    }
+    /* what the voice is doing: a face alone doesn't say it heard you */
+    vo_state_t vs = voice_state();
+    if (vs == VO_LISTEN || vs == VO_HEARING || vs == VO_THINKING) {
+        hal_net_t net;
+        hal_net(&net);
+        if (vs != VO_LISTEN && !net.up)
+            snprintf(out, n, "the Wi-Fi dropped: waiting for it to come back (tap to stop)");
+        else
+            snprintf(out, n, "%s", vs == VO_LISTEN ? "listening..." : vs == VO_HEARING ? "hearing you..." : "thinking...");
         return;
     }
     ccw_session_t att;
@@ -545,6 +560,16 @@ static void caption(const char *asked, const char *answer, double now)
     CP.cap_has = true;
 }
 
+/* Something went wrong: a worried face for a while, and one low chime (not again while it's still worried). */
+static void worry(double now, double hold)
+{
+    if (!(CP.mood == VO_EMO_WORRIED && CP.mood_until > now)) chime(CHIME_ERROR);
+    CP.mood = VO_EMO_WORRIED;
+    CP.mood_k = 0.7f;
+    CP.mood_until = now + hold;
+    CP.active_at = now;
+}
+
 /* The answer from the companion's own conversation. */
 static void voice_sync(double now)
 {
@@ -563,8 +588,12 @@ static void voice_sync(double now)
         voice_config(&c);
         char asked[300];
         snprintf(asked, sizeof asked, "you: %s", r->heard);
-        if (!r->say[0]) {
-            if (c.out != VO_OUT_SPEAK) caption(asked, "...", now);
+        if (r->failed) {
+            /* no answer: why, where it would have been, and a face and a sound that say so */
+            caption(asked, r->say, now);
+            worry(now, 4.0);
+        } else if (!r->say[0]) {
+            if (r->shown) caption(asked, "...", now);
         } else {
             /* a feeling to wear for the answer: while it's spoken, and a little after */
             CP.mood = r->emotion;
@@ -583,7 +612,7 @@ static void voice_sync(double now)
             CP.fix_until = now + (r->look == VO_LOOK_CENTER ? 0.5 : 1.6);
             if (r->emotion == VO_EMO_EXCITED || r->emotion == VO_EMO_HAPPY || r->emotion == VO_EMO_LOVE) CP.bounce_t0 = now;
             if (rnd() < 0.4f) CP.blink_t0 = now;
-            if (c.out != VO_OUT_SPEAK) {
+            if (r->shown) {
                 size_t l = strlen(r->say) + 8;
                 char *a = malloc(l);
                 if (a) {
@@ -592,10 +621,23 @@ static void voice_sync(double now)
                     free(a);
                 }
             }
-            if (!r->spoken) chime(CHIME_ANSWER);
+            if (!r->spoken) {
+                chime(CHIME_ANSWER);
+                /* meant to be heard, but the sound is off: say where the answer went, once per answer */
+                if (c.out != VO_OUT_SHOW && S.volume < 0.02f && CP.open)
+                    ui_island_say(BZ_I_VOLUME_OFF, "the sound is off: my answer is on screen");
+            }
         }
     }
     free(r);
+    /* a failure before any answer (the microphones, hearing you): the face and a low chime, once per note */
+    char vn[8];
+    bool verr = false;
+    double at = voice_note(vn, sizeof vn, &verr);
+    if (verr && at != CP.err_at) {
+        CP.err_at = at;
+        if (now - at < 2.0 && st != VO_THINKING) worry(now, 3.0);
+    }
     /* the answer's feeling outlasts the voice by a little; a follow-up question takes over at once */
     if (st != VO_THINKING && st != VO_SPEAKING && st != VO_HEARING && CP.mood < VO_EMO_COUNT && CP.mood_until > now + 3.0)
         CP.mood_until = st == VO_LISTEN ? now + 0.8 : now + 3.0;
@@ -915,13 +957,9 @@ static void face_tap(lv_obj_t *o, void *u)
     if (!point(&p)) return;
     bool on_eye = fabsf((float)(p.y - EYE_CY)) < EH / 2 && (fabsf((float)(p.x - (CP.face_cx - EYE_GAP / 2))) < EW / 2 ||
                                                            fabsf((float)(p.x - (CP.face_cx + EYE_GAP / 2))) < EW / 2);
-    if (on_eye) { /* poked in the eye: a blink and a squint */
-        CP.blink_t0 = now;
-        CP.mood = F_FOCUSED;
-        CP.mood_k = 1;
-        CP.mood_until = now + 0.7;
-        return;
-    }
+    /* poked in the eye: a blink — and it still listens: "tap me" means anywhere on the face, and the eyes are
+     * most of it (a tap on an eye used to do nothing else, so the companion seemed not to work) */
+    if (on_eye) CP.blink_t0 = now;
     vo_state_t v = voice_state();
     if (v == VO_LISTEN || v == VO_HEARING || v == VO_THINKING || v == VO_SPEAKING) {
         voice_cancel(); /* a tap while it talks or listens: hush */
@@ -936,7 +974,7 @@ static void face_tap(lv_obj_t *o, void *u)
         return;
     }
     /* it can't listen: say why (no Wi-Fi, no key) rather than a cheerful bounce that looks like it works */
-    ui_island_say(BZ_I_WIFI_OFF, why);
+    ui_island_say(strstr(why, "Wi-Fi") ? BZ_I_WIFI_OFF : BZ_I_AUTO_AWESOME, why);
     CP.mood = VO_EMO_SAD;
     CP.mood_k = 0.6f;
     CP.mood_until = now + 1.5;
@@ -1478,11 +1516,19 @@ static void comp_refresh(void)
     bool controls = setup || ui_kb_open(CP.kb) || CP.panel_open || now < CP.controls_until;
     shown(CP.bar, &CP.bar_on, controls);
     if (controls) refresh_chips();
-    /* the caption: while its answer is fresh, and never under the controls */
+    /* the caption: while its answer is fresh; shorter, above them, while the controls are up (a tap that
+     * starts listening brings the controls too, and the answer mustn't wait for them to go) */
     vo_state_t v = voice_state();
     bool fresh = now - CP.cap_at < CAPTION_S || v == VO_THINKING || v == VO_SPEAKING ||
                  (assist_phase() != AS_PHASE_IDLE && assist_phase() != AS_PHASE_ERROR);
-    shown(CP.cap, &CP.cap_on, CP.cap_has && fresh && !controls);
+    int cap_h = controls ? BAR_Y - BZ_GAP - CAP_Y : CAP_H;
+    if (cap_h != CP.cap_h) {
+        CP.cap_h = cap_h;
+        lv_obj_set_height(CP.cap, cap_h);
+        lv_obj_set_height(lv_obj_get_parent(CP.cap_box), cap_h - 24); /* the scroller's clip */
+        ui_scroller_follow(CP.cap_box);
+    }
+    shown(CP.cap, &CP.cap_on, CP.cap_has && fresh);
     if (CP.cap_has && (v == VO_SPEAKING || v == VO_THINKING)) CP.cap_at = now; /* the countdown starts when it's done */
     panel_sync(now);
 
@@ -1526,6 +1572,16 @@ static void comp_open(void)
     layout();
     voice_enable(true);
     CP.voice_on = true;
+    CP.err_at = 0;
+    if (CP.talk_on_open) {
+        /* "tap to talk" from home mode: it listens at once, rather than waiting for a second tap */
+        CP.talk_on_open = false;
+        char why[80];
+        if (voice_ready(why, sizeof why)) {
+            voice_listen();
+            CP.mood_until = 0; /* no "hello" surprise: it's listening */
+        }
+    }
 }
 
 static void comp_close(void)
@@ -1648,6 +1704,17 @@ void ui_companion_open(bool claude, lv_obj_t *from)
         if (CP.built) layout();
         return;
     }
+    ui_app_open(&APP_COMPANION, from);
+}
+
+void ui_companion_talk(lv_obj_t *from)
+{
+    if (CP.open) {
+        char why[80];
+        if (voice_ready(why, sizeof why)) voice_listen();
+        return;
+    }
+    CP.talk_on_open = true;
     ui_app_open(&APP_COMPANION, from);
 }
 

@@ -79,6 +79,7 @@ bool hal_battery(hal_battery_t *out);
 /* A short tone on the speaker: detent ticks, chimes. Non-blocking. Mixed over any speech playing. */
 void hal_tone(float hz, int ms, float volume01);
 void hal_set_volume(float v01);
+float hal_volume(void);                     /* the speaker's level as last set, 0..1 */
 
 /* Speech out: 16-bit mono PCM streamed to the speaker, at a rate that divides 48 kHz (8, 12, 16, 24, 48
  * kHz). start → write… → end, and it plays out by itself (hal_play_busy() turns false); stop cuts it off

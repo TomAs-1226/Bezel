@@ -29,7 +29,9 @@
 #define HIST_IDLE_S 600.0          /* quiet this long: the next question starts a new conversation */
 #define TOOL_ROUNDS 4
 #define TTS_RATE 24000             /* OpenAI's "pcm": 24 kHz, 16-bit, mono, little-endian */
-#define HTTP_TIMEOUT_MS 60000
+/* connect, and each read: a spoken answer from gpt-4o-mini comes in a few seconds; a request that has heard
+ * nothing for this long is lost (the HAL tries a request that got no answer once more, so twice this at most) */
+#define HTTP_TIMEOUT_MS 40000
 
 static const char SYSTEM_PROMPT[] =
     "You are the companion that lives in Catalyst Tab, a small tablet standing on its owner's desk. The owner is on an "
@@ -82,6 +84,7 @@ static struct {
     pthread_mutex_t lock;
     pthread_cond_t wake;
     bool started, enabled, ptt, cancel;
+    bool working;                  /* the worker is in a turn (hearing, answering, speaking) */
     char *ask;                     /* a typed question waiting for the worker */
     vo_state_t state;
     voice_config_t cfg;
@@ -89,6 +92,7 @@ static struct {
     vo_reply_t *reply;             /* the last answer (on the heap: 1.5 KB of internal RAM otherwise) */
     char note[160];
     double note_at;
+    bool note_err;                 /* the note says something went wrong (the face shows it) */
     const char *wake_word;
     bool wake_loaded;
     float floor;                   /* the room's noise, mean square, as the microphones hear it */
@@ -107,23 +111,52 @@ uint32_t voice_rev(void) { return __atomic_load_n(&V.rev, __ATOMIC_RELAXED); }
 static void set_state(vo_state_t s)
 {
     pthread_mutex_lock(&V.lock);
+    /* A cancelled turn still waiting on the network shows nothing of itself (voice_cancel made the face idle);
+     * a typed question queued behind it shows as thinking until its turn comes. */
+    if (V.cancel && s != VO_IDLE && s != VO_OFF) s = V.state;
+    if (V.ask && s == VO_IDLE) s = VO_THINKING;
     bool ch = V.state != s;
     V.state = s;
     pthread_mutex_unlock(&V.lock);
     if (ch) bump();
 }
 
+static void vnote(bool err, const char *fmt, va_list ap)
+{
+    pthread_mutex_lock(&V.lock);
+    vsnprintf(V.note, sizeof V.note, fmt, ap);
+    V.note_at = hal_seconds();
+    V.note_err = err;
+    pthread_mutex_unlock(&V.lock);
+    bump();
+}
+
+/* a passing word for the status line ("looking: get_alerts") */
 static void set_note(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 static void set_note(const char *fmt, ...)
 {
     va_list ap;
     va_start(ap, fmt);
-    pthread_mutex_lock(&V.lock);
-    vsnprintf(V.note, sizeof V.note, fmt, ap);
-    V.note_at = hal_seconds();
-    pthread_mutex_unlock(&V.lock);
+    vnote(false, fmt, ap);
     va_end(ap);
-    bump();
+}
+
+/* something went wrong: the face looks worried, a low chime, and the words stay a while */
+static void set_err(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+static void set_err(const char *fmt, ...)
+{
+    va_list ap;
+    va_start(ap, fmt);
+    vnote(true, fmt, ap);
+    va_end(ap);
+}
+
+/* the network as the reason a request failed, in plain words */
+static bool net_down(void)
+{
+    hal_net_t net;
+    hal_net(&net);
+    return !net.up;
 }
 
 /* the turn in flight should end: cancelled, or desk mode left */
@@ -223,10 +256,8 @@ bool voice_ready(char *why, size_t n)
         snprintf(why, n, "no OpenAI key: add one in settings, assistant");
         return false;
     }
-    hal_net_t net;
-    hal_net(&net);
-    if (!net.up) {
-        snprintf(why, n, "Wi-Fi isn't connected");
+    if (net_down()) {
+        snprintf(why, n, "Wi-Fi isn't connected: I need the internet to talk");
         return false;
     }
     if (n) why[0] = 0;
@@ -299,19 +330,24 @@ static bool post(const char *path, const char *ctype, const char *body, size_t l
 /* A failure in words for the status line. Never the body of a 401: OpenAI echoes part of the key. */
 static void describe(const resp_t *r, const char *what)
 {
-    if (r->status < 0) {
-        set_note("couldn't reach OpenAI (%s)", r->err[0] ? r->err : "no answer");
+    if (r->status < 0 || (r->status == 200 && r->err[0])) {
+        /* the reason in the log; on screen, what it means for the owner */
+        printf("voice: %s: %s (status %d)\n", what, r->err[0] ? r->err : "no answer", r->status);
+        if (net_down()) set_err("the Wi-Fi dropped: ask me again once it's back");
+        else if (r->status == 200) set_err("the connection dropped in the middle of %s: ask me again", what);
+        else set_err("couldn't reach OpenAI: the network didn't answer. Try again in a moment");
         return;
     }
     if (r->status == 401) {
-        set_note("OpenAI refused the key (401): check it in settings");
+        set_err("OpenAI refused the key (401): check it in settings, assistant");
         return;
     }
     char msg[160] = "", code[48] = "";
     if (r->body) as_oai_error(r->body, msg, sizeof msg, code, sizeof code);
-    if (r->status == 429 && !strcmp(code, "insufficient_quota")) set_note("OpenAI: this key's account is out of credit");
-    else if (r->status == 429) set_note("OpenAI is rate-limiting this key: try again in a moment");
-    else set_note("%s failed (HTTP %d)%s%.100s", what, r->status, msg[0] ? ": " : "", msg);
+    if (r->status == 429 && !strcmp(code, "insufficient_quota")) set_err("OpenAI: this key's account is out of credit");
+    else if (r->status == 429) set_err("OpenAI is rate-limiting this key: try again in a moment");
+    else if (r->status >= 500) set_err("OpenAI is having trouble (HTTP %d): try again in a moment", r->status);
+    else set_err("%s failed (HTTP %d)%s%.100s", what, r->status, msg[0] ? ": " : "", msg);
 }
 
 /* ------------------------------------------------------------------ listening */
@@ -347,7 +383,7 @@ static int record(int16_t *rec, int16_t *chunk, double wait_s, int skip_ms)
         if (stopped()) return -1;
         int r = hal_mic_read(chunk, CHUNK);
         if (r < 0) {
-            set_note("the microphones stopped");
+            set_err("the microphones stopped: tap me to try again");
             return -1;
         }
         if (r == 0) {
@@ -436,7 +472,7 @@ static char *transcribe(const int16_t *pcm, int n)
         ab_fmt(&b, "\r\n--%s--\r\n", bound);
         if (b.oom) {
             ab_free(&b);
-            set_note("out of memory for the recording");
+            set_err("out of memory for the recording");
             return NULL;
         }
         char ctype[96];
@@ -464,7 +500,7 @@ static char *transcribe(const int16_t *pcm, int n)
             resp_free(&r);
             continue;
         }
-        describe(&r, "transcription");
+        describe(&r, "hearing you");
         resp_free(&r);
         return NULL;
     }
@@ -719,7 +755,7 @@ static bool answer(const char *question, vo_reply_t *rep)
         /* the last round offers no tools: it must answer */
         chat_body(&body, model, q, turn, round < TOOL_ROUNDS ? tools : NULL, fmt);
         if (body.oom) {
-            set_note("out of memory building the request");
+            set_err("out of memory building the request");
             break;
         }
         resp_t r;
@@ -765,7 +801,7 @@ static bool answer(const char *question, vo_reply_t *rep)
             parse_reply(content, rep);
         }
         ok = rep->say[0] != 0;
-        if (!ok) set_note("the answer came back empty");
+        if (!ok) set_err("the answer came back empty: ask me again");
         if (ok) {
             hist_add(true, question);
             hist_add(false, content ? content : rep->say);
@@ -829,7 +865,7 @@ static bool speak(const vo_reply_t *rep)
         free(hdr);
         ab_free(&b);
         if (!h) {
-            describe(&r, "speech");
+            describe(&r, "speaking");
             return false;
         }
         if (r.status != 200) {
@@ -846,12 +882,16 @@ static bool speak(const vo_reply_t *rep)
             }
             r.body = e;
             r.len = n;
-            describe(&r, "speech");
+            describe(&r, "speaking");
             return false;
         }
         if (!hal_play_start(TTS_RATE)) {
             hal_play_stop();
-            hal_play_start(TTS_RATE);
+            if (!hal_play_start(TTS_RATE)) {
+                hal_http_close(h);
+                set_err("the speaker wouldn't start: the answer is on screen");
+                return false;
+            }
         }
         set_state(VO_SPEAKING);
         char *buf = malloc(4096 + 2);
@@ -873,7 +913,10 @@ static bool speak(const vo_reply_t *rep)
         hal_play_end();
         while (hal_play_busy() && !stopped()) usleep(20000);
         if (stopped()) hal_play_stop();
-        if (rd < 0) set_note("the voice broke off (network)");
+        if (rd < 0) {
+            set_err(net_down() ? "the Wi-Fi dropped while I was talking" : "my voice broke off: the network dropped");
+            return false; /* the rest of it goes on screen */
+        }
         return true;
     }
     return false;
@@ -881,35 +924,66 @@ static bool speak(const vo_reply_t *rep)
 
 /* ------------------------------------------------------------------ a turn */
 
-static void turn(const char *question, bool heard)
+/* The reply the UI reads, replaced whole under the lock, with a new sequence number. */
+static void publish(const vo_reply_t *rep)
 {
-    vo_reply_t *rep = calloc(1, sizeof *rep);
-    if (!rep) return;
-    set_state(VO_THINKING);
-    snprintf(rep->heard, sizeof rep->heard, "%s", question);
     pthread_mutex_lock(&V.lock);
-    snprintf(V.reply->heard, sizeof V.reply->heard, "%s", question);
-    V.reply->say[0] = 0;
-    V.reply->seq++;
+    uint32_t seq = V.reply->seq + 1;
+    *V.reply = *rep;
+    V.reply->seq = seq;
     pthread_mutex_unlock(&V.lock);
     bump();
+}
+
+/* One question to its answer, shown and spoken. true when it was answered. */
+static bool turn(const char *question, bool heard)
+{
+    vo_reply_t *rep = calloc(1, sizeof *rep);
+    if (!rep) return false;
+    voice_config_t c;
+    voice_config(&c);
+    set_state(VO_THINKING);
+    snprintf(rep->heard, sizeof rep->heard, "%s", question);
+    /* a typed question is answered on screen too, whatever the setting: the owner is looking */
+    rep->shown = !heard || c.out != VO_OUT_SPEAK;
+    publish(rep); /* the question, with no answer yet */
+    double t0 = hal_seconds();
     bool ok = answer(question, rep);
-    if (ok && !cancelled()) {
-        voice_config_t c;
-        voice_config(&c);
-        /* a typed question is answered on screen too, whatever the setting: the owner is looking */
-        rep->spoken = c.out != VO_OUT_SHOW;
+    if (cancelled()) {
+        /* stopped: the face went idle when it was; nothing more to show */
+    } else if (!ok) {
+        /* why, where the answer would have been (the status line alone is gone in a few seconds) */
         pthread_mutex_lock(&V.lock);
-        uint32_t seq = V.reply->seq + 1;
-        *V.reply = *rep;
-        V.reply->seq = seq;
+        bool why = V.note_err && V.note_at >= t0 && V.note[0];
+        snprintf(rep->say, sizeof rep->say, "%s", why ? V.note : "I couldn't answer that: ask me again");
+        pthread_mutex_unlock(&V.lock);
+        rep->failed = true;
+        rep->shown = true;
+        rep->spoken = false;
+        rep->emotion = VO_EMO_WORRIED;
+        rep->intensity = 0.6f;
+        rep->look = VO_LOOK_DOWN;
+        publish(rep);
+    } else {
+        /* the sound off, or the face closed (a typed question from elsewhere): the answer is read, not heard */
+        pthread_mutex_lock(&V.lock);
+        bool can_speak = V.enabled && hal_volume() > 0.02f;
+        pthread_mutex_unlock(&V.lock);
+        rep->spoken = c.out != VO_OUT_SHOW && can_speak;
+        if (!rep->spoken) rep->shown = true;
+        pthread_mutex_lock(&V.lock);
         V.note[0] = 0;
         pthread_mutex_unlock(&V.lock);
-        bump();
-        if (rep->spoken) speak(rep);
+        publish(rep);
+        if (rep->spoken && !speak(rep) && !cancelled() && !rep->shown) {
+            /* it couldn't be said: show it instead */
+            rep->spoken = false;
+            rep->shown = true;
+            publish(rep);
+        }
     }
-    (void)heard;
     free(rep);
+    return ok;
 }
 
 /* ------------------------------------------------------------------ the worker */
@@ -919,7 +993,7 @@ static void *worker(void *arg)
     (void)arg;
     int16_t *rec = malloc(REC_MAX * sizeof *rec), *chunk = malloc(CHUNK * sizeof *chunk);
     if (!rec || !chunk) {
-        set_note("no memory for listening");
+        set_err("no memory for listening");
         return NULL;
     }
     bool follow = false;           /* just answered: a follow-up needs no wake word */
@@ -936,10 +1010,15 @@ static void *worker(void *arg)
         if (text) {
             pthread_mutex_lock(&V.lock);
             V.cancel = false;
+            V.working = true;
             pthread_mutex_unlock(&V.lock);
             turn(text, false);
             free(text);
             follow = false;
+            pthread_mutex_lock(&V.lock);
+            V.working = false;
+            pthread_mutex_unlock(&V.lock);
+            set_state(VO_IDLE); /* (OFF, below, when the face is closed) */
             continue;
         }
         if (!on) {
@@ -973,7 +1052,7 @@ static void *worker(void *arg)
         }
         if ((ptt || follow) && ready) {
             if (!hal_mic_start()) {
-                set_note("the microphones didn't start");
+                set_err("the microphones didn't start");
                 follow = false;
                 continue;
             }
@@ -987,28 +1066,38 @@ static void *worker(void *arg)
                 continue;
             }
             set_state(VO_HEARING);
+            pthread_mutex_lock(&V.lock);
+            V.working = true;
+            pthread_mutex_unlock(&V.lock);
             char *heard = transcribe(rec, n);
             size_t l = heard ? strlen(heard) : 0;
             while (l && (heard[l - 1] == ' ' || heard[l - 1] == '\n')) heard[--l] = 0;
             if (!heard || !l) {
-                if (heard) set_note("didn't catch that");
+                if (heard && !cancelled()) set_note("didn't catch that");
                 free(heard);
+                pthread_mutex_lock(&V.lock);
+                V.working = false;
+                pthread_mutex_unlock(&V.lock);
                 set_state(VO_IDLE);
                 continue;
             }
-            turn(heard, true);
+            bool answered = turn(heard, true);
             free(heard);
-            follow = c.follow && !stopped();
+            pthread_mutex_lock(&V.lock);
+            V.working = false;
+            pthread_mutex_unlock(&V.lock);
+            /* a follow-up only after an answer: after a failure, the owner reads why first */
+            follow = answered && c.follow && !stopped();
             if (follow) usleep(250000); /* the room's echo of the last word dies away first */
             hal_wake_reset();
             set_state(VO_IDLE);
             continue;
         }
-        if (ptt && !ready) set_note("%s", why);
+        if (ptt && !ready) set_err("%s", why);
         if (wake) {
             if (!hal_mic_on()) {
                 if (!hal_mic_start()) {
-                    set_note("the microphones didn't start");
+                    set_err("the microphones didn't start");
                     usleep(1000000);
                     continue;
                 }
@@ -1066,7 +1155,12 @@ void voice_enable(bool on)
 {
     pthread_mutex_lock(&V.lock);
     V.enabled = on;
-    if (!on) V.cancel = true;
+    if (!on) {
+        V.cancel = true;
+        /* off at once: reopened while a stopped request still waits on the network, the face mustn't come
+         * back "thinking" about it */
+        if (!V.ask) V.state = VO_OFF;
+    }
     pthread_cond_signal(&V.wake);
     pthread_mutex_unlock(&V.lock);
     bump();
@@ -1084,8 +1178,11 @@ void voice_listen(void)
 {
     pthread_mutex_lock(&V.lock);
     V.ptt = true;
+    /* a stopped request is still waiting on the network: the recording starts once it gives up */
+    bool held = V.working && V.cancel;
     pthread_cond_signal(&V.wake);
     pthread_mutex_unlock(&V.lock);
+    if (held) set_note("one moment: the last request is still letting go of the network");
 }
 
 bool voice_ask(const char *text)
@@ -1096,9 +1193,11 @@ bool voice_ask(const char *text)
     if (!busy) {
         V.ask = as_strdup(text);
         V.cancel = true; /* a recording or a wait under way gives way to it */
+        if (V.ask) V.state = VO_THINKING; /* at once: the face shows it was heard */
         pthread_cond_signal(&V.wake);
     }
     pthread_mutex_unlock(&V.lock);
+    bump();
     return !busy;
 }
 
@@ -1107,6 +1206,8 @@ void voice_cancel(void)
     pthread_mutex_lock(&V.lock);
     V.cancel = true;
     V.ptt = false;
+    /* idle at once, whatever the worker is still blocked in (a request can take its timeout to give up) */
+    if (V.state != VO_OFF && V.state != VO_IDLE) V.state = V.enabled ? VO_IDLE : VO_OFF;
     pthread_mutex_unlock(&V.lock);
     hal_play_stop();
     bump();
@@ -1142,11 +1243,12 @@ bool voice_reply(vo_reply_t *out)
     return out->seq != 0;
 }
 
-double voice_note(char *out, size_t n)
+double voice_note(char *out, size_t n, bool *err)
 {
     pthread_mutex_lock(&V.lock);
     snprintf(out, n, "%s", V.note);
     double at = V.note_at;
+    if (err) *err = V.note_err;
     pthread_mutex_unlock(&V.lock);
     return at;
 }

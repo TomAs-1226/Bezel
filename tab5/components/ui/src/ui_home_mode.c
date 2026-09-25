@@ -255,7 +255,7 @@ static void open_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o)
 static void face_tap(lv_obj_t *o, void *u)
 {
     (void)u;
-    ui_companion_open(false, o);
+    ui_companion_talk(o); /* the card says "tap to talk": it opens listening */
 }
 
 /* the now-playing card's buttons act on whichever player it shows */
