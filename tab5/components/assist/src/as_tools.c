@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include "as_snap.h"
+#include "assist.h"
 #include "cat_logs.h"
 #include "cat_preflight.h"
 #include "hal.h"
@@ -710,6 +711,28 @@ static as_tres_t t_list_autos(as_env_t *e, ab_t *o, char *s, size_t sn)
     kstr(o, "active", r->auto_active);
     ab_puts(o, "}");
     sum(s, sn, "%d autos, selected %s", r->nautos, r->auto_selected[0] ? r->auto_selected : "none");
+    return AS_TR_OK;
+}
+
+/* get_matches, get_batteries: the UI's latest text from the desk (assist.h) */
+static as_tres_t t_desk(as_desk_t which, ab_t *o, char *s, size_t sn)
+{
+    char *t = assist_desk_get(which);
+    const char *what = which == AS_DESK_MATCHES ? "matches" : "batteries";
+    if (!t) {
+        ab_puts(o, "{");
+        kstr(o, "error", which == AS_DESK_MATCHES
+                             ? "no match data: The Blue Alliance hasn't answered yet, or no TBA key or team number is set"
+                             : "the battery manager has nothing yet (no roster on the card)");
+        ab_puts(o, "}");
+        sum(s, sn, "no %s", what);
+        return AS_TR_ERROR;
+    }
+    ab_puts(o, "{");
+    kstr(o, what, t);
+    ab_puts(o, "}");
+    sum(s, sn, "%s: %u characters", what, (unsigned)strlen(t));
+    free(t);
     return AS_TR_OK;
 }
 
@@ -1662,6 +1685,8 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     else if (!strcmp(name, "read_topics")) r = t_read_topics(e, in, o, s, sn);
     else if (!strcmp(name, "list_tunables")) r = t_list_tunables(e, o, s, sn);
     else if (!strcmp(name, "list_autos")) r = t_list_autos(e, o, s, sn);
+    else if (!strcmp(name, "get_matches")) r = t_desk(AS_DESK_MATCHES, o, s, sn);
+    else if (!strcmp(name, "get_batteries")) r = t_desk(AS_DESK_BATTERIES, o, s, sn);
     else if (!strcmp(name, "list_snapshots")) r = t_list_snapshots(e, o, s, sn);
     else if (!strcmp(name, "list_logs")) r = t_list_logs(e, o, s, sn);
     else if (!strcmp(name, "summarize_log")) r = t_summarize_log(e, in, o, s, sn);

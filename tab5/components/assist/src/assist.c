@@ -553,6 +553,11 @@ static void context_note(const cat_robot_t *r, bool full, char *out, size_t n, c
              team > 0 ? team : r->team, state, r->connected && r->catalyst_version[0] ? " · Catalyst " : "",
              r->connected ? r->catalyst_version : "", r->connected ? (r->line2 ? " (Systemcore)" : " (roboRIO)") : "",
              linkline, ls.outbox ? " Items are waiting in the tablet's outbox." : "");
+    /* the next match and the battery to use (get_matches / get_batteries say more) */
+    char *now = assist_desk_get(AS_DESK_NOW);
+    size_t l = strlen(out);
+    if (now && l > 1 && l + strlen(now) + 4 < n) snprintf(out + l - 1, n - l + 1, " %s.]", now);
+    free(now);
 }
 
 static void mark_unrun(wctx_t *c, const as_msg_t *m, const as_call_t *calls, int ncalls, const char *why)

@@ -30,7 +30,7 @@
 #define TOOL_ROUNDS 4
 #define TTS_RATE 24000             /* OpenAI's "pcm": 24 kHz, 16-bit, mono, little-endian */
 /* connect, and each read: a spoken answer from gpt-4o-mini comes in a few seconds; a request that has heard
- * nothing for this long is lost (the HAL tries a request that got no answer once more, so twice this at most) */
+ * nothing for this long is lost (the HAL retries only a request that failed quickly) */
 #define HTTP_TIMEOUT_MS 40000
 
 static const char SYSTEM_PROMPT[] =
@@ -48,8 +48,10 @@ static const char SYSTEM_PROMPT[] =
     "than guessing.\n"
     "- Be honest about what you don't know.\n"
     "\n"
-    "Tools: you can read the robot (connection, alerts, mechanisms, power, CAN, logs, preflight, Systemcore), its code "
-    "through Catalyst Link on the PC, and the Claude Code sessions running on the owner's PC. Use them when the question "
+    "Tools: you can read the robot (connection, alerts, mechanisms, power, CAN, logs, preflight, Systemcore), the team's "
+    "matches at its event (The Blue Alliance: times, alliance, partners, results, rank), the team's battery fleet and which "
+    "battery should go in next, the robot's code through Catalyst Link on the PC, and the Claude Code sessions running on "
+    "the owner's PC. Use them when the question "
     "is about those things; never guess a robot fact you could look up. You cannot change anything; for changes, send the "
     "owner to the Assist app on the tablet.\n"
     "\n"
@@ -558,7 +560,11 @@ static void context_note(char *out, size_t n)
     free(s);
     char cc[80] = "";
     if (ccw_available()) snprintf(cc, sizeof cc, " · Claude Code on the PC: %d running, %d need a look", running, att);
-    snprintf(out, n, "[tablet: %s · %s%s]", when[0] ? when : "time unknown", robot, cc);
+    /* the next match and the battery to use, as the UI last posted them (get_matches / get_batteries say more) */
+    char *now = assist_desk_get(AS_DESK_NOW);
+    snprintf(out, n, "[tablet: %s · %s%s%s%s]", when[0] ? when : "time unknown", robot, cc, now ? " · " : "",
+             now ? now : "");
+    free(now);
 }
 
 /* the read-only tools, as Chat Completions functions */
@@ -738,7 +744,7 @@ static bool answer(const char *question, vo_reply_t *rep)
     V.clear_hist = false;
     pthread_mutex_unlock(&V.lock);
     if (fresh) hist_clear();
-    char note[240];
+    char note[400];
     context_note(note, sizeof note);
     size_t ql = strlen(note) + strlen(question) + 4;
     char *q = malloc(ql);

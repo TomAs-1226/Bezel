@@ -21,6 +21,7 @@
 #include "ui_internal.h"
 #include "ui_home_mode.h"
 #include "tba.h"
+#include "assist.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -55,6 +56,7 @@ static struct {
     bool booted;
     /* settings */
     bool on, sound;
+    double next_desk;          /* the assistant's context line, posted again then */
     int queue_min, match_min;
     /* the schedule */
     int team;
@@ -610,6 +612,9 @@ static double poll_every(void)
     return MA.live && MA.ntr > 0 ? POLL_LIVE_S : POLL_IDLE_S;
 }
 
+static void desk_matches(void);
+static void desk_now(void);
+
 static void ma_tick(void *u)
 {
     (void)u;
@@ -650,6 +655,12 @@ static void ma_tick(void *u)
     if (g != MA.tba_gen) {
         MA.tba_gen = g;
         ma_update();
+        desk_matches();
+        MA.next_desk = 0;
+    }
+    if (now >= MA.next_desk) {
+        MA.next_desk = now + 30;
+        desk_now();
     }
     if (MA.on && MA.configured && now >= MA.next_poll) {
         tba_want(); /* one poll: the worker ends itself again ~15 s after */
@@ -659,6 +670,92 @@ static void ma_tick(void *u)
         MA.next_check = now + 1;
         ma_check(wall);
     }
+}
+
+/* ------------------------------------------------------------------ the assistant's desk
+ *
+ * The event as text for the assistant's get_matches tool, and one line for every question's context (the next
+ * match and the battery for it): posted when TBA's data changes, and the line every 30 s as times come closer. */
+
+static void desk_matches(void)
+{
+    tba_state_t *s = calloc(1, sizeof *s); /* ~9 KB: PSRAM */
+    size_t cap = 6000;
+    char *t = malloc(cap);
+    if (!s || !t) {
+        free(s);
+        free(t);
+        return;
+    }
+    tba_get(s);
+    if (s->phase != TBA_READY || !s->have_event) {
+        assist_desk_post(AS_DESK_MATCHES, NULL);
+        free(s);
+        free(t);
+        return;
+    }
+    size_t o = 0;
+#define PUT(...) \
+    do { \
+        if (o < cap) o += (size_t)snprintf(t + o, cap - o, __VA_ARGS__); \
+    } while (0)
+    PUT("team %d at %s (%s)%s%s, %s to %s%s\n", s->team, s->event_name, s->event_key, s->event_where[0] ? ", " : "",
+        s->event_where, s->start, s->end, s->live ? ", running today" : "");
+    if (s->as_of) {
+        char at[16];
+        hhmm(s->as_of, at, sizeof at);
+        PUT("data as of %s%s%s\n", at, s->offline ? ", offline: " : "", s->offline ? s->err : "");
+    }
+    if (s->have_status) {
+        PUT("rank %d of %d, record %d-%d-%d", s->rank, s->num_teams, s->wins, s->losses, s->ties);
+        if (s->alliance[0]) PUT(", %s", s->alliance);
+        if (s->playoff[0]) PUT(", %s", s->playoff);
+        PUT("\n");
+    }
+    PUT("our matches (times are local; \"about\" = TBA's prediction):\n");
+    for (int i = 0; i < s->nmatches; i++) {
+        const tba_match_t *m = &s->matches[i];
+        char at[16] = "time unknown", with[64], vs[64];
+        time_t w = when_of(m);
+        if (w) hhmm(w, at, sizeof at);
+        partners(m, s->team, with, sizeof with, vs, sizeof vs);
+        PUT("%s %s%s: %s, %s", m->label, m->predicted ? "about " : "", at, with, vs);
+        if (m->played) {
+            int us = m->ours == 2 ? m->blue_score : m->red_score, them = m->ours == 2 ? m->red_score : m->blue_score;
+            PUT(" - %s %d to %d", m->result > 0 ? "won" : m->result < 0 ? "lost" : "tied", us, them);
+        } else {
+            PUT(" - not played yet");
+        }
+        PUT("\n");
+    }
+    PUT("reminders: %s", MA.on ? "on" : "off");
+    if (MA.on) PUT(", queue %d min before, match %d min before, sound %s", MA.queue_min, MA.match_min, MA.sound ? "on" : "off");
+    PUT("\n");
+#undef PUT
+    if (o >= cap) t[cap - 1] = 0;
+    assist_desk_post(AS_DESK_MATCHES, t);
+    free(s);
+    free(t);
+}
+
+static void desk_now(void)
+{
+    char line[200] = "", next[120], batt[96];
+    if (ui_match_next_line(next, sizeof next)) {
+        /* "next: Q34 · 14:52 · red with 1234, 5678" as a sentence the model reads */
+        snprintf(line, sizeof line, "our %s", next);
+        const tracked_t *best = NULL;
+        time_t now = time(NULL);
+        for (int i = 0; i < MA.ntr; i++)
+            if (MA.tr[i].when && MA.tr[i].when + STALE_S > now && (!best || MA.tr[i].when < best->when)) best = &MA.tr[i];
+        if (best && ui_batt_alarm_line(best->m.label, batt, sizeof batt)) {
+            size_t l = strlen(line);
+            snprintf(line + l, sizeof line - l, " \xc2\xb7 %s", batt);
+        }
+    } else if (ui_batt_alarm_line("", batt, sizeof batt)) {
+        snprintf(line, sizeof line, "%s", batt);
+    }
+    assist_desk_post(AS_DESK_NOW, line);
 }
 
 void ui_match_boot(void)

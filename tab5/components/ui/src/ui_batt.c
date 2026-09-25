@@ -548,6 +548,21 @@ static void ask_gpt(void)
 
 /* ------------------------------------------------------------------ the hook */
 
+/* the fleet as text for the assistant's get_batteries tool: when it changes, and each minute as charges rest */
+static void desk_post(double now)
+{
+    static unsigned gen = ~0u;
+    static double next;
+    if (BM.gen == gen && now < next) return;
+    gen = BM.gen;
+    next = now + 60;
+    char *sum = malloc(7000);
+    if (!sum) return;
+    cat_batt_summary(BM.f, time(NULL), sum, 7000);
+    assist_desk_post(AS_DESK_BATTERIES, sum);
+    free(sum);
+}
+
 static void bm_tick(void *u)
 {
     (void)u;
@@ -557,6 +572,7 @@ static void bm_tick(void *u)
     live_tick(now);
     an_tick();
     save_tick(now);
+    desk_post(now);
 }
 
 void ui_batt_boot(void)

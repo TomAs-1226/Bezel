@@ -53,6 +53,17 @@ const as_tooldef_t AS_TOOLS[] = {
       "and current value. Only these can be changed.",
       NOARGS, AS_T_READ },
     { "list_autos", "The auto chooser's options, the selected one and the active one.", NOARGS, AS_T_READ },
+    /* ---- the team, read (the tablet's own data, no robot needed) ---- */
+    { "get_matches",
+      "The team's event from The Blue Alliance: rank and record, every match of ours with its time, alliance, "
+      "partners, opponents and result, and when the queue and match reminders ring. Use it for \"when do we "
+      "play\", \"who are we with\", \"how are we doing\".",
+      NOARGS, AS_T_READ },
+    { "get_batteries",
+      "The team's battery fleet from the tablet's battery manager: each battery's status (good, watch, bad, "
+      "retired), internal resistance and its trend, charge, recent uses with the lowest voltage and brownouts "
+      "per match, and the ranking of which to put in next with why.",
+      NOARGS, AS_T_READ },
     { "list_snapshots",
       "Snapshots of every tunable taken before each change the tablet made, newest first, with what "
       "differs from the robot now.",

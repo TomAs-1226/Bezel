@@ -138,6 +138,14 @@ int assist_suggestions(const char **out, int max);
 void assist_import_card(void);
 const char *assist_import_note(void);
 
+/* The desk (as_desk.c): what the assistant reads that lives in the UI, posted as plain text whenever it changes
+ * (NULL or "" clears it). The tools get_matches and get_batteries return MATCHES and BATTERIES; NOW is one line
+ * for every question's context ("next match Q34 at 14:05 on red · battery #7 goes in next"). Any thread;
+ * assist_desk_get's copy is the caller's to free. */
+typedef enum { AS_DESK_MATCHES, AS_DESK_BATTERIES, AS_DESK_NOW, AS_DESK_N } as_desk_t;
+void assist_desk_post(as_desk_t which, const char *text);
+char *assist_desk_get(as_desk_t which);
+
 /* Runs fn(arg) once on the assistant's worker, between conversation turns (a turn in flight finishes first):
  * for one-shot jobs like a log analysis (analyze.h), which then need no thread of their own. false while
  * another job is queued or running. Any thread. */

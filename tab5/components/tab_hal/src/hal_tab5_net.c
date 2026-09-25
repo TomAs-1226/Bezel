@@ -110,7 +110,8 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
-/* restarts the C6 watchdog made, and when the first of the last three was: kept across the restart */
+/* the last three restarts the C6 watchdog made, as wall-clock times (the RTC chip keeps the time across them),
+ * the newest last; [3] marks the record valid. Kept across the restart. */
 static RTC_NOINIT_ATTR uint32_t s_c6_restarts[4];
 
 /* Where the interface was when the watchdog restarted it, so it comes back there (kept across the restart) */
@@ -160,6 +161,33 @@ bool hal_resume_take(int *page, char *app, size_t n)
     return true;
 }
 
+/* Restarts the tablet to reset a C6 that stopped passing anything, unless one was made too recently: three
+ * within 30 min space the next ones 10 min apart, and with the clock unknown a start must have lasted 2 min. It
+ * never gives up: Wi-Fi dead for good until someone reboots was the worst of it (the old limit went quiet
+ * after three, and summed uptimes, so reflashing never cleared it). false: not yet (it says so once). */
+static bool c6_restart(const char *why)
+{
+    static bool told;
+    uint32_t wall = (uint32_t)time(NULL);
+    uint32_t up = (uint32_t)(esp_timer_get_time() / 1000000);
+    bool clock_ok = wall > 1700000000u;
+    bool burst = clock_ok && s_c6_restarts[0] && wall - s_c6_restarts[0] < 30 * 60;
+    bool wait = clock_ok ? burst && s_c6_restarts[2] && wall - s_c6_restarts[2] < 10 * 60 : up < 120;
+    if (wait) {
+        if (!told) ESP_LOGE(TAG, "wi-fi: %s: restarted too recently, trying again in a few minutes", why);
+        told = true;
+        return false;
+    }
+    s_c6_restarts[0] = s_c6_restarts[1];
+    s_c6_restarts[1] = s_c6_restarts[2];
+    s_c6_restarts[2] = clock_ok ? wall : 0;
+    ESP_LOGE(TAG, "wi-fi: %s: restarting to reset the C6", why);
+    if (s_restart_hook) s_restart_hook(); /* the interface notes where it is (hal_resume_note) */
+    vTaskDelay(pdMS_TO_TICKS(200));
+    hal_restart_planned(why);
+    return true;
+}
+
 static void rssi_task(void *arg)
 {
     (void)arg;
@@ -167,7 +195,7 @@ static void rssi_task(void *arg)
      * altogether (under traffic; esp-hosted 1.4.7 on both ends, SDIO at 20 MHz, the host polling its
      * interrupt register: seen all the same), and nothing short of resetting it brings Wi-Fi back: two
      * unanswered asks in a row while "connected" restart the tablet, whose start-up resets the C6 through
-     * its reset line. At most 3 in 30 min: past that it only says so. */
+     * its reset line (c6_restart: spaced out when they come often, never given up). */
     if (s_c6_restarts[3] != 0xC6C6C6C6u) memset(s_c6_restarts, 0, sizeof s_c6_restarts);
     s_c6_restarts[3] = 0xC6C6C6C6u;
     int misses = 0;
@@ -184,23 +212,7 @@ static void rssi_task(void *arg)
             continue;
         }
         if (++misses < 2) continue;
-        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000000);
-        /* the uptime counter starts over at each restart: the three stamps are this boot's ages at the
-         * moment of each restart, summed across boots, kept in s_c6_restarts[0..2] as a sliding window */
-        uint32_t total = s_c6_restarts[0] + s_c6_restarts[1] + s_c6_restarts[2] + now;
-        bool too_many = s_c6_restarts[0] && s_c6_restarts[1] && s_c6_restarts[2] && total < 30 * 60;
-        if (too_many) {
-            ESP_LOGE(TAG, "wi-fi: the C6 stopped answering again (3 restarts in 30 min): not restarting");
-            misses = -1000; /* quiet from here */
-            continue;
-        }
-        s_c6_restarts[0] = s_c6_restarts[1];
-        s_c6_restarts[1] = s_c6_restarts[2];
-        s_c6_restarts[2] = now ? now : 1;
-        ESP_LOGE(TAG, "wi-fi: the C6 stopped answering: restarting to reset it");
-        if (s_restart_hook) s_restart_hook(); /* the interface notes where it is (hal_resume_note) */
-        vTaskDelay(pdMS_TO_TICKS(200));
-        hal_restart_planned("the C6 stopped answering");
+        c6_restart("the C6 stopped answering"); /* returns only when it has to wait: asked again in 3 s */
     }
 }
 
@@ -949,7 +961,11 @@ static void wifi_heal(void)
     static int64_t last;
     if (!N.up || ++s_http_fails < 3) return;
     int64_t now = esp_timer_get_time();
-    if (last && now - last < 60 * 1000000LL) return;
+    if (last && now - last < 120 * 1000000LL) {
+        /* joined again under two minutes ago and still nothing: the C6 needs its reset */
+        if (s_http_fails >= 4) c6_restart("nothing gets through, even after joining again");
+        return;
+    }
     last = now;
     s_http_fails = 0;
     ESP_LOGW(TAG, "wi-fi: connected but nothing gets through: joining again");
