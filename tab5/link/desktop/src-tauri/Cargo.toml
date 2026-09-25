@@ -1,0 +1,43 @@
+[package]
+name = "catalyst-link-desktop"
+version = "1.0.0"
+description = "Catalyst Link — the desktop app for the Catalyst Tab's PC companion"
+edition = "2021"
+rust-version = "1.77"
+
+[[bin]]
+name = "catalyst-link-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# tray-icon: the Link lives in the notification area; closing the window only hides it.
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+# One app per PC: a second launch raises the first. Two would mean two Links fighting for one port.
+tauri-plugin-single-instance = "2"
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# The log panel's safety net: tokens and pairing codes are masked even if something prints one.
+regex = "1"
+
+[target.'cfg(windows)'.dependencies]
+# "Start with Windows" is a value under HKCU\...\Run, the per-user place Windows itself reads.
+winreg = "0.55"
+# A job object, so the Link's Python dies with the app even if the app is killed.
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_Security"] }
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

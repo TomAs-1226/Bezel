@@ -240,6 +240,11 @@ class WindowsPlatform:
         from comtypes import CLSCTX_ALL  # type: ignore
         from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume  # type: ignore
         dev = AudioUtilities.GetSpeakers()
+        # pycaw 2025+ wraps the device (AudioDevice) and hands out the endpoint itself; older ones
+        # return the raw IMMDevice, which has to be activated
+        endpoint = getattr(dev, "EndpointVolume", None)
+        if endpoint is not None:
+            return endpoint
         iface = dev.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
         return cast(iface, POINTER(IAudioEndpointVolume))
 

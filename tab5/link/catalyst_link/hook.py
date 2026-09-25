@@ -9,7 +9,7 @@ Standard library only, and no imports from the package, so it runs as a module
 (`python -m catalyst_link.hook`) or straight from its file (`python path/to/catalyst_link/hook.py`).
 
 Environment:
-  CATALYST_LINK_URL           the Link (default http://127.0.0.1:8765)
+  CATALYST_LINK_URL           the Link (default http://127.0.0.1:8765; `--url URL` on the command line wins)
   CATALYST_LINK_HOME          the Link's state directory, for its token (default ~/.catalyst-link)
   CATALYST_LINK_HOOK_PROMPTS  0: don't send the prompt's first line (the tablet then shows "turn N")
 """
@@ -115,12 +115,22 @@ def send(payload: dict[str, Any], url: str | None = None, token: str | None = No
         return False
 
 
+def _arg_url(argv: list[str]) -> str | None:
+    """`--url URL` on the hook's command line: a Link on another port (the desktop app writes it)."""
+    for i, a in enumerate(argv):
+        if a == "--url" and i + 1 < len(argv):
+            return argv[i + 1]
+        if a.startswith("--url="):
+            return a[len("--url="):]
+    return None
+
+
 def main() -> int:
     try:
         raw = sys.stdin.buffer.read()
         event = json.loads(raw.decode("utf-8", "replace")) if raw else {}
         if isinstance(event, dict) and event.get("session_id"):
-            send(trim(event, os.environ.get("CATALYST_LINK_HOOK_PROMPTS", "1") != "0"))
+            send(trim(event, os.environ.get("CATALYST_LINK_HOOK_PROMPTS", "1") != "0"), url=_arg_url(sys.argv[1:]))
     except Exception:
         pass  # never in Claude's way
     return 0

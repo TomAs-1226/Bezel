@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Catalyst Link</title>
+  <!-- The house stylesheet first, then this app's own. `identity.css` and `motion.js` are verbatim
+       copies of FrcCatalyst's docs/assets originals, checked by scripts/check-identity.mjs; they are
+       never edited here. -->
+  <link rel="stylesheet" href="styles/identity.css" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body class="cat-app">
+  <div class="shell">
+    <nav class="rail" aria-label="Catalyst Link">
+      <div class="brand">
+        <svg class="brand__mark" viewBox="0 0 32 32" aria-hidden="true">
+          <rect x="4.5" y="11" width="15" height="10" rx="5" transform="rotate(-45 12 16)" fill="none" stroke="currentColor" stroke-width="2.6"/>
+          <rect x="12.5" y="11" width="15" height="10" rx="5" transform="rotate(-45 20 16)" fill="none" stroke="var(--cat-signal)" stroke-width="2.6"/>
+        </svg>
+        <div class="cat-wordmark brand__word"><span class="cat-wordmark__prefix">catalyst</span> <span class="cat-wordmark__name">link</span></div>
+      </div>
+
+      <div class="nav" role="tablist" aria-orientation="vertical">
+        <button class="nav__item" role="tab" data-panel="status" aria-selected="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5v5l3 2"/></svg>
+          <span>status</span>
+        </button>
+        <button class="nav__item" role="tab" data-panel="pairing">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="3" width="12" height="18" rx="2.5"/><path d="M10.5 17.5h3"/></svg>
+          <span>pairing</span><i class="nav__badge" id="badgePairing" hidden></i>
+        </button>
+        <button class="nav__item" role="tab" data-panel="media">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg>
+          <span>now playing</span>
+        </button>
+        <button class="nav__item" role="tab" data-panel="claude">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7l5 5-5 5"/><path d="M12 17h7"/></svg>
+          <span>claude code</span><i class="nav__count" id="countClaude" hidden></i>
+        </button>
+        <button class="nav__item" role="tab" data-panel="inbox">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13l2.5-7.5h11L20 13v5.5H4z"/><path d="M4 13h4.5l1 2h5l1-2H20"/></svg>
+          <span>inbox</span><i class="nav__count" id="countInbox" hidden></i>
+        </button>
+        <button class="nav__item" role="tab" data-panel="log">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 10h14M5 14h9M5 18h6"/></svg>
+          <span>log</span>
+        </button>
+        <button class="nav__item" role="tab" data-panel="settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/></svg>
+          <span>settings</span>
+        </button>
+      </div>
+
+      <div class="rail__foot">
+        <div class="linkcap" id="linkCap" title="the link">
+          <i class="cat-dot" id="linkDot"></i>
+          <div class="linkcap__text"><b id="linkWord">—</b><span id="linkDetail"></span></div>
+        </div>
+        <div class="rail__version" id="appVersion"></div>
+      </div>
+    </nav>
+
+    <main class="stage" id="stage">
+
+      <!-- status ---------------------------------------------------------------------------------->
+      <section class="panel" id="panel-status" data-panel="status" aria-label="status">
+        <header class="panel__head">
+          <div>
+            <div class="cat-eyebrow">STATUS</div>
+            <h1>the link on this pc</h1>
+          </div>
+          <div class="panel__actions">
+            <button class="cat-btn" id="btnRestart">restart</button>
+            <button class="cat-btn cat-btn--ghost" id="btnStartStop">stop</button>
+          </div>
+        </header>
+
+        <div class="hero cat-card" id="hero">
+          <div class="hero__state">
+            <i class="cat-dot" id="heroDot"></i>
+            <span class="hero__word" id="heroWord">—</span>
+          </div>
+          <div class="hero__detail" id="heroDetail"></div>
+          <div class="hero__addr" id="heroAddr"></div>
+          <div class="hero__setup" id="heroSetup" hidden>
+            <p>the link serves one robot project: choose its git repo to start.</p>
+            <button class="cat-btn cat-btn--primary" id="btnChooseRepo">choose the robot project…</button>
+          </div>
+        </div>
+
+        <div class="grid">
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">server</span><span class="cat-eyebrow" id="stVersion"></span></div>
+            <div id="stServer"></div>
+          </div>
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">what the tablet gets</span></div>
+            <div id="stFeatures"></div>
+          </div>
+          <div class="cat-card grid__wide">
+            <div class="cat-card__head">
+              <span class="cat-card__title">paired tablets</span>
+              <button class="cat-btn cat-btn--ghost small" data-goto="pairing">manage</button>
+            </div>
+            <div id="stDevices" class="rows"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- pairing --------------------------------------------------------------------------------->
+      <section class="panel" id="panel-pairing" data-panel="pairing" aria-label="pairing" hidden>
+        <header class="panel__head">
+          <div>
+            <div class="cat-eyebrow">PAIRING</div>
+            <h1>pair a tablet</h1>
+          </div>
+        </header>
+
+        <div class="pair cat-card" id="pairCard" data-mode="idle">
+          <div class="pair__idle">
+            <button class="cat-btn cat-btn--loud pair__go" id="btnPair">pair a tablet</button>
+            <p class="quiet">the tablet asks, this pc shows a six-digit code, you type it on the tablet. each tablet gets a key of its own, so you can forget one without the others.</p>
+          </div>
+          <div class="pair__wait">
+            <div class="pulse" aria-hidden="true"><i></i><i></i></div>
+            <ol class="steps">
+              <li><span>on the tablet, open <b>settings › home › pair the pc</b> (or the <b>pair pc</b> app)</span></li>
+              <li><span>tap <b id="pairName">this pc</b> in the list</span></li>
+              <li><span>the code shows up here: type it on the tablet</span></li>
+            </ol>
+            <button class="cat-btn cat-btn--ghost" id="btnPairStop">done</button>
+          </div>
+          <div class="pair__code">
+            <div class="cat-eyebrow">ENTER ON <span id="pairDevice">THE TABLET</span></div>
+            <div class="code" id="pairCode" aria-live="assertive"></div>
+            <div class="countdown"><i id="pairBar"></i></div>
+            <div class="pair__meta"><span id="pairLeft"></span><span id="pairTries"></span><span id="pairIp"></span></div>
+            <button class="cat-btn cat-btn--ghost" id="btnPairCancel">cancel this pairing</button>
+          </div>
+          <div class="pair__done">
+            <svg class="tick" viewBox="0 0 48 48" aria-hidden="true"><circle cx="24" cy="24" r="21"/><path d="M14 24.5l7 7 13-14"/></svg>
+            <div class="pair__doneText">paired <b id="pairedName"></b></div>
+            <button class="cat-btn" id="btnPairAgain">pair another</button>
+          </div>
+          <div class="pair__off">
+            <p>pairing by code is off on this link, so a tablet needs the token typed in by hand.</p>
+            <button class="cat-btn cat-btn--primary" data-goto="settings">turn it on in settings</button>
+          </div>
+        </div>
+
+        <div class="cat-card">
+          <div class="cat-card__head"><span class="cat-card__title">paired tablets</span><span class="cat-eyebrow" id="devCount"></span></div>
+          <div id="devList" class="rows"></div>
+          <div id="handList" class="rows"></div>
+          <p class="footnote">a tablet given the link's main token by hand isn't listed as paired; <span class="mono">catalyst-link token --rotate</span> locks those out (and every paired tablet pairs again).</p>
+        </div>
+      </section>
+
+      <!-- now playing ------------------------------------------------------------------------------>
+      <section class="panel" id="panel-media" data-panel="media" aria-label="now playing" hidden>
+        <header class="panel__head">
+          <div>
+            <div class="cat-eyebrow">NOW PLAYING</div>
+            <h1>what the tablet sees and controls</h1>
+          </div>
+        </header>
+        <div class="cat-card media" id="mediaCard" data-state="none">
+          <div class="media__art" id="mediaArt"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 18V6l10-2v12"/><circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/></svg></div>
+          <div class="media__body">
+            <div class="media__app cat-eyebrow" id="mediaApp"></div>
+            <div class="media__title" id="mediaTitle">nothing playing</div>
+            <div class="media__artist" id="mediaArtist"></div>
+            <div class="media__progress">
+              <span id="mediaPos">–:––</span>
+              <div class="track"><i id="mediaBar"></i></div>
+              <span id="mediaDur">–:––</span>
+            </div>
+            <div class="transport">
+              <button class="round" data-media="previous" aria-label="previous"><svg viewBox="0 0 24 24"><path d="M7 6v12M18 6l-8 6 8 6z"/></svg></button>
+              <button class="round round--big" data-media="toggle" aria-label="play or pause" id="btnToggle">
+                <svg class="i-play" viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg>
+                <svg class="i-pause" viewBox="0 0 24 24"><path d="M8 5.5v13M16 5.5v13"/></svg>
+              </button>
+              <button class="round" data-media="next" aria-label="next"><svg viewBox="0 0 24 24"><path d="M17 6v12M6 6l8 6-8 6z"/></svg></button>
+            </div>
+            <div class="volume">
+              <button class="round round--small" data-media="mute" aria-label="mute"><svg viewBox="0 0 24 24"><path d="M4 10v4h3.5L12 18V6L7.5 10z"/><path d="M16 9.5a3.5 3.5 0 0 1 0 5"/></svg></button>
+              <button class="round round--small" data-media="volume_down" aria-label="volume down"><svg viewBox="0 0 24 24"><path d="M7 12h10"/></svg></button>
+              <input type="range" id="mediaVolume" min="0" max="100" step="1" aria-label="volume" />
+              <button class="round round--small" data-media="volume_up" aria-label="volume up"><svg viewBox="0 0 24 24"><path d="M7 12h10M12 7v10"/></svg></button>
+              <span class="mono dim" id="mediaVolText"></span>
+            </div>
+          </div>
+        </div>
+        <div class="notice" id="mediaNotice" hidden></div>
+      </section>
+
+      <!-- claude code ------------------------------------------------------------------------------>
+      <section class="panel" id="panel-claude" data-panel="claude" aria-label="claude code" hidden>
+        <header class="panel__head">
+          <div>
+            <div class="cat-eyebrow">CLAUDE CODE</div>
+            <h1>sessions on this pc</h1>
+          </div>
+        </header>
+        <div class="cat-card hooks" id="hooksCard">
+          <div class="hooks__text">
+            <div class="cat-card__title" id="hooksTitle">claude code's hooks</div>
+            <div class="quiet" id="hooksDetail"></div>
+          </div>
+          <button class="cat-btn" id="btnHooks" disabled>—</button>
+        </div>
+        <div class="cat-card">
+          <div class="cat-card__head"><span class="cat-card__title">sessions</span><span class="cat-eyebrow" id="ccTurns"></span></div>
+          <div id="ccList" class="rows"></div>
+        </div>
+      </section>
+
+      <!-- inbox ------------------------------------------------------------------------------------>
+      <section class="panel" id="panel-inbox" data-panel="inbox" aria-label="inbox" hidden>
+        <header class="panel__head">
+          <div>
+            <div class="cat-eyebrow">INBOX</div>
+            <h1>work orders from the tablet</h1>
+          </div>
+          <div class="cat-tabs" role="tablist" id="inboxTabs">
+            <button class="cat-tab" role="tab" data-filter="open,claimed" aria-selected="true">to do</button>
+            <button class="cat-tab" role="tab" data-filter="done">done</button>
+            <button class="cat-tab" role="tab" data-filter="rejected">rejected</button>
+            <button class="cat-tab" role="tab" data-filter="all">all</button>
+          </div>
+        </header>
+        <div class="split">
+          <div class="cat-card split__list"><div id="inboxList" class="rows"></div></div>
+          <div class="cat-card split__detail" id="inboxDetail">
+            <p class="quiet empty">pick a work order to read it.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- log -------------------------------------------------------------------------------------->
+      <section class="panel" id="panel-log" data-panel="log" aria-label="log" hidden>
+        <header class="panel__head">
+          <div>
+            <div class="cat-eyebrow">LOG</div>
+            <h1>what the link printed</h1>
+          </div>
+          <div class="panel__actions">
+            <input type="search" id="logFilter" placeholder="filter" aria-label="filter the log" />
+            <label class="check"><input type="checkbox" id="logFollow" checked /> follow</label>
+            <button class="cat-btn" id="btnLogCopy">copy</button>
+          </div>
+        </header>
+        <div class="cat-card log" id="logBox" tabindex="0" aria-label="log lines"></div>
+        <p class="footnote">tokens and pairing codes are never printed here: the link runs with <span class="mono">--gui</span>, and every line is masked again before it is shown.</p>
+      </section>
+
+      <!-- settings --------------------------------------------------------------------------------->
+      <section class="panel" id="panel-settings" data-panel="settings" aria-label="settings" hidden>
+        <header class="panel__head">
+          <div>
+            <div class="cat-eyebrow">SETTINGS</div>
+            <h1>how the link runs</h1>
+          </div>
+          <div class="panel__actions">
+            <span class="quiet" id="setStatus"></span>
+            <button class="cat-btn cat-btn--primary" id="btnSave">save</button>
+          </div>
+        </header>
+        <form class="settings" id="settingsForm" autocomplete="off">
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">the link</span></div>
+            <label class="field">
+              <span class="field__label">robot project</span>
+              <span class="field__row"><input type="text" name="repo" placeholder="the robot code's git repo" spellcheck="false" /><button type="button" class="cat-btn" id="btnPickRepo">choose…</button></span>
+              <span class="field__hint">read-only to the tablet; patches become branches in their own worktrees</span>
+            </label>
+            <div class="field2">
+              <label class="field"><span class="field__label">port</span><input type="number" name="port" min="1024" max="65535" /></label>
+              <label class="field"><span class="field__label">name the tablet shows</span><input type="text" name="name" placeholder="this pc's hostname" spellcheck="false" /></label>
+            </div>
+          </div>
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">what it offers</span></div>
+            <label class="toggle"><input type="checkbox" name="pairing" /><span><b>pairing by code</b><small>off: the tablet needs the token typed in</small></span></label>
+            <label class="toggle"><input type="checkbox" name="toast" /><span><b>pairing notifications</b><small>also show a code as a windows notification</small></span></label>
+            <label class="toggle"><input type="checkbox" name="media" /><span><b>media remote</b><small>what this pc plays, for the tablet's home mode</small></span></label>
+            <label class="toggle"><input type="checkbox" name="mdns" /><span><b>be findable</b><small>advertise over mdns so the tablet lists this pc</small></span></label>
+          </div>
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">this app</span></div>
+            <label class="toggle"><input type="checkbox" name="start_with_windows" /><span><b>start with windows</b><small>per user, in windows' own startup list</small></span></label>
+            <label class="toggle"><input type="checkbox" name="start_minimized" /><span><b>start minimized</b><small>to the tray; the link still starts</small></span></label>
+          </div>
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">python</span></div>
+            <div class="field2">
+              <label class="field"><span class="field__label">python</span><input type="text" name="python" spellcheck="false" /></label>
+              <label class="field"><span class="field__label">link folder</span><input type="text" name="link_dir" placeholder="found automatically" spellcheck="false" /></label>
+            </div>
+            <div class="field__hint" id="setLinkDir"></div>
+            <div class="field__hint" id="setPaths"></div>
+          </div>
+        </form>
+      </section>
+    </main>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+  <script type="module" src="app.js"></script>
+</body>
+</html>

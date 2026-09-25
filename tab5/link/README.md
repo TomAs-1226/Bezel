@@ -16,6 +16,10 @@ project's git repo, and gives the tablet in the pit five things:
 The wire contract is [docs/link-api.md](../docs/link-api.md); the tablet's side is
 `components/assist/include/link.h`.
 
+It runs headless from a terminal (`catalyst-link serve`), or inside **the desktop app**
+([below](#the-desktop-app)): a window and tray icon that runs the same Link and shows its status, pairing,
+now playing, Claude Code's sessions, the inbox and the log.
+
 ## The safety model
 
 What the Link guarantees, whatever the tablet sends:
@@ -76,8 +80,9 @@ With no `ANTHROPIC_API_KEY` set, Claude goes through Claude Code and your Claude
 It prints its address and its token. **Pair the tablet** (settings → home → pair the pc, or the "pair
 pc" app): the tablet lists the Links it finds on the network (mDNS: `pip install zeroconf`), you tap
 this PC, and the Link prints a six-digit code here (and shows it as a Windows notification); type it
-on the tablet and they're paired. Typing the token by hand in the link app still works
-(`serve --no-pair` turns pairing off; `--no-pair-toast` keeps the code in this console).
+on the tablet and they're paired. Each paired tablet gets a token of its own, so one can be forgotten
+(in the desktop app) without re-pairing the others. Typing the main token by hand in the link app still
+works (`serve --no-pair` turns pairing off; `--no-pair-toast` keeps the code in this console).
 
 | flag | |
 |---|---|
@@ -94,8 +99,10 @@ on the tablet and they're paired. Typing the token by hand in the link app still
 | `--no-pair` | no pairing by code: the tablet needs the token typed in by hand |
 | `--no-pair-toast` | show the pairing code only in this console, not as a Windows notification |
 | `--no-mdns`, `--quiet` | |
+| `--gui` | how the desktop app runs it: neither the token nor a pairing code is ever printed (the app shows the code) |
 
-State lives in `~/.catalyst-link/` (override with `CATALYST_LINK_HOME`): `token`, `inbox/`,
+State lives in `~/.catalyst-link/` (override with `CATALYST_LINK_HOME`): `token`, `devices.json` (the
+paired tablets: name, address, last seen and a SHA-256 of each one's token, never the token), `inbox/`,
 `patches/` (`<id>.json`, `.diff`, `.check.log`), `files/`, `worktrees/`, `log.jsonl`, `hooks.log`,
 and for `claude-code`: `claude-oauth-token` (only if you store one) and the empty working folder
 `claude-code/`.
@@ -150,8 +157,16 @@ The companion's desk mode can show the tablet what Claude Code is doing on this 
 running, what it's doing, and roughly when it'll finish — by way of Claude Code's own hooks. The wire
 contract is in [docs/link-api.md](../docs/link-api.md#claude-code-sessions--what-claude-code-on-the-pc-is-doing).
 
-1. Run the Link as usual. The hook posts to it on `127.0.0.1:8765` with the token from
-   `~/.catalyst-link/token`, so it must run as the same user account as Claude Code.
+The quick way: the desktop app's **claude code** panel has an **install the hooks** button, and
+`catalyst-link hook-install [--port N]` does the same from a terminal (`--remove` takes them out). Both
+add only the Link's entries to `~/.claude/settings.json` (or `$CLAUDE_CONFIG_DIR/settings.json`), keep
+every other hook and setting, save the old file as `settings.json.catalyst-link.bak`, and refuse to
+touch a file that isn't valid JSON. The hook command points at this checkout's `hook.py`: install
+again after moving the Link (the app shows the hooks as "pointing somewhere else"). By hand:
+
+1. Run the Link as usual. The hook posts to it on `127.0.0.1:8765` (a Link on another port is named in
+   the command as `--url http://127.0.0.1:PORT`) with the token from `~/.catalyst-link/token`, so it
+   must run as the same user account as Claude Code.
 2. `catalyst-link hook-settings` prints the `hooks` block for Claude Code's `settings.json`, wired to
    this PC's Python running `hook.py` by its path (works whether or not the package is pip-installed):
 
@@ -206,6 +221,7 @@ catalyst-link claude-check [--live]      # is the claude-code backend ready? (--
 catalyst-link claude-token [--remove]    # store (from stdin) or delete a `claude setup-token` token
 catalyst-link hook                       # Claude Code hook: reads stdin, posts to the Link, prints nothing
 catalyst-link hook-settings [--command …] # print the "hooks" block for Claude Code's settings.json
+catalyst-link hook-install [--port N] [--remove]  # add (or take out) only the Link's hooks in ~/.claude/settings.json
 catalyst-link claude-sessions [--json]   # what the running Link knows about Claude Code's sessions
 ```
 
@@ -213,7 +229,69 @@ Ids accept a unique prefix. A patch shows as **merged** once its branch is an an
 **dropped** once the branch is deleted; clean up with
 `git worktree remove ~/.catalyst-link/worktrees/<id> && git branch -D tab/<…>`.
 
+## The desktop app
+
+`desktop/` is Catalyst Link as a Windows app: a window and a tray icon around the same Link. It is built
+like Catalyst Console — Tauri 2, plain HTML/CSS/JS, no bundler — in the Catalyst identity
+(`identity.css` and `motion.js`, copied from FrcCatalyst's `docs/assets` and checked for drift), with
+Bezel's calm monochrome, lowercase copy and spring motion.
+
+**How it works.** The app starts the Link as a child process (`python -m catalyst_link serve --gui …`),
+restarts it if it falls over after running a while, and stops it when you quit; a Windows job object
+makes sure a crashed or killed app never leaves a Link holding the port. If a Link is already answering
+on the port (started from a terminal or at login), the app attaches to it instead of starting a second.
+Every panel works through the Link's HTTP API on `127.0.0.1`: the app's Rust side reads the main token
+from `~/.catalyst-link/token` and makes the requests, so the token never reaches the window. The new
+`/admin/*` routes it uses answer only this PC, only the main token, and never a web page
+([docs/link-api.md](../docs/link-api.md#the-desktop-apps-routes-admin)). Closing the window hides it
+to the tray; the tablet keeps its Link until **quit** in the tray menu.
+
+| panel | |
+|---|---|
+| **status** | running / starting / stopped / attached, the address the tablet uses, version, port, pid, robot project and branch, pairing, mDNS, media, Claude and inbox at a glance; restart, stop, start |
+| **pairing** | **pair a tablet** walks you through it; when a tablet asks, the window comes forward (from the tray too) with the six-digit code large, a two-minute countdown and tries left; cancel it, or see "paired". Below: the paired tablets (name, address, last seen) with **forget**, and machines using the main token by hand |
+| **now playing** | what `media.py` sees (title, artist, app, album art, progress) with previous / play-pause / next, mute, volume keys and a volume slider: the same calls the tablet makes |
+| **claude code** | the sessions the hooks report (running, waiting on you, done, error; for how long; the finish estimate) and **install / update / remove the hooks** |
+| **inbox** | the work orders by status; open one to read it (body, robot snapshot, notes) and **claim**, **release**, **done** or **reject** (the last two with a note), or open its file |
+| **log** | the Link's output, filtered, followed and copyable. Tokens and pairing codes never appear: `--gui` keeps them off the console, and every line is masked again before it is stored |
+| **settings** | robot project, port, name; pairing, pairing notifications, media remote, mDNS; **start with Windows** (a per-user `HKCU\…\Run` value, off by default; Task Manager's startup switch is honoured) and **start minimized**; which Python runs the Link |
+
+### Install and run
+
+Needs the Link's own requirements (above), Node.js and Rust (`rustup`, the MSVC toolchain) to build,
+and the WebView2 runtime (part of Windows 11).
+
+```sh
+cd tab5/link
+python -m pip install ".[media]" zeroconf   # the Link, its media remote and mDNS, into the Python the app runs
+cd desktop
+npm install
+npm run dev          # run it from source (a debug build)
+npm run build        # release build + installer: src-tauri/target/release/bundle/nsis/Catalyst Link_<v>_x64-setup.exe
+npm test             # the identity check and the frontend's unit tests
+cd src-tauri && cargo test   # the Rust side's tests (log masking, settings, the HTTP client)
+```
+
+On first start, choose the robot project (status → **choose the robot project…**, or settings); the
+Link starts as soon as one is set. Settings live in `%APPDATA%\com.frccatalyst.link\settings.json`.
+
+Where the Link comes from: the app runs `catalyst_link` from the source tree it was built in
+(`tab5/link`) when that folder still exists, else from the pip-installed package; settings → python →
+**link folder** overrides both, and **python** picks the interpreter (default `python` on `PATH`). An
+installed copy on another PC therefore needs `python -m pip install .` in `tab5/link` there.
+
+The identity files are copies: `npm test` and `npm run build` (and `tauri build`, through
+`beforeBuildCommand`) fail when `src/styles/identity.css` or `src/motion.js` differ from FrcCatalyst's
+`docs/assets` (found under `~/dev`, or `CATALYST_IDENTITY_DIR`); `npm run identity` copies them over.
+`scripts/make-icons.py` redraws the icons from the identity's colours.
+
+For testing without touching your real setup: `CATALYST_LINK_HOME` (the Link's state),
+`CATALYST_LINK_DESKTOP_SETTINGS` (the app's settings file) and `CATALYST_LINK_CLAUDE_SETTINGS` (the
+Claude Code settings the hooks button edits) all point elsewhere, and the child Link inherits them.
+
 ## Running it at login
+
+The desktop app's **start with Windows** is the easy way on Windows. Without the app:
 
 **Linux (systemd user unit)** — `~/.config/systemd/user/catalyst-link.service`:
 

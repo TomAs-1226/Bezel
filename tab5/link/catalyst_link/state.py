@@ -110,6 +110,7 @@ class State:
         self.token_path = self.home / "token"
         self.log_path = self.home / "log.jsonl"
         self.hooks_log_path = self.home / "hooks.log"
+        self.devices_path = self.home / "devices.json"   # the paired tablets (devices.py)
         self._log_lock = threading.Lock()
         self._token_cache: tuple[float, str] | None = None
 
@@ -140,9 +141,11 @@ class State:
         return value
 
     def rotate_token(self) -> str:
+        """A new main token. Every paired tablet is forgotten with it: rotating means "pair again"."""
         self.home.mkdir(parents=True, exist_ok=True)
         value = new_token()
         write_atomic(self.token_path, value + "\n")
+        self.devices_path.unlink(missing_ok=True)
         try:
             os.chmod(self.token_path, 0o600)
         except OSError:

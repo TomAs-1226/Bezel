@@ -30,6 +30,7 @@ PAIR_BURST = 10           # new pairings ...
 PAIR_WINDOW_S = 600.0     # ... per this window
 
 Notify = Callable[[str, str], None]  # (code, device) -> shows the code on the PC
+Issue = Callable[[str, str], str]    # (device, ip) -> the token a newly paired tablet is handed
 
 
 @dataclass
@@ -80,14 +81,18 @@ def toast_notify(code: str, device: str) -> None:
 
 class Pairing:
     def __init__(self, token: Callable[[], str], notify: list[Notify] | None = None,
-                 enabled: bool = True, clock: Callable[[], float] = time.monotonic) -> None:
+                 enabled: bool = True, clock: Callable[[], float] = time.monotonic,
+                 issue: Issue | None = None) -> None:
         self._token = token
+        # issue: a token of the tablet's own (devices.py), so it can be forgotten alone; else the main one
+        self._issue = issue
         self.notify = notify if notify is not None else [console_notify]
         self.enabled = enabled
         self._clock = clock
         self._lock = threading.Lock()
         self._pending: Pending | None = None
         self._starts: list[float] = []
+        self.last: dict[str, Any] | None = None  # the most recent pairing that succeeded: {device, ip, at}
 
     def start(self, body: dict[str, Any], ip: str, name: str) -> dict[str, Any]:
         if not self.enabled:
@@ -128,7 +133,33 @@ class Pairing:
                     raise LinkError(410, "expired", why="tries")
                 raise LinkError(403, "code", attempts_left=p.tries)
             self._pending = None
-        return {"ok": True, "token": self._token(), "name": name}
+        token = self._issue(p.device, p.ip) if self._issue else self._token()
+        self.last = {"id": p.id, "device": p.device, "ip": p.ip, "at": time.time()}
+        return {"ok": True, "token": token, "name": name}
+
+    def cancel(self) -> bool:
+        """Drop the pairing that is waiting (the owner said no on the PC)."""
+        with self._lock:
+            had = self._pending is not None
+            self._pending = None
+            return had
+
+    def info(self, with_code: bool = False) -> dict[str, Any] | None:
+        """The waiting pairing for the PC's own screen; the code only when asked (the desktop app's
+        pairing panel), never for anything that travels."""
+        now = self._clock()
+        with self._lock:
+            p = self._pending
+            if p is None:
+                return None
+            if now > p.expires:
+                self._pending = None
+                return None
+            out: dict[str, Any] = {"id": p.id, "device": p.device, "ip": p.ip,
+                                   "expires_in": round(p.expires - now, 1), "ttl": CODE_TTL_S, "tries_left": p.tries}
+            if with_code:
+                out["code"] = p.code
+            return out
 
     @property
     def pending(self) -> Pending | None:

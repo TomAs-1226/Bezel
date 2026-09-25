@@ -42,8 +42,10 @@ class PairTest(PairingCase):
         self.assertEqual(device, "kitchen tab")
         status, body2 = self.confirm(body["pairing"], code)
         self.assertEqual(status, 200)
-        self.assertEqual(body2["token"], self.token)
-        # the token it handed over is the one every other route takes
+        # the tablet gets a token of its own (devices.py), so it can be forgotten without the others
+        self.assertNotEqual(body2["token"], self.token)
+        self.assertRegex(body2["token"], r"^[a-z2-9]{4}(-[a-z2-9]{4}){3}$")
+        # the token it handed over is one every other route takes
         status, _ = self.request("GET", "/inbox", token=body2["token"])
         self.assertEqual(status, 200)
         status, st = self.request("GET", "/link/status", token=body2["token"])

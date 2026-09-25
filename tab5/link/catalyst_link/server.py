@@ -10,6 +10,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 import traceback
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -17,7 +18,8 @@ from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, unquote, urlsplit
 
-from . import __version__, codeview
+from . import __version__, claude_hooks, codeview
+from .devices import Devices, iso_from
 from .files import Files
 from .inbox import Inbox
 from .media import Media
@@ -30,6 +32,8 @@ from .state import LinkError, State
 
 MAX_JSON = 1024 * 1024            # patches, work orders, status changes
 MAX_MESSAGES = 32 * 1024 * 1024   # a Messages API request can carry images
+LOOPBACK = ("127.0.0.1", "::1", "::ffff:127.0.0.1")
+MAIN = "main"                     # identify(): the Link's main token, as opposed to a paired tablet's
 
 
 @dataclass
@@ -76,7 +80,14 @@ class LinkApp:
         # the tablet pairs by a code shown here; the console always shows it, a notification when asked
         if pair_notify is None:
             pair_notify = [console_notify] + ([toast_notify] if cfg.pair_toast else [])
-        self.pairing = Pairing(self.state.token, pair_notify, enabled=cfg.pair)
+        # each tablet that pairs gets a token of its own (devices.py), so it can be forgotten alone
+        self.devices = Devices(self.state.devices_path)
+        self.pairing = Pairing(self.state.token, pair_notify, enabled=cfg.pair, issue=self.devices.add)
+        # set by `serve` once it has tried: {"state": "advertising"|"off"|"failed", ...}
+        self.mdns: dict[str, Any] = {"state": "off", "why": "not advertised by this process"}
+        self.started_at = time.time()
+        # clients using the main token from another machine (typed by hand): ip -> last seen
+        self.by_hand: dict[str, float] = {}
         self.proxy: ClaudeProxy | ClaudeCodeBackend | None
         if self.claude_backend == "api":
             self.proxy = ClaudeProxy(self.state, claude_client)
@@ -90,8 +101,55 @@ class LinkApp:
         return self.proxy is not None and self.proxy.available
 
     def check_token(self, given: str | None) -> bool:
+        return self.identify(given) is not None
+
+    def identify(self, given: str | None) -> str | None:
+        """MAIN for the Link's own token, a paired tablet's id for its token, None for anything else."""
+        if given is None:
+            return None
         expected = self.state.token()
-        return given is not None and hmac.compare_digest(given.strip().encode(), expected.encode())
+        if hmac.compare_digest(given.strip().encode(), expected.encode()):
+            return MAIN
+        return self.devices.match(given)
+
+    def seen(self, who: str, ip: str) -> None:
+        if who == MAIN:
+            if ip not in LOOPBACK:
+                self.by_hand[ip] = time.time()
+        else:
+            self.devices.touch(who, ip)
+
+    # --- what the desktop app shows (the /admin routes: this PC only, main token only) ---------------
+
+    def overview(self) -> dict[str, Any]:
+        from . import mdns
+
+        counts = self.inbox.counts()
+        sessions = self.claude_sessions.listing()["sessions"]
+        by_state: dict[str, int] = {}
+        for sess in sessions:
+            by_state[sess["state"]] = by_state.get(sess["state"], 0) + 1
+        pending = self.pairing.info(with_code=False)
+        proxy = self.proxy
+        return {
+            "ok": True, "name": self.cfg.name, "version": __version__, "port": self.cfg.port, "bind": self.cfg.bind,
+            "addresses": mdns.local_addresses(self.cfg.bind), "started_at": iso_from(self.started_at),
+            "repo": str(self.repo), **{f"repo_{k}": v for k, v in repo_status(self.repo).items()},
+            "state_home": str(self.state.home),
+            "pairing": {"enabled": self.cfg.pair, "toast": self.cfg.pair_toast, "pending": pending},
+            "devices": self.devices.list(),
+            "by_hand": [{"ip": ip, "last_seen": iso_from(t)} for ip, t in
+                        sorted(self.by_hand.items(), key=lambda kv: kv[1], reverse=True)],
+            "media": {"enabled": self.cfg.media, "available": self.media.available, "reason": self.media.reason},
+            "mdns": self.mdns,
+            "claude": {"via": self.claude_backend if proxy is not None else None, "available": self.claude_available},
+            "inbox": counts, "sessions": by_state,
+        }
+
+    def pairing_panel(self) -> dict[str, Any]:
+        last = self.pairing.last
+        return {"ok": True, "enabled": self.cfg.pair, "pending": self.pairing.info(with_code=True),
+                "last": ({**last, "at": iso_from(last["at"])} if last else None)}
 
     def status(self, authed: bool) -> dict[str, Any]:
         base: dict[str, Any] = {"ok": True, "name": self.cfg.name, "version": __version__, "auth": authed,
@@ -148,9 +206,20 @@ class Handler(BaseHTTPRequestHandler):
     # --- plumbing ----------------------------------------------------------------------------------
 
     def log_message(self, format: str, *args: Any) -> None:
-        # Claude Code's hooks post on every tool call, and the tablet polls the sessions: not worth a line each
-        if not self.quiet and not self.path.startswith("/v1/claude/"):
-            sys.stderr.write(f"[link] {self.client_address[0]} {format % args}\n")
+        if self.quiet or self._routine():
+            return
+        sys.stderr.write(f"[link] {self.client_address[0]} {format % args}\n")
+
+    def _routine(self) -> bool:
+        """Traffic not worth a log line each: Claude Code's hooks post on every tool call and the tablet
+        polls the sessions; the desktop app on this PC polls what it shows (its /admin routes, and
+        anything it asks with its own User-Agent)."""
+        path = getattr(self, "path", "") or ""
+        if path.startswith(("/v1/claude/", "/admin/")):
+            return True
+        headers = getattr(self, "headers", None)
+        agent = (headers.get("User-Agent") or "") if headers is not None else ""
+        return agent.startswith("CatalystLinkDesktop/") and self.client_address[0] in LOOPBACK
 
     def _json(self, status: int, obj: dict[str, Any]) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
@@ -241,8 +310,13 @@ class Handler(BaseHTTPRequestHandler):
         query = {k: v[-1] for k, v in parse_qs(url.query, keep_blank_values=True).items()}
         self._audit = {"kind": "request", "method": method, "path": path, "ip": self.client_address[0]}
         self._audited = False
-        authed = self.app.check_token(self.headers.get("X-Link-Token"))
+        who = self.app.identify(self.headers.get("X-Link-Token"))
+        authed = who is not None
+        if authed:
+            self.app.seen(who, self.client_address[0])
         try:
+            if path == "/admin" or path.startswith("/admin/"):
+                return self._admin(method, path, who)
             if path == "/link/status" and method == "GET":
                 return self._json(200, self.app.status(authed))
             if path in self.PAIR_ROUTES:  # the way to get a token: no token needed
@@ -264,7 +338,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.close_connection = True  # the body may be unread
             self._audit.update(error=exc.message)
             self._json(exc.status, exc.payload())
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             self._audit["error"] = "client disconnected"
         except Exception as exc:  # a bug: answer, and keep the traceback on the PC
             traceback.print_exc()
@@ -278,6 +352,81 @@ class Handler(BaseHTTPRequestHandler):
             self._write_audit()  # a request that ended without an answer (the tablet went away)
 
     PAIR_ROUTES = ("/link/pair", "/link/pair/confirm")
+
+    # --- the desktop app's routes -------------------------------------------------------------------------
+    # This PC only (a loopback client), the main token only (not a tablet's), and never from a web page
+    # (a browser always sends Origin; the desktop app's requests come from its Rust side, which doesn't).
+
+    ADMIN_ROUTES: list[tuple[str, str, str]] = [
+        ("GET", r"/admin/overview", "adm_overview"),
+        ("GET", r"/admin/pairing", "adm_pairing"),
+        ("POST", r"/admin/pairing/cancel", "adm_pairing_cancel"),
+        ("GET", r"/admin/devices", "adm_devices"),
+        ("POST", r"/admin/devices/(?P<id>[^/]+)/forget", "adm_forget"),
+        ("POST", r"/admin/inbox/(?P<id>[^/]+)/status", "adm_inbox_status"),
+        ("GET", r"/admin/claude-hooks", "adm_hooks"),
+        ("POST", r"/admin/claude-hooks", "adm_hooks_set"),
+    ]
+
+    def _admin(self, method: str, path: str, who: str | None) -> None:
+        if self.client_address[0] not in LOOPBACK or self.headers.get("Origin") is not None:
+            self.close_connection = True
+            self._audit["error"] = "admin: not this PC"
+            return self._json(403, {"ok": False, "error": "the desktop app's routes answer only on this PC"})
+        if who != MAIN:
+            self.close_connection = True
+            self._audit["error"] = "token"
+            return self._json(401, {"ok": False, "error": "token"})
+        for m, pattern, name in self.ADMIN_ROUTES:
+            match = re.fullmatch(pattern, path)
+            if match and m == method:
+                self._params = match.groupdict()
+                return getattr(self, name)()
+        if any(re.fullmatch(pattern, path) for _, pattern, _ in self.ADMIN_ROUTES):
+            raise LinkError(405, "method not allowed")
+        raise LinkError(404, "not found")
+
+    def adm_overview(self) -> None:
+        self._json(200, self.app.overview())
+
+    def adm_pairing(self) -> None:
+        self._json(200, self.app.pairing_panel())
+
+    def adm_pairing_cancel(self) -> None:
+        self._body()
+        self._json(200, {"ok": True, "cancelled": self.app.pairing.cancel()})
+
+    def adm_devices(self) -> None:
+        self._json(200, {"ok": True, "devices": self.app.devices.list()})
+
+    def adm_forget(self) -> None:
+        self._body()
+        dev_id = self._params["id"]
+        if not self.app.devices.forget(dev_id):
+            raise LinkError(404, f"no paired tablet {dev_id}")
+        self._audit.update(forgot=dev_id)
+        self._json(200, {"ok": True, "forgot": dev_id})
+
+    def adm_inbox_status(self) -> None:
+        body = self._body()
+        status = str(body.get("status"))
+        # the PC may also put a claimed item back ("open"), as the CLI's `release` does
+        result = self.app.inbox.set_status(self._params["id"], status, body.get("note") or "")
+        self._audit.update(id=result["id"], status_to=status, via="desktop")
+        self._json(200, result)
+
+    def adm_hooks(self) -> None:
+        self._json(200, claude_hooks.status(port=self.app.cfg.port))
+
+    def adm_hooks_set(self) -> None:
+        body = self._body()
+        install = body.get("install")
+        if not isinstance(install, bool):
+            raise LinkError(400, "install is true or false")
+        port = self.app.cfg.port
+        result = claude_hooks.install(port=port) if install else claude_hooks.uninstall(port=port)
+        self._audit.update(claude_hooks="installed" if install else "removed")
+        self._json(200, result)
 
     def _pair(self, path: str) -> None:
         body = self._body(4096)
@@ -429,8 +578,19 @@ class Handler(BaseHTTPRequestHandler):
         self._json(200, self.app.media.control(body))
 
 
+class LinkServer(ThreadingHTTPServer):
+    daemon_threads = True
+    if os.name == "nt":
+        # On Windows SO_REUSEADDR (http.server's default) lets a second Link bind the same port while the
+        # first still listens, and the two then split the tablet's requests between them. Exclusive use
+        # makes the second one fail to start instead, as it would on Linux or macOS.
+        allow_reuse_address = False
+
+        def server_bind(self) -> None:
+            self.socket.setsockopt(socket.SOL_SOCKET, getattr(socket, "SO_EXCLUSIVEADDRUSE", -5), 1)
+            super().server_bind()
+
+
 def make_server(app: LinkApp, quiet: bool = False) -> ThreadingHTTPServer:
     handler = type("LinkHandler", (Handler,), {"app": app, "quiet": quiet})
-    server = ThreadingHTTPServer((app.cfg.bind, app.cfg.port), handler)
-    server.daemon_threads = True
-    return server
+    return LinkServer((app.cfg.bind, app.cfg.port), handler)

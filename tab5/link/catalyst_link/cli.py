@@ -46,7 +46,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if args.name:
         cfg.name = args.name
     state = _state()
-    app = LinkApp(cfg, state)
+    # --gui: the desktop app runs this and shows its output as a log, so neither the token nor a pairing
+    # code is ever printed; the app shows the code in its pairing panel (GET /admin/pairing) instead.
+    notify = None
+    if args.gui:
+        from .pairing import toast_notify
+        notify = [toast_notify] if cfg.pair_toast else []
+    app = LinkApp(cfg, state, pair_notify=notify)
     server = make_server(app, quiet=args.quiet)
     port = server.server_address[1]
     st = repo_status(app.repo)
@@ -55,7 +61,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  repo     {app.repo}  (branch {st['branch']}{', dirty' if st['dirty'] else ''}; never written to)")
     for a in addrs:
         print(f"  url      http://{a}:{port}")
-    if cfg.pair:
+    if args.gui:
+        print(f"  pairing  {'on: the code shows in the Catalyst Link window' if cfg.pair else 'off'}")
+        state.token()  # made on first start, as the other branches do by printing it
+        print(f"  token    in {state.token_path} (never printed here)")
+    elif cfg.pair:
         print("  pairing  on: tap \"pair\" on the tablet; the code to type there shows up here"
               + ("" if args.no_pair_toast else " (and as a notification)"))
         print(f"  token    {state.token()}   (or type this into the tablet's pc link settings)")
@@ -69,11 +79,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  on-work-order  {cfg.on_work_order or 'off'}")
     print(f"  state    {state.home}")
     stop_mdns = None
-    if not args.no_mdns:
+    if args.no_mdns:
+        app.mdns = {"state": "off", "why": "turned off (--no-mdns)"}
+    else:
         try:
             stop_mdns = mdns.advertise(cfg.name, port, cfg.bind, pair=cfg.pair)
+            app.mdns = ({"state": "advertising", "service": mdns.SERVICE} if stop_mdns
+                        else {"state": "off", "why": "zeroconf isn't installed (pip install zeroconf)"})
         except Exception as exc:  # mDNS is a convenience; never fatal
             print(f"  mdns     failed: {exc}")
+            app.mdns = {"state": "failed", "why": str(exc)}
         print(f"  mdns     {'_catalyst-link._tcp' if stop_mdns else 'off (pip install zeroconf)'}")
     sys.stdout.flush()
     try:
@@ -244,28 +259,8 @@ def cmd_token(args: argparse.Namespace) -> int:
 
 # --- Claude Code's hooks ---------------------------------------------------------------------------------
 
-HOOK_EVENTS = ("UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop", "SubagentStop",
-               "SessionStart", "SessionEnd")
-
-
-def hook_settings(command: str) -> dict[str, Any]:
-    """The "hooks" block for Claude Code's settings.json that runs `command` on every event the Link reads."""
-    entry = {"type": "command", "command": command, "timeout": 5}
-    hooks: dict[str, Any] = {}
-    for ev in HOOK_EVENTS:
-        block: dict[str, Any] = {"hooks": [dict(entry)]}
-        if ev in ("PreToolUse", "PostToolUse"):
-            block = {"matcher": "*", **block}
-        hooks[ev] = [block]
-    return {"hooks": hooks}
-
-
-def hook_command() -> str:
-    """This Python running hook.py by its path: works whether or not the package is installed."""
-    from . import hook
-
-    py = Path(sys.executable).resolve().as_posix()
-    return f'"{py}" "{Path(hook.__file__).resolve().as_posix()}"'
+# Kept importable from here: the hooks block and the command live in claude_hooks.py now.
+from .claude_hooks import HOOK_EVENTS, hook_command, hook_settings  # noqa: E402,F401
 
 
 def cmd_hook(args: argparse.Namespace) -> int:
@@ -276,6 +271,18 @@ def cmd_hook(args: argparse.Namespace) -> int:
 
 def cmd_hook_settings(args: argparse.Namespace) -> int:
     print(json.dumps(hook_settings(args.command or hook_command()), indent=2))
+    return 0
+
+
+def cmd_hook_install(args: argparse.Namespace) -> int:
+    from . import claude_hooks
+
+    st = claude_hooks.uninstall() if args.remove else claude_hooks.install(args.command, port=args.port)
+    word = "removed from" if args.remove else "installed in"
+    print(f"Catalyst Link's Claude Code hooks {word} {st['path']}"
+          + ("" if args.remove else f" ({len(st['events'])} events)"))
+    if not args.remove:
+        print("Restart your Claude Code sessions (or check /hooks) so they pick it up.")
     return 0
 
 
@@ -329,6 +336,9 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-pair-toast", action="store_true",
                    help="show the pairing code only in this console, not as a Windows notification")
     s.add_argument("--quiet", action="store_true", help="no per-request log lines")
+    s.add_argument("--gui", action="store_true",
+                   help="run under the Catalyst Link desktop app: the token and pairing codes are never printed "
+                        "(the app shows the code); implies no console pairing notice")
     s.set_defaults(fn=cmd_serve)
 
     s = sub.add_parser("inbox", help="list work orders")
@@ -366,11 +376,18 @@ def build_parser() -> argparse.ArgumentParser:
     s.set_defaults(fn=cmd_claude_token)
 
     s = sub.add_parser("hook", help="Claude Code hook: send the event on stdin to the Link (prints nothing)")
+    s.add_argument("--url", help="the Link (default $CATALYST_LINK_URL or http://127.0.0.1:8765)")
     s.set_defaults(fn=cmd_hook)
 
     s = sub.add_parser("hook-settings", help="print the hooks block for Claude Code's settings.json")
     s.add_argument("--command", help='the hook command (default: this Python running hook.py by its path)')
     s.set_defaults(fn=cmd_hook_settings)
+
+    s = sub.add_parser("hook-install", help="add the Link's hooks to Claude Code's settings.json (others are kept)")
+    s.add_argument("--command", help="the hook command (default: this Python running hook.py by its path)")
+    s.add_argument("--port", type=int, help="the Link's port, when it isn't 8765")
+    s.add_argument("--remove", action="store_true", help="remove the Link's hooks instead (nothing else)")
+    s.set_defaults(fn=cmd_hook_install)
 
     s = sub.add_parser("claude-sessions", help="what the running Link knows about Claude Code's sessions")
     s.add_argument("--url", default="http://127.0.0.1:8765")
