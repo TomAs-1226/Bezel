@@ -2493,6 +2493,7 @@ static RTC_NOINIT_ATTR struct {
     uint32_t fails;    /* consecutive starts that never reached hal_boot_ok() */
     uint32_t settled;  /* this start did */
     char stage[24];
+    uint32_t planned;  /* the last restart was asked for (hal_restart_planned): not a failed start */
 } B;
 
 static hal_boot_t s_prev;
@@ -2532,6 +2533,13 @@ static void boot_record_init(void)
     snprintf(s_prev.reason, sizeof s_prev.reason, "%s", reset_name(r));
     if (valid) snprintf(s_prev.stage, sizeof s_prev.stage, "%.*s", (int)sizeof B.stage - 1, B.stage);
     if (!valid) B.fails = 0;
+    /* a restart asked for (the Wi-Fi watchdog, a key file, the C6's update) is no failed start: counted as
+     * one, three of them put the tablet in safe mode, which leaves Wi-Fi off */
+    if (valid && B.planned == BOOT_MAGIC) {
+        abnormal = false;
+        snprintf(s_prev.reason, sizeof s_prev.reason, "planned");
+    }
+    B.planned = 0;
     if (valid && abnormal) {
         s_prev.failed = true;
         if (!B.settled) B.fails++;
@@ -2558,6 +2566,13 @@ static void boot_record_init(void)
     if (s_prev.failed)
         ESP_LOGW(TAG, "last start ended: %s at \"%s\" (%d in a row)%s%s", s_prev.reason, s_prev.stage, s_prev.fails,
                  s_prev.detail[0] ? ", " : "", s_prev.detail);
+}
+
+void hal_restart_planned(const char *why)
+{
+    ESP_LOGW(TAG, "restart: %s", why);
+    B.planned = BOOT_MAGIC;
+    esp_restart();
 }
 
 /* esp_restart() from anywhere (esp-hosted's lost-link restart among them): the stage says so next start */

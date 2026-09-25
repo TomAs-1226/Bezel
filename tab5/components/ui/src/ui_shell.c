@@ -407,6 +407,23 @@ lv_obj_t *ui_page_body(int page) { return U.pages[page]; }
 
 static void pages_begin(void);
 
+/* The Wi-Fi watchdog's restart (hal_tab5_net.c): where the interface is, noted from the watchdog's task (two
+ * plain reads, no LVGL), and taken back after the restart: the same page, the same app, and a word why */
+static void note_where(void) { hal_resume_note(U.page, U.app ? U.app->name : ""); }
+
+/* from the frame hook, once the interface is up: opening an app while ui_init was still building it (its sheet
+ * wants the glass) hung the start on the boot card */
+static void resume_where(void)
+{
+    int page;
+    char app[24];
+    if (!hal_resume_take(&page, app, sizeof app)) return;
+    if (page >= 0 && page < NPAGES) ui_go(page);
+    const ui_app_t *a = app[0] ? ui_app_find(app) : NULL;
+    if (a) ui_app_open(a, NULL);
+    ui_island_say(BZ_I_WIFI, "wi-fi reset: back online where you were");
+}
+
 /* Home mode (ui_home_mode.c) covers the pages: the status band and the orb go while it's up; the dock tucks
  * itself (dock_frame) */
 static void home_changed(bool active)
@@ -1788,8 +1805,12 @@ static void shell_frame(double now, double dt, void *user)
     }
     /* the interface fades in with the backlight after the boot card faded out with it */
     static double shown_at;
-    static bool faded_in;
+    static bool faded_in, resumed;
     if (!shown_at) shown_at = now;
+    if (!resumed && now - shown_at > 1.0) {
+        resumed = true;
+        resume_where(); /* back where the Wi-Fi watchdog's restart found it, if it did */
+    }
     if (!faded_in) {
         float k = (float)((now - shown_at) / 0.35);
         if (k >= 1) { k = 1; faded_in = true; }
@@ -1896,6 +1917,7 @@ void ui_init(const ui_config_t *cfg)
     ui_batt_boot();  /* the battery fleet off the card, its log reading and the robot's live numbers */
     ui_orb_init();
     ui_home_mode_init(home_changed);
+    hal_restart_hook(note_where);
     snap_init();
     link_init();
     assist_init();

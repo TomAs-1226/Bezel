@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #define BASE "https://www.thebluealliance.com/api/v3"
 #define POLL_S 60.0
@@ -210,6 +211,12 @@ static void ep_aim(ep_t *e, const char *url)
  * status, -1 when TBA couldn't be reached or the body didn't arrive whole. */
 static int ep_fetch(ep_t *e, const char *key)
 {
+    /* at least 1.5 s between requests: a poll's four downloads back to back were the burst after which the
+     * C6 most often stopped answering */
+    static double last;
+    double since = hal_seconds() - last;
+    if (last > 0 && since < 1.5) usleep((useconds_t)((1.5 - since) * 1e6));
+    last = hal_seconds();
     char hdr[288];
     snprintf(hdr, sizeof hdr, "X-TBA-Auth-Key: %s\r\nAccept: application/json\r\n%s%s%s", key,
              e->body && e->lm[0] ? "If-Modified-Since: " : "", e->body && e->lm[0] ? e->lm : "",

@@ -167,6 +167,15 @@ void hal_net(hal_net_t *out);
 void hal_net_report(char *out, size_t n, const char *host); /* dev console: addresses, DNS, a lookup */
 void hal_wifi_join(const char *ssid, const char *pass);
 void hal_wifi_rejoin(void);
+/* The Wi-Fi watchdog restarts the tablet when the C6 stops answering (its reset needs a host restart). Before
+ * it does, fn runs (the UI notes where it is with hal_resume_note, from the watchdog's task: only a note);
+ * after, hal_resume_take gives it back once. */
+/* a restart the firmware asks for: not counted as a failed start (no safe mode for it) */
+void hal_restart_planned(const char *why);
+void hal_restart_hook(void (*fn)(void));
+void hal_c6_restart_test(void); /* dev console: the watchdog's restart, now */
+void hal_resume_note(int page, const char *app);
+bool hal_resume_take(int *page, char *app, size_t n);
 /* the C6 co-processor's firmware from a file on the card; restart after a success */
 bool hal_c6_ota(const char *path, void (*progress)(size_t done, size_t total), char *err, size_t errn);
 typedef struct { char ssid[33]; int rssi; bool secure; } hal_ap_t;

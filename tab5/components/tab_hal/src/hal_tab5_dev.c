@@ -263,8 +263,12 @@ static void run(char *line)
         if (ok) {
             usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(500));
             vTaskDelay(pdMS_TO_TICKS(5000)); /* the C6 finishing its switch */
-            esp_restart();
+            hal_restart_planned("the C6 updated");
         }
+    } else if (!strcmp(line, "wdtest")) {
+        say("OK\n");
+        usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(300));
+        hal_c6_restart_test();
     } else if (!strcmp(line, "rejoin")) {
         hal_wifi_rejoin();
         say("OK\n");
@@ -355,7 +359,7 @@ static void run(char *line)
             say("OK\n");
             usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(500));
             vTaskDelay(pdMS_TO_TICKS(300));
-            esp_restart(); /* the start-up imports it */
+            hal_restart_planned("a key file arrived"); /* the start-up imports it */
         }
     } else if (sscanf(line, "ant %d", &a) == 1) {
         void hal_antenna(bool external);

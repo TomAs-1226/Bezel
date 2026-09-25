@@ -113,6 +113,42 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 /* restarts the C6 watchdog made, and when the first of the last three was: kept across the restart */
 static RTC_NOINIT_ATTR uint32_t s_c6_restarts[4];
 
+/* Where the interface was when the watchdog restarted it, so it comes back there (kept across the restart) */
+static RTC_NOINIT_ATTR struct {
+    uint32_t magic;
+    int page;
+    char app[24];
+} s_resume;
+#define RESUME_MAGIC 0x52534D31u
+static void (*s_restart_hook)(void);
+
+void hal_restart_hook(void (*fn)(void)) { s_restart_hook = fn; }
+
+/* the watchdog's restart, on demand (dev console "wdtest"): checks the resume path without a hung C6 */
+void hal_c6_restart_test(void)
+{
+    ESP_LOGW(TAG, "wi-fi: watchdog restart test");
+    if (s_restart_hook) s_restart_hook();
+    vTaskDelay(pdMS_TO_TICKS(200));
+    hal_restart_planned("watchdog restart test");
+}
+
+void hal_resume_note(int page, const char *app)
+{
+    s_resume.page = page;
+    snprintf(s_resume.app, sizeof s_resume.app, "%s", app ? app : "");
+    s_resume.magic = RESUME_MAGIC;
+}
+
+bool hal_resume_take(int *page, char *app, size_t n)
+{
+    if (s_resume.magic != RESUME_MAGIC) return false;
+    s_resume.magic = 0;
+    *page = s_resume.page;
+    snprintf(app, n, "%s", s_resume.app);
+    return true;
+}
+
 static void rssi_task(void *arg)
 {
     (void)arg;
@@ -151,8 +187,9 @@ static void rssi_task(void *arg)
         s_c6_restarts[1] = s_c6_restarts[2];
         s_c6_restarts[2] = now ? now : 1;
         ESP_LOGE(TAG, "wi-fi: the C6 stopped answering: restarting to reset it");
+        if (s_restart_hook) s_restart_hook(); /* the interface notes where it is (hal_resume_note) */
         vTaskDelay(pdMS_TO_TICKS(200));
-        esp_restart();
+        hal_restart_planned("the C6 stopped answering");
     }
 }
 
