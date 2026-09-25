@@ -144,6 +144,8 @@ static struct {
     char card_kind[24];
     lv_obj_t *setup;
     double last_sync;
+    uint32_t drev;         /* the transcript as the detail line last read it */
+    bool net_lost;         /* a request under way and no network: the detail line says so */
 } AS;
 
 static void view_clear(void)
@@ -553,6 +555,17 @@ static void assist_refresh(void)
         ui_text(l, "%s", why);
     }
     refresh_chips();
+    /* a request under way with no network under it: say so plainly, since it can take its timeout to give up */
+    as_phase_t ph = assist_phase();
+    bool busy = ph != AS_PHASE_IDLE && ph != AS_PHASE_ERROR && ph != AS_PHASE_CONFIRM;
+    hal_net_t net;
+    hal_net(&net);
+    hal_tether_t te;
+    hal_tether(&te);
+    bool lost = busy && !net.up && !te.up;
+    if (lost) ui_text(AS.detail, "the network dropped: tap stop, and ask again once it's back");
+    else if (AS.net_lost) AS.drev = AS.rev - 1; /* the detail line goes back to what it's doing */
+    AS.net_lost = lost;
     as_usage_t u;
     assist_usage(&u);
     link_status_t ls;
@@ -599,10 +612,9 @@ static void assist_frame(double now, double dt)
         bz_icon_set(AS.send_icon, busy ? BZ_I_STOP_CIRCLE : BZ_I_KEYBOARD, 24, false);
         ui_text(AS.send_label, "%s", busy ? "stop" : "ask");
     }
-    /* what it's doing right now: the last tool's line, or its last words */
-    static uint32_t drev;
-    if (drev != AS.rev) {
-        drev = AS.rev;
+    /* what it's doing right now: the last tool's line, or its last words (the network's loss says itself) */
+    if (AS.drev != AS.rev && !AS.net_lost) {
+        AS.drev = AS.rev;
         char line[120] = "";
         assist_lock();
         int n = assist_count();
@@ -682,7 +694,11 @@ static void assist_build(lv_obj_t *b)
     lv_obj_add_event_cb(AS.core, core_draw, LV_EVENT_DRAW_MAIN, NULL);
     AS.phase = bz_label(side, "ready", BZ_F_NAME, BZ_C_INK);
     lv_obj_set_pos(AS.phase, 0, CORE_H + 6);
-    AS.detail = bz_label_line(side, "", BZ_F_BODY_S, BZ_C_DIM, SIDE_W - 2 * BZ_PAD_TILE);
+    /* up to two lines: a tool's outcome, or why nothing is coming */
+    AS.detail = bz_label(side, "", BZ_F_BODY_S, BZ_C_DIM);
+    lv_obj_set_width(AS.detail, SIDE_W - 2 * BZ_PAD_TILE);
+    lv_label_set_long_mode(AS.detail, LV_LABEL_LONG_MODE_DOTS);
+    lv_obj_set_height(AS.detail, 2 * lv_font_get_line_height(bz_font(BZ_F_BODY_S)));
     lv_obj_set_pos(AS.detail, 0, CORE_H + 40);
     AS.meta = bz_label(side, "", BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_align(AS.meta, LV_ALIGN_BOTTOM_LEFT, 0, -26);
@@ -838,7 +854,7 @@ void ui_orb_init(void)
 /* ================================================================== link */
 
 static struct {
-    lv_obj_t *state, *where, *pc_mark, *route_chips[3], *key_state, *inbox, *patches, *outbox;
+    lv_obj_t *state, *where, *pc_mark, *route_chips[3], *key_state, *inbox, *patches;
     ui_kb_t *kb;
     char url[96], token[64];
     int editing; /* 0 url, 1 token, 2 anthropic key, 3 openai key, 4 openai model */
@@ -946,7 +962,8 @@ static void lk_list(lv_obj_t *list, const link_item_t *it, int n, bool patches)
 {
     lv_obj_clean(list);
     if (!n) {
-        bz_label(list, patches ? "no patch branches yet" : "the inbox is empty", BZ_F_BODY_S, BZ_C_DIM);
+        lv_obj_t *e = bz_label(list, patches ? "no patch branches yet" : "the inbox is empty", BZ_F_BODY_S, BZ_C_DIM);
+        lv_obj_set_style_pad_left(e, 18, 0); /* on the heading's edge, as a row's text is */
         return;
     }
     for (int i = 0; i < n; i++) {
@@ -979,9 +996,13 @@ static void link_refresh(void)
     const char *st = !s.configured ? "looking for a pc" : !s.reachable ? "not answering" : !s.auth ? "wrong token" : "paired";
     bz_mark_set(LK.pc_mark, s.reachable && s.auth ? BZ_OK : s.reachable ? BZ_WARN : BZ_STALE);
     ui_text(LK.state, "%s", s.reachable ? (s.name[0] ? s.name : "catalyst link") : st);
-    ui_text(LK.where, "%s\n%s%s%s\nclaude through the pc: %s", s.url[0] ? s.url : "no address yet", s.repo[0] ? s.repo : "",
-            s.branch[0] ? " on " : "", s.branch, s.claude ? "yes" : "no");
-    ui_text(LK.outbox, "%d waiting on the tablet for the pc", s.outbox);
+    /* the repo's line only when there is one (an empty line read as a gap in the card); the outbox on the last */
+    char repo[120] = "";
+    if (s.repo[0] || s.branch[0])
+        snprintf(repo, sizeof repo, "%s%s%s\n", s.repo, s.repo[0] && s.branch[0] ? " on " : "", s.branch);
+    char out[48] = "";
+    if (s.outbox) snprintf(out, sizeof out, " · %d waiting for the pc", s.outbox);
+    ui_text(LK.where, "%s\n%sclaude through the pc: %s%s", s.url[0] ? s.url : "no address yet", repo, s.claude ? "yes" : "no", out);
     char keys[160];
     keys_state(keys, sizeof keys);
     ui_text(LK.key_state, "%s", keys);
@@ -1027,12 +1048,14 @@ static void link_build(lv_obj_t *b)
     lv_obj_t *t = bz_tile(b, c1, APP_H);
     lv_obj_set_pos(t, PAD, APP_Y);
     lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(t, 12, 0);
+    lv_obj_set_style_pad_row(t, 10, 0); /* everything down to the key buttons fits the card */
     bz_label(t, "pc", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *r = bz_row(t, 12);
     LK.pc_mark = bz_mark(r, BZ_STALE, 14);
     LK.state = bz_label_line(r, "", BZ_F_NAME, BZ_C_INK, c1 - 2 * BZ_PAD_TILE - 30);
     LK.where = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(LK.where, c1 - 2 * BZ_PAD_TILE); /* a long address wraps inside the card */
+    lv_label_set_long_mode(LK.where, LV_LABEL_LONG_WRAP);
     lv_obj_t *br = bz_row(t, 8);
     lv_obj_set_flex_flow(br, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_width(br, c1 - 2 * BZ_PAD_TILE);
@@ -1057,19 +1080,19 @@ static void link_build(lv_obj_t *b)
     lv_obj_set_style_pad_row(kr, 8, 0);
     ui_button(kr, BZ_I_KEYBOARD, "claude key", lk_edit, (void *)2);
     ui_button(kr, BZ_I_KEYBOARD, "openai key", lk_edit, (void *)3);
-    LK.outbox = bz_label(t, "", BZ_F_CAPTION, BZ_C_DIM);
 
+    /* the two lists: their headings and their first words on one left edge (the rows' own text is inset) */
     lv_obj_t *w1 = bz_box(b);
     lv_obj_set_pos(w1, PAD + c1 + BZ_GAP, APP_Y);
     lv_obj_t *l1 = bz_label(w1, "work orders", BZ_F_LABEL, BZ_C_DIM);
-    lv_obj_set_pos(l1, 8, 0);
+    lv_obj_set_pos(l1, 18, 0);
     lv_obj_t *s1 = bz_box(w1);
     lv_obj_set_pos(s1, 0, 28);
     LK.inbox = ui_scroller(s1, c2, APP_H - 28);
     lv_obj_t *w2 = bz_box(b);
     lv_obj_set_pos(w2, PAD + c1 + c2 + 2 * BZ_GAP, APP_Y);
     lv_obj_t *l2 = bz_label(w2, "patch branches", BZ_F_LABEL, BZ_C_DIM);
-    lv_obj_set_pos(l2, 8, 0);
+    lv_obj_set_pos(l2, 18, 0);
     lv_obj_t *s2 = bz_box(w2);
     lv_obj_set_pos(s2, 0, 28);
     LK.patches = ui_scroller(s2, c2, APP_H - 28);

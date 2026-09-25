@@ -415,15 +415,19 @@ static void level_layout(lv_obj_t *o)
     int w = level_w(o), h = level_h(o);
     float p = L->pos.value;
     int x = (int)(p * w);
-    /* segments reach 40 px past the handle and are clipped by the track (controls.js:97-175) */
-    lv_obj_set_width(L->fill, x + 40 > 0 ? x + 40 : 0);
-    lv_obj_set_x(L->fill, -40);
     float held = L->held.value;
     int hw = (int)(6 - 2 * held + 0.5f), hh = (int)((h - 40) + 16 * held);
     if (hh > h - 12) hh = h - 12;
-    lv_obj_set_size(L->handle, hw, hh);
     int hx = x - 9 - hw;
     if (hx < 8) hx = 8;
+    /* the fill always reaches past the handle: near the bottom the handle (on-ice ink) would otherwise sit
+     * alone on the dark track, a sliver that reads as a glitch; at 0 it's a small nub of the fill, as M3's
+     * sliders keep */
+    int fx = x < hx + hw + 9 ? hx + hw + 9 : x;
+    /* segments reach 40 px past the handle and are clipped by the track (controls.js:97-175) */
+    lv_obj_set_width(L->fill, fx + 40 > 0 ? fx + 40 : 0);
+    lv_obj_set_x(L->fill, -40);
+    lv_obj_set_size(L->handle, hw, hh);
     lv_obj_set_pos(L->handle, hx, (h - hh) / 2);
 }
 

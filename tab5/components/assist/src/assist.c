@@ -89,7 +89,8 @@ static struct {
     void (*job)(void *);           /* assist_post_job's: run by the worker between turns */
     void *job_arg;
     bool busy, stop, started;
-    uint32_t gen;                  /* bumps on assist_reset: a stale worker's writes are dropped */
+    bool running;                  /* the worker is in an exchange (busy also counts a question not yet taken) */
+    uint32_t gen;                 /* bumps on assist_reset: a stale worker's writes are dropped */
     int team;
     char sugg[5][72];
 } A = { .lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER };
@@ -179,10 +180,15 @@ typedef struct {
     bool fallback_noted;
 } wctx_t;
 
+/* This exchange still owns the transcript's end and the phase: not reset, and not stopped. A stopped exchange
+ * may go on waiting on the network for a while; the technician already saw "Stopped." and may have asked
+ * again, so nothing new of it shows (its rows already shown can still be marked). Under A.lock. */
+static bool mine(const wctx_t *c) { return A.gen == c->gen && !A.stop; }
+
 static int w_add(wctx_t *c, as_entry_kind_t kind, const char *text, const char *tool)
 {
     pthread_mutex_lock(&A.lock);
-    int id = A.gen == c->gen ? ent_add(kind, text, tool) : -1;
+    int id = mine(c) ? ent_add(kind, text, tool) : -1;
     pthread_mutex_unlock(&A.lock);
     bump();
     return id;
@@ -209,7 +215,7 @@ static void w_set(wctx_t *c, int id, const char *text, int state)
 static void w_phase(wctx_t *c, as_phase_t p)
 {
     pthread_mutex_lock(&A.lock);
-    if (A.gen == c->gen) A.phase = p;
+    if (mine(c)) A.phase = p;
     pthread_mutex_unlock(&A.lock);
     bump();
 }
@@ -282,9 +288,9 @@ static void cb_delta(void *user, int index, as_delta_t kind, const char *s, size
         c->ent[index] = w_add(c, kind == AS_D_TEXT ? AS_E_TEXT : AS_E_THINKING, NULL, NULL);
     }
     pthread_mutex_lock(&A.lock);
-    ent_t *e = A.gen == c->gen ? ent_get(c->ent[index]) : NULL;
+    ent_t *e = mine(c) ? ent_get(c->ent[index]) : NULL;
     if (e) ent_text(e, s, n, true);
-    if (A.gen == c->gen) A.phase = kind == AS_D_TEXT ? AS_PHASE_WRITING : AS_PHASE_THINKING;
+    if (mine(c)) A.phase = kind == AS_D_TEXT ? AS_PHASE_WRITING : AS_PHASE_THINKING;
     pthread_mutex_unlock(&A.lock);
     bump();
 }
@@ -326,7 +332,7 @@ static bool cb_confirm(void *user, const char *kind, const char *title, const ch
         timed_out = !answer && !gone && hal_seconds() > k->deadline;
         if (answer || gone || timed_out) {
             k->pending = false;
-            if (A.gen == c->gen) A.phase = AS_PHASE_TOOL;
+            if (mine(c)) A.phase = AS_PHASE_TOOL;
             if ((e = ent_get(c->cur)) && A.gen == c->gen) {
                 e->e.tool_state = AS_TOOL_RUNNING;
                 e->e.rev++;
@@ -697,8 +703,7 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
         as_msg_t m;
         st_t st = stream_once(c, body.p, body.n, &m);
         if (st == ST_STOPPED) {
-            as_msg_free(&m);
-            w_note(c, "Stopped.");
+            as_msg_free(&m); /* ("Stopped." was said by assist_stop, the moment it was tapped) */
             if (!ran_something) as_hist_rollback(h);
             break;
         }
@@ -776,10 +781,7 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
         ran_something = true;
         run_tools(c, h, &m, calls, ncalls);
         as_msg_free(&m);
-        if (w_stopped(c)) {
-            w_note(c, "Stopped.");
-            break;
-        }
+        if (w_stopped(c)) break;
         if (round == MAX_ROUNDS - 1) w_add(c, AS_E_ERROR, "Stopped after too many tool rounds.", NULL);
     }
     ab_free(&body);
@@ -820,6 +822,7 @@ static void *worker(void *arg)
         char *text = A.pending;
         A.pending = NULL;
         A.stop = false;
+        A.running = true;
         uint32_t gen = A.gen;
         pthread_mutex_unlock(&A.lock);
         if (gen != hist_gen) {
@@ -835,11 +838,13 @@ static void *worker(void *arg)
         exchange(&hist, text, c, tools, last_state, sizeof last_state);
         free(text);
         pthread_mutex_lock(&A.lock);
-        A.busy = false;
+        /* a question asked after a stop, while this one still let go of the network, is next */
+        A.running = false;
+        A.busy = A.pending != NULL;
         A.stop = false;
         A.confirm.pending = false;
-        if (A.gen == gen && A.phase != AS_PHASE_ERROR) A.phase = AS_PHASE_IDLE;
-        if (A.gen != gen) A.phase = AS_PHASE_IDLE;
+        if (A.pending) A.phase = AS_PHASE_SENDING;
+        else if (A.gen != gen || A.phase != AS_PHASE_ERROR) A.phase = AS_PHASE_IDLE;
         pthread_mutex_unlock(&A.lock);
         bump();
     }
@@ -1308,7 +1313,10 @@ bool assist_send(const char *text)
 {
     if (!text || !text[0]) return false;
     pthread_mutex_lock(&A.lock);
-    if (A.busy || !A.started) {
+    /* busy, unless the exchange under way was stopped and is only letting go of the network (a request can
+     * take its timeout to give up): then this question waits its turn behind it instead of being refused */
+    bool draining = A.running && A.stop && !A.pending;
+    if ((A.busy && !draining) || !A.started) {
         pthread_mutex_unlock(&A.lock);
         return false;
     }
@@ -1319,7 +1327,7 @@ bool assist_send(const char *text)
     }
     ent_add(AS_E_USER, text, NULL);
     A.busy = true;
-    A.stop = false;
+    if (!draining) A.stop = false; /* (the stopped exchange must stay stopped; the worker clears it after) */
     A.phase = AS_PHASE_SENDING;
     A.pending = t;
     pthread_cond_signal(&A.wake);
@@ -1331,8 +1339,21 @@ bool assist_send(const char *text)
 void assist_stop(void)
 {
     pthread_mutex_lock(&A.lock);
-    if (A.busy) A.stop = true;
+    bool was = A.busy;
+    if (A.pending) {
+        /* not started yet: it never will */
+        free(A.pending);
+        A.pending = NULL;
+    }
+    if (A.running) A.stop = true;
+    A.busy = A.running;
     if (A.confirm.pending && !A.answer) A.answer = 2;
+    if (was) {
+        /* stopped now, as far as the technician can tell: the rings rest, and the next question may be asked
+         * while the old request, if it is stuck on the network, gives up in the background */
+        ent_add(AS_E_NOTE, "Stopped.", NULL);
+        A.phase = AS_PHASE_IDLE;
+    }
     pthread_mutex_unlock(&A.lock);
     bump();
 }
@@ -1349,8 +1370,8 @@ void assist_reset(void)
     if (A.pending) {
         free(A.pending);
         A.pending = NULL;
-        A.busy = false;
     }
+    A.busy = A.running; /* an exchange still letting go of the network is stopped (its gen is old) */
     A.phase = AS_PHASE_IDLE;
     pthread_mutex_unlock(&A.lock);
     bump();

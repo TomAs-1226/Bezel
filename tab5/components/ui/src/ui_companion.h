@@ -16,3 +16,5 @@ void ui_companion_cfg_save(void);             /* UI thread only (it writes NVS) 
 void ui_companion_tick(double now, double dt);
 /* Opens the companion; with `claude` its Claude Code panel is shown. */
 void ui_companion_open(bool claude, lv_obj_t *from);
+/* Opens the companion listening, as a tap on its face would (home mode's "tap to talk"). */
+void ui_companion_talk(lv_obj_t *from);

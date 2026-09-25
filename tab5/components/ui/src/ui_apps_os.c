@@ -192,7 +192,7 @@ static OS_BSS struct {
     /* the app */
     lv_obj_t *time, *secs, *date, *wc_city[3], *wc_time[3], *wc_note[3];
     lv_obj_t *rows[NALARM], *row_time[NALARM], *row_days[NALARM], *row_sw[NALARM], *empty;
-    lv_obj_t *edit, *edit_h, *edit_m, *day_chips[7], *ring_box, *ring_time, *add_btn;
+    lv_obj_t *edit, *edit_h, *edit_m, *day_chips[7], *ring_box, *ring_time, *add_btn, *del_btn;
     int sel;                /* the alarm being edited, -1 none */
     bool held;              /* a held minute button changed it: saved on release */
     int row_sel;            /* the row drawn selected */
@@ -353,8 +353,10 @@ static void cl_show_alarms(void)
     else lv_obj_remove_flag(CL.empty, LV_OBJ_FLAG_HIDDEN);
     if (CL.sel < 0 || CL.sel >= CL.nal) {
         lv_obj_add_flag(CL.edit, LV_OBJ_FLAG_HIDDEN);
+        if (CL.del_btn) lv_obj_add_flag(CL.del_btn, LV_OBJ_FLAG_HIDDEN); /* nothing to delete: no dead button */
     } else {
         lv_obj_remove_flag(CL.edit, LV_OBJ_FLAG_HIDDEN);
+        if (CL.del_btn) lv_obj_remove_flag(CL.del_btn, LV_OBJ_FLAG_HIDDEN);
         const alarm_t *a = &CL.al[CL.sel];
         ui_text(CL.edit_h, "%02d", a->hhmm / 100);
         ui_text(CL.edit_m, "%02d", a->hhmm % 100);
@@ -550,7 +552,8 @@ static void clock_build(lv_obj_t *b)
     ui_os_boot();
     lv_obj_t *hr = head_right(b);
     CL.add_btn = ui_button(hr, BZ_I_ADD, "add alarm", cl_add, NULL);
-    ui_button(hr, BZ_I_CLOSE, "delete", cl_delete, NULL);
+    CL.del_btn = ui_button(hr, BZ_I_CLOSE, "delete", cl_delete, NULL);
+    lv_obj_add_flag(CL.del_btn, LV_OBJ_FLAG_HIDDEN); /* only with an alarm picked (cl_show_alarms) */
 
     int lw = 560, rw = W - 2 * PAD - lw - BZ_GAP;
     lv_obj_t *t = column_tile(b, PAD, lw);
@@ -1215,7 +1218,8 @@ static void doc_open(lv_obj_t *o, void *u)
 {
     (void)o;
     int i = (int)(intptr_t)u;
-    if (DC.read_state == 1 || i < 0 || i >= DC.nfiles) return;
+    /* (not while a rescan rewrites the list under the rows) */
+    if (DC.read_state == 1 || DC.list_state == 1 || i < 0 || i >= DC.nfiles) return;
     char dir[96];
     if (!cstore_path(CS_DOCS, NULL, dir, sizeof dir)) return;
     snprintf(DC.path, sizeof DC.path, "%s/%s", dir, DC.files[i].name);
@@ -1233,6 +1237,9 @@ static void doc_show_list(void)
 {
     lv_obj_clean(DC.list);
     int lw = DC.list_w;
+    /* nothing open yet: the reader's title says what there is to do ("pick a document" beside an empty list
+     * asked for the impossible) */
+    if (!DC.text) ui_text(DC.title, "%s", DC.list_state == 2 && DC.nfiles ? "pick a document" : "no documents to show");
     if (DC.list_state == 3) {
         bz_label(DC.list, "No microSD card.", BZ_F_BODY, BZ_C_DIM);
         return;

@@ -1822,8 +1822,12 @@ static void shell_frame(double now, double dt, void *user)
     /* untouched, the panel dims (settings: display), then goes off; a tap wakes it, and that tap presses
      * nothing. Asleep, the link to the robot and everything behind the glass keep running. */
     double idle_s = bz_ui_idle_s();
+    /* the flashlight is the panel at full: it neither dims (it went to a quarter of the normal brightness after
+     * the dim time) nor sleeps while it's open, and waking returns to it, not to the normal brightness */
+    bool torch = ui_app_is_open(&APP_LIGHT);
+    float full = torch ? 1.0f : S.brightness;
     /* the companion on a stand, on power, stays awake (it only dims) */
-    if (!SLP.asleep && (SLP.request || (!ui_companion_keeps_awake() && !ui_home_mode_keeps_awake() && S.sleep_s > 0 && idle_s > S.sleep_s))) {
+    if (!SLP.asleep && (SLP.request || (!torch && !ui_companion_keeps_awake() && !ui_home_mode_keeps_awake() && S.sleep_s > 0 && idle_s > S.sleep_s))) {
         SLP.asleep = true;
         SLP.request = false;
         SLP.at = now;
@@ -1834,13 +1838,13 @@ static void shell_frame(double now, double dt, void *user)
         /* a touch since it went off: back on, and the dim timer starts over */
         SLP.asleep = false;
         SLP.dimmed = false;
-        hal_set_brightness(S.brightness);
+        hal_set_brightness(full);
         hal_tone(1200, 8, S.volume * 0.3f);
     }
-    bool idle = !SLP.asleep && S.dim_s > 0 && idle_s > S.dim_s;
+    bool idle = !SLP.asleep && !torch && S.dim_s > 0 && idle_s > S.dim_s;
     if (!SLP.asleep && idle != SLP.dimmed) {
         SLP.dimmed = idle;
-        hal_set_brightness(idle ? S.brightness * 0.25f : S.brightness);
+        hal_set_brightness(idle ? S.brightness * 0.25f : full);
     }
     /* the glass's one light leans with how the tablet is held: read at 10 Hz, low-passed and moved only in
      * steps of 0.05, because every move relights and redraws every glass shape, and a hand never holds

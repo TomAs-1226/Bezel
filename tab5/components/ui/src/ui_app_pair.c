@@ -23,9 +23,10 @@
 #define RW (W - PAD - RX)
 #define PEERS 4
 #define DIGITS 6
-#define BOX_W 72
+/* the boxes and the keypad take the card's width (a keypad a third as wide left an empty half beside it) */
+#define BOX_W ((IN(RW) - 5 * 10 - 20) / 6)
 #define BOX_H 88
-#define KEY_W 120
+#define KEY_W ((IN(RW) - 2 * 12) / 3)
 #define KEY_H 64
 
 static struct {
@@ -263,6 +264,8 @@ static void pair_refresh(void)
         show_code();
     }
     PR.shown_state = (int)st.state;
+    /* the keys work only while a code is being typed: faint otherwise, so they don't look dead */
+    lv_obj_set_style_opa(PR.pad, st.state == LINK_PAIR_CODE ? LV_OPA_COVER : LV_OPA_40, 0);
     const char *who = st.name[0] ? st.name : "the pc";
     switch (st.state) {
     case LINK_PAIR_IDLE: ui_text(PR.title, "%s", "pick a pc on the left"); break;

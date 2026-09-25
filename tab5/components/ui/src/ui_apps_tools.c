@@ -1,6 +1,7 @@
 /* Apps that use the tablet's own hardware: level (IMU), lens (camera), can tap (TWAI),
  * logs (microSD) and settings. */
 #include "ui_internal.h"
+#include "ui_boot.h" /* CATALYST_TAB_VERSION */
 #include "ui_home_mode.h"
 #include "ui_home_priv.h"
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
@@ -1170,6 +1171,7 @@ static void st_flip(lv_obj_t *o, void *u)
     ui_settings_save();
 }
 
+#if !BZ_LEAN /* (the lean tablet shows auto-rotate in its place) */
 static void st_calm(lv_obj_t *o, void *u)
 {
     (void)u;
@@ -1178,6 +1180,7 @@ static void st_calm(lv_obj_t *o, void *u)
     ui_chip_set(o, S.calm);
     ui_settings_save();
 }
+#endif
 
 static void st_perf(lv_obj_t *o, void *u)
 {
@@ -1278,6 +1281,9 @@ static void settings_refresh_more(void);
 static void settings_refresh(void)
 {
     settings_refresh_more();
+    /* the control center can be pulled over settings and move these: follow it (a finger on one wins) */
+    if (fabsf(bz_level_get(ST.bright) - S.brightness) > 0.004f) bz_level_set(ST.bright, S.brightness, false);
+    if (fabsf(bz_level_get(ST.vol) - S.volume) > 0.004f) bz_level_set(ST.vol, S.volume, false);
     hal_net_t n;
     hal_net(&n);
     st_scan_show();
@@ -1293,9 +1299,10 @@ static void settings_refresh(void)
     hal_sys(&s);
     hal_battery_t b;
     hal_battery(&b);
-    ui_text(ST.about, "catalyst tab 0.1 · bezel %s\npanel %s · %s\npsram free %.1f mb · sram %u kb\nbattery %.2f v · %d %%%s\nmicroSD %s",
-            "tab5", hal_panel_name(), s.chip, s.psram_free / 1048576.0, (unsigned)(s.sram_free / 1024), b.volts, b.percent,
-            b.charging ? " · charging" : "", hal_sd_root() ? hal_sd_root() : "not mounted");
+    /* the firmware's own version, as the system monitor shows it (this said "0.1" while that said 1.0.0) */
+    ui_text(ST.about, "catalyst tab %s · bezel %s\npanel %s · %s\npsram free %.1f mb · sram %u kb\nbattery %.2f v · %d %%%s\nmicroSD %s",
+            CATALYST_TAB_VERSION, "tab5", hal_panel_name(), s.chip, s.psram_free / 1048576.0, (unsigned)(s.sram_free / 1024),
+            b.volts, b.percent, b.charging ? " · charging" : "", hal_sd_root() ? hal_sd_root() : "not mounted");
 }
 
 /* ---- the settings app: a list of sections on the left, the chosen one on the right ---- */
@@ -1331,8 +1338,11 @@ static void sx_swatches(void)
         if (!t) return;
         bool on = i == S.accent;
         bz_tile_set_fill(t, on ? BZ_C_SURFACE3 : BZ_C_SURFACE2);
+        /* every swatch has the ring, the unpicked ones clear: a border narrows the content, and one only on the
+         * picked swatch moved its dot and name 3 px off their neighbours' line */
         lv_obj_set_style_border_color(t, bz_lv(BZ_C_INK), 0);
-        lv_obj_set_style_border_width(t, on ? 3 : 0, 0);
+        lv_obj_set_style_border_width(t, 3, 0);
+        lv_obj_set_style_border_opa(t, on ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
         const bz_accent_t *a = &BZ_ACCENTS[i];
         lv_obj_set_style_bg_color(lv_obj_get_child(t, 0), bz_lv_rgb(bz_ui_dark() ? a->dark : a->light), 0);
         bz_set_color(lv_obj_get_child(t, 1), on ? BZ_C_INK : BZ_C_DIM);

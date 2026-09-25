@@ -48,6 +48,8 @@ typedef struct {
     float intensity;       /* 0..1 */
     vo_look_t look;
     bool spoken;           /* it goes to the speaker */
+    bool shown;            /* it goes on screen: the setting says so, it was typed, or the speech failed */
+    bool failed;           /* no answer: `say` is why, in plain words */
 } vo_reply_t;
 
 typedef struct {
@@ -80,7 +82,9 @@ const char *voice_wake_word(void);
 
 void voice_listen(void);                       /* tap to talk: record now */
 bool voice_ask(const char *text);              /* a typed question into the same conversation */
-void voice_cancel(void);                       /* stops whatever is under way (recording, answer, speech) */
+/* Stops whatever is under way (recording, answer, speech). The state is idle at once: a request still waiting on
+ * the network is abandoned (its answer, if it ever comes, is dropped), and a new question can be asked. */
+void voice_cancel(void);
 void voice_reset(void);                        /* a new conversation */
 
 vo_state_t voice_state(void);
@@ -88,8 +92,9 @@ uint32_t voice_rev(void);                      /* bumps on any change the UI sho
 float voice_mic_level(void);                   /* 0..1 while listening */
 float voice_speak_level(void);                 /* 0..1: the speaker's loudness now, for the face */
 bool voice_reply(vo_reply_t *out);             /* the last answer; false when there is none */
-/* A short note for the status line ("didn't catch that", an error) and when it was set (hal_seconds). */
-double voice_note(char *out, size_t n);
+/* A short note for the status line ("didn't catch that", an error) and when it was set (hal_seconds); *err
+ * (may be NULL) says whether it is a failure the owner should notice. */
+double voice_note(char *out, size_t n, bool *err);
 
 const char *voice_emotion_name(vo_emotion_t e);
 

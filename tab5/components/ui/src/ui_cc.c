@@ -40,6 +40,8 @@ static struct {
      * (bz_ui_sheet_*); `open` is where it rests, `sheet` a pull or settle under way, `sheet_mode` once
      * the platform has shown it can (the older per-module cascade is the fallback) */
     bool sheet, open, sheet_mode;
+    bool want_open;        /* an orb tap came while another sheet slid: open when it's done */
+    double want_at;
     lv_obj_t *panel;
     /* the notifications, under the modules */
     lv_obj_t *notes, *note_row[NOTE_ROWS], *note_icon[NOTE_ROWS], *note_text[NOTE_ROWS], *note_age[NOTE_ROWS],
@@ -90,7 +92,13 @@ static void cc_show(bool on)
         }
     }
     C.shown = on;
-    if (on) cc_refresh(NULL);
+    if (on) {
+        /* settings, an alarm or home mode may have moved them since: the levels as they are now */
+        bz_level_set(C.bright, S.brightness, false);
+        bz_level_set(C.vol, S.volume, false);
+        C.notes_gen = ~0u; /* the ages ("now", "4 min") are read again */
+        cc_refresh(NULL);
+    }
 }
 
 /* drawing the sheet's other picture, a band at a time: opening, the sheet itself; closing, the page */
@@ -263,7 +271,20 @@ static void cc_frame(double now, double dt, void *user)
         C.sheet = false;
         return;
     }
-    if (C.sheet_mode) return; /* resting: nothing moves, cc_show set it all */
+    if (C.sheet_mode) {
+        /* resting: nothing moves, cc_show set it all. A pull or an orb tap whose sheet was refused (a page or an
+         * app was sliding) left the pull's target at open with nothing shown, and the edge pull (which needs the
+         * target at closed) dead from then on: the rest state is put back, and a tap is tried again once the
+         * other sheet is done. */
+        float rest = C.open ? 1.0f : 0.0f;
+        if (!C.edge && (C.p.target != rest || C.p.value != rest)) bz_motion_set(&C.p, rest, 0);
+        if (C.want_open && (C.open || hal_seconds() - C.want_at > 2.0)) C.want_open = false; /* opened, or stale */
+        if (C.want_open && !bz_ui_sheeting()) {
+            C.want_open = false;
+            ui_cc_open();
+        }
+        return;
+    }
     float p = C.p.value < 0 ? 0 : C.p.value;
     bool shown = p > 0.002f || C.dragging;
     /* power-on: the page starts under the frosted blind and it lifts, a beat after the first frame */
@@ -289,6 +310,9 @@ static void cc_frame(double now, double dt, void *user)
                 lv_obj_set_style_bg_opa(C.scrim, LV_OPA_80, 0);
             }
             lv_obj_remove_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
+            bz_level_set(C.bright, S.brightness, false);
+            bz_level_set(C.vol, S.volume, false);
+            C.notes_gen = ~0u;
             cc_refresh(NULL);
         } else {
             lv_obj_add_flag(C.scrim, LV_OBJ_FLAG_HIDDEN);
@@ -373,8 +397,13 @@ bool ui_cc_is_open(void) { return C.open || C.sheet; }
 
 void ui_cc_open(void)
 {
-    if (C.open) return;
+    if (C.open || C.sheet) return;
     sheet_start(true);
+    if (C.sheet_mode && !C.sheet) {
+        C.want_open = true; /* another sheet is sliding: open once it's done (cc_frame) */
+        C.want_at = hal_seconds();
+        return;
+    }
     cc_to(1, 0);
 }
 
@@ -412,18 +441,20 @@ void ui_cc_init(void)
     lv_obj_set_flex_flow(m, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(m, 8, 0);
     bz_label(m, "link", BZ_F_LABEL, BZ_C_DIM);
+    /* each line inside the module, a long network name or address ending in "…" rather than past its edge */
+    const int lw = 414 - 2 * 22 - 24 - 10;
     lv_obj_t *row = bz_row(m, 10);
     bz_icon(row, BZ_I_SMART_TOY, 24, BZ_C_INK);
-    C.link_robot = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    C.link_robot = bz_label_line(row, "", BZ_F_BODY_S, BZ_C_INK, lw);
     row = bz_row(m, 10);
     bz_icon(row, BZ_I_WIFI, 24, BZ_C_INK);
-    C.link_wifi = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    C.link_wifi = bz_label_line(row, "", BZ_F_BODY_S, BZ_C_INK, lw);
     row = bz_row(m, 10);
     bz_icon(row, BZ_I_USB, 24, BZ_C_INK);
-    C.link_usb = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    C.link_usb = bz_label_line(row, "", BZ_F_BODY_S, BZ_C_INK, lw);
     row = bz_row(m, 10);
     bz_icon(row, BZ_I_BATTERY_5_BAR, 24, BZ_C_INK);
-    C.link_batt = bz_label(row, "", BZ_F_BODY_S, BZ_C_INK);
+    C.link_batt = bz_label_line(row, "", BZ_F_BODY_S, BZ_C_INK, lw);
 
     /* brightness and volume: Bezel's levels, fills crisp inside the glass */
     m = module(1, 570, 70, 580, 84, 42, 0.06f);
