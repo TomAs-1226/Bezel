@@ -153,6 +153,7 @@ bool ui_alarm_up(void);                          /* the alarm screen covers ever
 void ui_match_test(double delay_s);              /* a made-up match's alarm in delay_s (dev console "alarm test") */
 /* The same, choosing what: 0 the queue reminder, 1 the match reminder, 2 a schedule change's chime and message. */
 void ui_match_test_kind(double delay_s, int kind);
+void ui_match_fake(double minutes); /* dev console "match fake N": a made-up match of ours N min out; 0 removes it */
 bool ui_match_next_line(char *out, size_t n);    /* "next: Q34 · 14:52 · red with 1234, 5678"; false: none */
 void ui_match_settings(lv_obj_t *pane, int w);   /* the tba app's alerts view, into a flex column */
 void ui_match_settings_refresh(void);            /* its status line, while shown */

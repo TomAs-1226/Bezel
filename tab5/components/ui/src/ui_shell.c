@@ -743,7 +743,7 @@ static volatile bool s_dev_pending;
 static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
-        strncmp(line, "alarm test", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
+        strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9))
         return false;
     if (s_dev_pending) return false;
@@ -775,6 +775,11 @@ static void dev_run(void)
         double d = *a == ' ' ? atof(a + 1) : 5;
         int kind = strstr(a, "match") ? 1 : strstr(a, "chime") ? 2 : 0;
         ui_match_test_kind(d > 0 ? d : 5, kind);
+    } else if (!strncmp(s_dev_cmd, "match fake", 10)) {
+        /* a made-up match of ours "match fake N" minutes out (default 30), tracked as a real one: its reminders
+         * ring, home shows it, the assistant knows it; "match fake 0" takes it away */
+        const char *a = s_dev_cmd + 10;
+        ui_match_fake(*a == ' ' ? atof(a + 1) : 30);
     } else if (!strncmp(s_dev_cmd, "say ", 4)) {
         /* a message out of the island, as any notification comes */
         ui_island_say(BZ_I_INFO, s_dev_cmd + 4);

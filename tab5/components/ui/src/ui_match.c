@@ -826,6 +826,28 @@ void ui_match_test_kind(double delay_s, int kind)
 
 void ui_match_test(double delay_s) { ui_match_test_kind(delay_s, 0); }
 
+void ui_match_fake(double minutes)
+{
+    /* the made-up one is Q99, so taking it away finds it; TBA's next answer drops it too (not in the schedule) */
+    for (int i = 0; i < MA.ntr; i++)
+        if (!strcmp(MA.tr[i].m.label, "Q99")) {
+            MA.tr[i] = MA.tr[--MA.ntr];
+            break;
+        }
+    if (minutes > 0 && MA.ntr < MA_TRACK) {
+        tracked_t *t = &MA.tr[MA.ntr++];
+        memset(t, 0, sizeof *t);
+        snprintf(t->m.label, sizeof t->m.label, "Q99");
+        t->m.level = 0;
+        t->m.number = 99;
+        t->m.ours = 2;
+        t->m.blue[0] = S.team > 0 ? S.team : 5805, t->m.blue[1] = 1678, t->m.blue[2] = 254;
+        t->m.red[0] = 971, t->m.red[1] = 1323, t->m.red[2] = 4414;
+        t->when = t->told = t->m.predicted = time(NULL) + (time_t)(minutes * 60);
+    }
+    MA.next_desk = 0; /* the assistant's line follows at once */
+}
+
 bool ui_match_next_line(char *out, size_t n)
 {
     time_t now = time(NULL);

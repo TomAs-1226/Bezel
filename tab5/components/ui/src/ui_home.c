@@ -18,6 +18,7 @@ static struct {
     lv_obj_t *tb_batt, *tb_icon, *tb_foot;
     lv_obj_t *ln_robot, *ln_wifi, *ln_usb;
     lv_obj_t *team;
+    bool match; /* the greeting shows the next match */
 } HM;
 
 static void open_app_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
@@ -44,7 +45,17 @@ static void home_refresh(void *u)
         char d[40];
         strftime(d, sizeof d, "%A, %B", &tm);
         ui_text(HM.date, "%s %d", d, tm.tm_mday);
-        ui_text(HM.greet, "%s", tm.tm_hour < 5 ? "late night" : tm.tm_hour < 12 ? "good morning" : tm.tm_hour < 18 ? "good afternoon" : "good evening");
+        /* an event day: the next match of ours where the greeting was ("next: Q34 · 14:52 · red with ..."),
+         * in full ink (the accent is a fill, too pale to read as text in the light theme), and the card opens
+         * The Blue Alliance */
+        char nx[96];
+        bool match = ui_match_next_line(nx, sizeof nx);
+        if (match) ui_text(HM.greet, "%s", nx);
+        else ui_text(HM.greet, "%s", tm.tm_hour < 5 ? "late night" : tm.tm_hour < 12 ? "good morning" : tm.tm_hour < 18 ? "good afternoon" : "good evening");
+        if (match != HM.match) {
+            HM.match = match;
+            bz_set_color(HM.greet, match ? BZ_C_INK : BZ_C_DIM);
+        }
     } else {
         ui_text(HM.time, "--:--");
         ui_text(HM.date, "the clock isn't set");
@@ -107,7 +118,9 @@ void ui_page_home(lv_obj_t *page)
     /* the time, big */
     lv_obj_t *c = bz_tile(page, CLOCK_W, TOP_H);
     lv_obj_set_pos(c, PAD, BODY_Y);
-    HM.greet = bz_label(c, "", BZ_F_LABEL, BZ_C_DIM);
+    HM.greet = bz_label_line(c, "", BZ_F_LABEL, BZ_C_DIM, CLOCK_W - 2 * BZ_PAD_TILE);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+    bz_on_tap(c, open_app_tap, (void *)&APP_TBA);
     HM.time = bz_label(c, "--:--", BZ_F_CLOCK, BZ_C_INK);
     lv_obj_set_pos(HM.time, -4, 70);
     HM.date = bz_label_line(c, "", BZ_F_NAME, BZ_C_DIM, CLOCK_W - 2 * BZ_PAD_TILE);
