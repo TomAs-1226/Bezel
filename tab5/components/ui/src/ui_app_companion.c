@@ -1533,6 +1533,9 @@ static void comp_refresh(void)
     panel_sync(now);
 
     bool busy = busy_now();
+    /* a conversation is use, as a touch is: the screen neither dims nor sleeps in the middle of one (it
+     * slept mid-answer on battery, and going dark cut the answer off) */
+    if (v == VO_LISTEN || v == VO_HEARING || v == VO_THINKING || v == VO_SPEAKING) bz_ui_wake();
     static int shown_busy = -1;
     if (shown_busy != (int)busy) {
         shown_busy = busy;
