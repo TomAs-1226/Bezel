@@ -213,8 +213,10 @@ void ui_chip_set(lv_obj_t *chip, bool on)
     bz_tile_set_fill(chip, on ? BZ_C_ICE : BZ_C_SURFACE2);
     uint32_t n = lv_obj_get_child_count(chip);
     for (uint32_t i = 0; i < n; i++) bz_set_color(lv_obj_get_child(chip, (int32_t)i), on ? BZ_C_ON_ICE : BZ_C_INK);
-    /* Bezel's mode buttons: corners open from 12 to full when selected */
-    lv_obj_set_style_radius(chip, on ? LV_RADIUS_CIRCLE : BZ_R_M, 0);
+    /* Bezel's mode buttons: corners open from 12 to full when selected. Only on a change: setting a local style
+     * restyles and redraws the chip even when the value is the same, and refreshes call this 10 times a second. */
+    int32_t rad = on ? LV_RADIUS_CIRCLE : BZ_R_M;
+    if (lv_obj_get_style_radius(chip, 0) != rad) lv_obj_set_style_radius(chip, rad, 0);
 }
 
 /* ------------------------------------------------------------------ scroller */
