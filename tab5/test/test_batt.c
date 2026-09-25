@@ -150,7 +150,13 @@ static void fleet(void)
     NEAR(f->b[2].r_base, 14, 1e-4);
 
     cat_batt_rank_t rk[CAT_BATT_MAX];
-    int n = cat_fleet_rank(f, now, rk, CAT_BATT_MAX);
+    /* a fleet with nothing recorded: every score equal, the roster's order */
+    cat_fleet_default(g, 12);
+    int n = cat_fleet_rank(g, now, rk, CAT_BATT_MAX);
+    CHECK(n == 12);
+    for (int i = 0; i < n; i++) CHECK(rk[i].idx == i);
+
+    n = cat_fleet_rank(f, now, rk, CAT_BATT_MAX);
     CHECK(n == 12);
     CHECK(rk[0].idx == 2);
     CHECK(strstr(rk[0].reason, "lowest resistance (14") != NULL);

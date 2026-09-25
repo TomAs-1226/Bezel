@@ -201,7 +201,10 @@ static int by_rank(const void *a, const void *b)
 {
     const cat_batt_rank_t *x = a, *y = b;
     if (x->available != y->available) return x->available ? -1 : 1;
-    return x->score > y->score ? -1 : x->score < y->score;
+    if (x->score != y->score) return x->score > y->score ? -1 : 1;
+    /* equal (a fleet with nothing recorded yet): the roster's order, #1 first. qsort isn't stable, and an
+     * even field once put #12 forward for no reason anyone could see. */
+    return x->idx - y->idx;
 }
 
 #define CHARGE_OUT_S (2 * 3600) /* used this recently and not recharged: out */
