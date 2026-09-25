@@ -334,7 +334,7 @@ static void tba_build(lv_obj_t *b)
 {
     TB.s = calloc(1, sizeof *TB.s); /* ~9 KB: PSRAM */
     lv_obj_t *hr = bz_row(b, 14);
-    lv_obj_align(hr, LV_ALIGN_TOP_RIGHT, -PAD, 18);
+    lv_obj_align(hr, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, 18);
     lv_obj_set_height(hr, 60);
     TB.chip_m = ui_chip(hr, "matches", list_tap, NULL);
     TB.chip_r = ui_chip(hr, "rankings", list_tap, (void *)1);

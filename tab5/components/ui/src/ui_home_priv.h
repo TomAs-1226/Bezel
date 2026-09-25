@@ -16,7 +16,23 @@ typedef struct {
     char ha_url[128];      /* "ha_url" */
     char ha_token[320];    /* "ha_token": never logged, never shown */
     char picks[HOME_HA_PICKS * 64 + 8]; /* "ha_picks": entity ids, comma separated */
+    /* the look (settings > look) */
+    int cards;             /* "hm_cards": HM_CARD_* bits, what home mode shows */
+    bool small_clock;      /* "hm_clock": "1" the clock in the display face instead of the big one */
+    bool seconds;          /* "hm_secs": seconds beside the clock */
+    bool tint;             /* "hm_bg": "1" the ground tinted with the accent */
 } hm_cfg_t;
+
+enum {
+    HM_CARD_MUSIC = 1, HM_CARD_COMPANION = 2, HM_CARD_HOME = 4, HM_CARD_WEATHER = 8, HM_CARD_MATCH = 16,
+    HM_CARD_ALL = 31
+};
+
+/* The look changed (settings > look): home mode lays itself out again, now if it's built, else when it is. */
+void hm_look_changed(void);
+/* Settings > look: home mode's cards, clock and ground, into a flex column `col` of width w. */
+void ui_home_look_settings(lv_obj_t *col, int w);
+void ui_home_look_settings_open(void);
 
 /* the picks home mode itself shows (the smart home app shows them all) */
 #define HM_HOME_TILES 4

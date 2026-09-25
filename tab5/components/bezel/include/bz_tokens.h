@@ -28,8 +28,21 @@ typedef struct {
 
 extern const bz_palette_t BZ_PAL_DARK, BZ_PAL_LIGHT;
 
-/* The palette currently applied; set by bz_theme. */
+/* The palette currently applied: the tone's table with the accent laid over it (bz_ui_set_mode,
+ * bz_ui_set_accent). */
 extern const bz_palette_t *bz_pal;
+
+/* Accents: what the `ice` role (the tonal "on" fill: selected chips and modes, levels, meters, the lit tile)
+ * is drawn in. Each has a dark-tone and a light-tone fill with its own on-colour, chosen so text on the fill
+ * holds 4.5:1 (and, in dark, the fill 3:1 on the ground; light tone's fills are pale containers, as Bezel's
+ * own light ice is). `signal` stays Bezel's one signal colour: an accent
+ * never takes over the primary action or "us". Index 0 is Bezel's own ice. */
+typedef struct {
+    const char *name;
+    uint32_t dark, on_dark, light, on_light;
+} bz_accent_t;
+extern const bz_accent_t BZ_ACCENTS[];
+#define BZ_NACCENTS 8
 
 /* Corner scale (M3) and the component radii Bezel derives from it (bezel.md:130-154). */
 enum {

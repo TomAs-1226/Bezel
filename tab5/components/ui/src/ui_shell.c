@@ -47,10 +47,7 @@ static struct {
     bz_motion_t drop_x, drop_lift;
     bool drop_dragging;
 
-    lv_obj_t *island, *island_mark, *island_text, *island_icon, *island_tail;
     lv_obj_t *status, *st_link, *st_batt_icon, *st_batt, *st_clock;
-    bz_glass_t *island_glass;
-    double island_until;
 
     struct { ui_refresh_fn fn; void *user; int page; } refresh[32]; /* page -1: always */
     int nrefresh;
@@ -164,7 +161,8 @@ void ui_on_page_refresh(int page, ui_refresh_fn fn, void *user)
 }
 
 /* A page's head, in the status band: its title, and a row beside it for a line of context (the returned
- * row; what goes in it must fit before the island — ui_head_width()). The band's right is the status. */
+ * row; what goes in it must fit before the status cluster — ui_head_width()). The band's right is the status,
+ * then the island's orb. */
 lv_obj_t *ui_head(lv_obj_t *page, const char *title, const char *label)
 {
     (void)label;
@@ -179,11 +177,11 @@ lv_obj_t *ui_head(lv_obj_t *page, const char *title, const char *label)
 
 int ui_head_width(const char *title)
 {
-    /* what's left for the context between the title and the island */
+    /* what's left for the context between the title and the status cluster (the orb is past it) */
     lv_point_t sz;
     lv_text_get_size(&sz, title, bz_font(BZ_F_NAME), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
     int tw = sz.x;
-    return W / 2 - ISLAND_HALF - PAD - tw - 16 - 16;
+    return W + HEAD_RIGHT_X - STATUS_W - 24 - PAD - tw - 16;
 }
 
 lv_obj_t *ui_button(lv_obj_t *parent, const char *icon, const char *text, bz_tap_fn fn, void *user)
@@ -671,20 +669,56 @@ static void dock_frame(void)
 
 /* ------------------------------------------------------------------ island */
 
+/* The island rests as an orb in the top-right corner, never over the content: the robot's state is its
+ * colour and mark (connected ●, a warning ◆, a fault ■, looking ○), a small amber pip says there are
+ * notifications not seen yet, and a tap opens the control center, which lists them. A message grows out of
+ * it: the orb pulses amber, a capsule stretches leftwards from the corner on `release`, its words fading in
+ * once it is 55 % grown, holds ISL_HOLD_S and shrinks back into the orb on `smooth` (Bezel's top island;
+ * Detent's Dynamic Island morph: the orb stays where it is while the capsule grows from it).
+ *
+ * Lean: every changed pixel is turned for the portrait panel, so only the capsule's own strip (≤ ISL_MAX_W ×
+ * ORB_D) redraws while it moves, only the orb's disc while it pulses, and nothing at rest. Nothing moves
+ * while the platform slides a picture (a page, a sheet): it waits and carries on after. */
+#define ISL_MAX_W 660
+#define ISL_HOLD_S 3.0
+#define ISL_PULSE_S 0.5      /* one amber pulse */
+#define ISL_PULSES 3
+#define ISL_PAD 22           /* the capsule's left padding */
+#define ISL_ICON (BZ_LEAN ? 30 : 24)
+#define ISL_MARK 14
+
+static struct {
+    lv_obj_t *obj, *disc, *mark, *pip, *icon, *text;
+    bz_motion_t w;           /* the capsule's width: ORB_D at rest */
+    int msg_w;               /* its width with the message showing */
+    int shown_w, text_opa;
+    double until;            /* the message shrinks back in at this time (0: none showing) */
+    double flash_at;         /* the amber pulses began (0: none) */
+    bz_status_t st;
+    uint32_t disc_rgb;       /* the disc's fill as set */
+    unsigned seen_gen;       /* notifications as of the last look at the control center */
+    bool pip_on;
+    /* the link, told as it changes (not kept as a notification) */
+    bool conn, told, ever;
+    double conn_at, told_at;
+} IS = { .text_opa = -1, .st = BZ_INFO };
+
 static void island_tap(lv_obj_t *o, void *u)
 {
-    (void)u;
-    ui_app_open(&APP_ROBOT, o);
+    (void)o; (void)u;
+    bz_ui_wake();
+    ui_cc_open(); /* the notifications, and the link's detail */
 }
 
 /* The dev console's UI commands (tools/tab5_dev.py): taken on the console's task, run on the UI's loop. */
-static char s_dev_cmd[48];
+static char s_dev_cmd[96];
 static volatile bool s_dev_pending;
 
 static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
-        strncmp(line, "alarm test", 10) && strncmp(line, "bms", 3))
+        strncmp(line, "alarm test", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
+        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -709,9 +743,24 @@ static void dev_run(void)
     } else if (!strcmp(s_dev_cmd, "close")) {
         ui_app_close();
     } else if (!strncmp(s_dev_cmd, "alarm test", 10)) {
-        /* a made-up match's queue alarm, in 5 s or "alarm test N" s: time to switch apps or let it sleep */
-        double d = s_dev_cmd[10] == ' ' ? atof(s_dev_cmd + 11) : 5;
-        ui_match_test(d > 0 ? d : 5);
+        /* a made-up match's alarm, in 5 s or "alarm test N" s (time to switch apps or let it sleep): the queue
+         * reminder, or "alarm test N match" the match one, "alarm test N chime" a schedule change's chime */
+        const char *a = s_dev_cmd + 10;
+        double d = *a == ' ' ? atof(a + 1) : 5;
+        int kind = strstr(a, "match") ? 1 : strstr(a, "chime") ? 2 : 0;
+        ui_match_test_kind(d > 0 ? d : 5, kind);
+    } else if (!strncmp(s_dev_cmd, "say ", 4)) {
+        /* a message out of the island, as any notification comes */
+        ui_island_say(BZ_I_INFO, s_dev_cmd + 4);
+    } else if (!strncmp(s_dev_cmd, "accent ", 7)) {
+        /* "accent violet" or "accent 3" */
+        const char *a = s_dev_cmd + 7;
+        int k = *a >= '0' && *a <= '9' ? atoi(a) : -1;
+        for (int i = 0; k < 0 && i < BZ_NACCENTS; i++)
+            if (!strcmp(a, BZ_ACCENTS[i].name)) k = i;
+        if (k >= 0) ui_set_accent(k);
+    } else if (!strncmp(s_dev_cmd, "settings ", 9)) {
+        ui_settings_show(s_dev_cmd + 9);
     } else if (!strncmp(s_dev_cmd, "bms", 3)) {
         /* the battery fleet: "bms" ranks it; scan, pick <label>, demo, reset, gpt, json */
         ui_batt_dev(s_dev_cmd + 3);
@@ -778,33 +827,64 @@ static void status_tap(lv_obj_t *o, void *u)
 static void build_island(void)
 {
     lv_obj_t *g = bz_ui_glass();
-    U.island = bz_row(g, 12);
-    lv_obj_set_height(U.island, 56);
-    lv_obj_set_style_pad_hor(U.island, 22, 0);
-    lv_obj_set_style_max_width(U.island, 2 * ISLAND_HALF, 0);
-    lv_obj_align(U.island, LV_ALIGN_TOP_MID, 0, 10);
-    lv_obj_remove_flag(U.island, LV_OBJ_FLAG_EVENT_BUBBLE);
-    U.island_glass = bz_glass_attach(U.island, 3, BZ_R_ISLAND);
-    U.island_mark = bz_mark(U.island, BZ_STALE, 12);
-    U.island_icon = bz_icon(U.island, BZ_I_INFO, 24, BZ_C_INK);
-    lv_obj_add_flag(U.island_icon, LV_OBJ_FLAG_HIDDEN);
-    U.island_text = bz_label(U.island, "", BZ_F_LABEL, BZ_C_INK);
-    U.island_tail = bz_label(U.island, "", BZ_F_LABEL, BZ_C_DIM);
-    lv_obj_add_flag(U.island_tail, LV_OBJ_FLAG_HIDDEN);
-    bz_on_tap(U.island, island_tap, NULL);
-
-    /* the status cluster, right of the band: how the tablet reaches the robot, its battery, the time */
+    /* the status cluster, right of the band and left of the orb: how the tablet reaches the robot, its
+     * battery, the time. Made first: the capsule grows over it. */
     U.status = bz_row(g, 14);
     lv_obj_set_flex_align(U.status, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_align(U.status, LV_ALIGN_TOP_RIGHT, -PAD, 22);
     U.st_link = bz_icon(U.status, BZ_I_LINK_OFF, 24, BZ_C_DIM);
     U.st_batt_icon = bz_icon(U.status, BZ_I_BATTERY_FULL, 24, BZ_C_INK);
     U.st_batt = bz_label(U.status, "", BZ_F_LABEL, BZ_C_INK);
-    U.st_clock = bz_label(U.status, "", BZ_F_BODY, BZ_C_INK);
+    U.st_clock = bz_label(U.status, "--:--", BZ_F_BODY, BZ_C_INK);
+    lv_obj_update_layout(U.status);
+    /* centred on the orb */
+    lv_obj_align(U.status, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, ORB_Y + (ORB_D - lv_obj_get_height(U.status)) / 2);
     /* like a phone's status bar: a tap opens the control center (it pulls down from the top edge too) */
     lv_obj_add_flag(U.status, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(U.status, 16);
     bz_on_tap(U.status, status_tap, NULL);
+
+    /* the capsule: surface2, as the calm glass is; at rest exactly the orb */
+    IS.obj = lv_obj_create(g);
+    lv_obj_remove_style_all(IS.obj);
+    lv_obj_add_style(IS.obj, bz_style_fill(BZ_C_SURFACE2), 0);
+    lv_obj_set_style_radius(IS.obj, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_size(IS.obj, ORB_D, ORB_D);
+    lv_obj_set_pos(IS.obj, W - PAD - ORB_D, ORB_Y);
+    lv_obj_remove_flag(IS.obj, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_remove_flag(IS.obj, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_flag(IS.obj, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(IS.obj, 20); /* 88 px to the finger: 48 dp */
+    bz_on_tap(IS.obj, island_tap, NULL);
+    /* the message: icon and words right-aligned against the orb, so the capsule uncovers them as it grows */
+    IS.icon = bz_icon(IS.obj, BZ_I_INFO, 24, BZ_C_INK);
+    IS.text = bz_label_line(IS.obj, "", BZ_F_LABEL, BZ_C_INK, 10);
+    lv_obj_add_flag(IS.icon, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(IS.text, LV_OBJ_FLAG_HIDDEN);
+    /* the orb itself: a disc in the state's colour at the capsule's right end, the mark on it */
+    IS.disc = lv_obj_create(IS.obj);
+    lv_obj_remove_style_all(IS.disc);
+    lv_obj_set_size(IS.disc, ORB_D, ORB_D);
+    lv_obj_set_style_radius(IS.disc, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_opa(IS.disc, LV_OPA_COVER, 0);
+    lv_obj_align(IS.disc, LV_ALIGN_RIGHT_MID, 0, 0);
+    lv_obj_remove_flag(IS.disc, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(IS.disc, LV_OBJ_FLAG_EVENT_BUBBLE);
+    IS.mark = bz_mark(IS.disc, BZ_STALE, ISL_MARK);
+    lv_obj_center(IS.mark);
+    /* notifications not seen yet: a pip on the orb's shoulder */
+    IS.pip = lv_obj_create(IS.obj);
+    lv_obj_remove_style_all(IS.pip);
+    lv_obj_add_style(IS.pip, bz_style_fill(BZ_C_AMBER), 0);
+    lv_obj_set_style_radius(IS.pip, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_size(IS.pip, 12, 12);
+    lv_obj_align(IS.pip, LV_ALIGN_TOP_RIGHT, -2, 2);
+    lv_obj_remove_flag(IS.pip, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(IS.pip, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_add_flag(IS.pip, LV_OBJ_FLAG_HIDDEN);
+    bz_motion_init(&IS.w, ORB_D, 0.5f);
+    IS.w.keep = true; /* it grows though the lean renderer makes other motion instant: a strip, cheap */
+    IS.shown_w = IS.msg_w = ORB_D;
+    IS.seen_gen = ui_notify_gen();
 }
 
 static void status_refresh(void)
@@ -831,39 +911,140 @@ static void status_refresh(void)
     else ui_text(U.st_clock, "--:--");
 }
 
+/* A message out of the orb: the words set and measured, the capsule sent to their width. A message arriving
+ * while one shows reshapes the capsule from where it is and starts the hold again. */
+static void island_show(const char *icon, const char *text, bool flash)
+{
+    if (!IS.obj) return;
+    const char *ic = icon ? icon : BZ_I_INFO;
+    if (strcmp(lv_label_get_text(IS.icon), ic)) lv_label_set_text(IS.icon, ic);
+    lv_point_t sz;
+    lv_text_get_size(&sz, text, bz_font(BZ_F_LABEL), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+    int room = ISL_MAX_W - ISL_PAD - ISL_ICON - 10 - (ORB_D - 4);
+    int tw = sz.x < room ? sz.x + 2 : room;
+    ui_text(IS.text, "%s", text);
+    if (lv_obj_get_width(IS.text) != tw) lv_obj_set_width(IS.text, tw);
+    lv_obj_align(IS.text, LV_ALIGN_RIGHT_MID, -(ORB_D - 4), 0);
+    lv_obj_align(IS.icon, LV_ALIGN_RIGHT_MID, -(ORB_D - 4 + tw + 10), 0);
+    IS.msg_w = ISL_PAD + ISL_ICON + 10 + tw + ORB_D - 4;
+    IS.until = g_now + ISL_HOLD_S;
+    if (fabsf(IS.w.target - (float)IS.msg_w) > 0.5f) bz_motion_to(&IS.w, (float)IS.msg_w, BZ_RELEASE);
+    if (flash) IS.flash_at = g_now;
+    bz_ui_keep_alive();
+}
+
 void ui_island_say(const char *icon, const char *text)
 {
     ui_notify_add(icon, text); /* kept for the control center and the lock screen */
-    U.island_until = g_now + 2.4;
-    lv_obj_add_flag(U.island_mark, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_remove_flag(U.island_icon, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(U.island_icon, icon ? icon : BZ_I_INFO);
-    ui_text(U.island_text, "%s", text);
-    lv_obj_add_flag(U.island_tail, LV_OBJ_FLAG_HIDDEN);
-    bz_glass_set_tint(U.island_glass, 0, 0.35f);
+    island_show(icon, text, true);
+}
+
+/* The orb's colour: the state's tint over surface2, and toward amber while it pulses. */
+static uint32_t island_disc_rgb(double now)
+{
+    uint32_t base = bz_color(BZ_C_SURFACE2);
+    float tint = IS.st == BZ_OK ? 0.28f : IS.st == BZ_WARN ? 0.32f : IS.st == BZ_FAULT ? 0.4f : 0;
+    uint32_t c = tint > 0 ? bz_mix(base, bz_color(bz_status_color(IS.st)), tint) : bz_color(BZ_C_SURFACE3);
+    if (IS.flash_at) {
+        double t = now - IS.flash_at;
+        if (t >= ISL_PULSE_S * ISL_PULSES) {
+            IS.flash_at = 0;
+        } else {
+            /* raised-cosine pulses, in 12 steps (each step is a restyle of the 48 px disc, nothing else) */
+            float k = 0.5f - 0.5f * cosf((float)(2 * M_PI * t / ISL_PULSE_S));
+            k = roundf(k * 12) / 12;
+            c = bz_mix(c, bz_color(BZ_C_AMBER), 0.85f * k);
+        }
+    }
+    return c;
+}
+
+/* Every frame: the capsule's spring, the words' fade, the orb's pulse. Only what changed is set. */
+static void island_frame(double now)
+{
+    if (!IS.obj) return;
+    if (SL.active || bz_ui_sheeting()) return; /* a picture is sliding: nothing drawn under it */
+    if (IS.until && now >= IS.until) {
+        IS.until = 0;
+        bz_motion_to(&IS.w, ORB_D, BZ_SMOOTH);
+    }
+    bool moving = bz_motion_tick(&IS.w);
+    float wv = IS.w.value;
+    int w = (int)lroundf(wv < ORB_D ? ORB_D : wv > ISL_MAX_W + 24 ? ISL_MAX_W + 24 : wv);
+    if (w != IS.shown_w) {
+        IS.shown_w = w;
+        lv_obj_set_width(IS.obj, w);
+        lv_obj_set_x(IS.obj, W - PAD - w);
+    }
+    /* the words: in once the capsule is 55 % grown, out over its first 45 % back */
+    float k = IS.msg_w > ORB_D ? (float)(w - ORB_D) / (float)(IS.msg_w - ORB_D) : 0;
+    float f = (k - 0.55f) / 0.4f;
+    int opa = f <= 0 ? 0 : f >= 1 ? 255 : (int)(f * 16) * 16;
+    if (opa != IS.text_opa) {
+        bool was = IS.text_opa > 0;
+        IS.text_opa = opa;
+        if ((opa > 0) != was) {
+            if (opa > 0) {
+                lv_obj_remove_flag(IS.icon, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_remove_flag(IS.text, LV_OBJ_FLAG_HIDDEN);
+            } else {
+                lv_obj_add_flag(IS.icon, LV_OBJ_FLAG_HIDDEN);
+                lv_obj_add_flag(IS.text, LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+        if (opa > 0) {
+            lv_obj_set_style_text_opa(IS.icon, (lv_opa_t)opa, 0);
+            lv_obj_set_style_text_opa(IS.text, (lv_opa_t)opa, 0);
+        }
+    }
+    uint32_t c = island_disc_rgb(now);
+    if (c != IS.disc_rgb) {
+        IS.disc_rgb = c;
+        lv_obj_set_style_bg_color(IS.disc, bz_lv_rgb(c), 0);
+    }
+    if (moving || IS.flash_at) bz_ui_keep_alive(); /* the hold needs no frames: the idle loop sees it end */
 }
 
 static void island_refresh(void)
 {
-    if (U.island_until && g_now < U.island_until) return;
-    if (U.island_until) {
-        U.island_until = 0;
-        lv_obj_add_flag(U.island_icon, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(U.island_mark, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(U.island_tail, LV_OBJ_FLAG_HIDDEN);
-        bz_glass_set_tint(U.island_glass, -1, 0);
-    }
     const cat_robot_t *r = R;
     bz_status_t st = !r->connected ? BZ_STALE : r->n_errors || r->estop ? BZ_FAULT : r->n_warnings ? BZ_WARN : BZ_OK;
-    bz_mark_set(U.island_mark, st);
-    char batt[16];
-    if (!r->connected) {
-        ui_text(U.island_text, "looking for %d", S.team);
-    } else {
-        char name[40];
-        snprintf(name, sizeof name, "%s", r->have_identity ? r->name : "robot");
-        for (char *p = name; *p; p++) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
-        ui_text(U.island_text, "%s · %s · %s v", name, cat_mode_name(r), bz_fmt(batt, sizeof batt, r->have_battery, "%.2f", r->battery_v));
+    if (st != IS.st) {
+        IS.st = st;
+        bz_mark_set(IS.mark, st);
+    }
+    /* the pip: something new since the control center was last looked at */
+    if (ui_cc_is_open()) IS.seen_gen = ui_notify_gen();
+    bool pip = ui_notify_count() > 0 && IS.seen_gen != ui_notify_gen();
+    if (pip != IS.pip_on) {
+        IS.pip_on = pip;
+        if (pip) lv_obj_remove_flag(IS.pip, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(IS.pip, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* the link as it changes, once it has held a moment (a flapping link isn't news every second), in the
+     * capsule only: the orb's colour is the lasting word */
+    if (r->connected != IS.conn) {
+        IS.conn = r->connected;
+        IS.conn_at = g_now;
+        IS.told = false;
+    }
+    if (!IS.told && g_now - IS.conn_at > (IS.conn ? 1.0 : 4.0) && (IS.told_at == 0 || g_now - IS.told_at > 15)) {
+        IS.told = true;
+        if (IS.conn) {
+            char name[40], batt[16], msg[96];
+            snprintf(name, sizeof name, "%s", r->have_identity ? r->name : "robot");
+            for (char *p = name; *p; p++) if (*p >= 'A' && *p <= 'Z') *p = (char)(*p + 32);
+            snprintf(msg, sizeof msg, "%s \xc2\xb7 %s \xc2\xb7 %s v", name, cat_mode_name(r),
+                     bz_fmt(batt, sizeof batt, r->have_battery, "%.2f", r->battery_v));
+            island_show(BZ_I_SMART_TOY, msg, false);
+            IS.ever = true;
+            IS.told_at = g_now;
+        } else if (IS.ever) {
+            char msg[48];
+            snprintf(msg, sizeof msg, "lost the robot \xc2\xb7 looking for %d", S.team);
+            island_show(BZ_I_LINK_OFF, msg, false);
+            IS.told_at = g_now;
+        }
     }
     hal_tether_t t;
     hal_tether(&t);
@@ -1264,8 +1445,8 @@ void ui_app_open(const ui_app_t *app, lv_obj_t *from)
     lv_label_set_text(U.pill_icon, BZ_I_ARROW_BACK);
     bz_glass_show(U.pill_glass, true);
     lv_obj_remove_flag(U.pill, LV_OBJ_FLAG_HIDDEN);
-    /* an app is full screen: its head takes the band's right and its body the orb's corner; the island
-     * stays, with the robot's state */
+    /* an app is full screen: its head takes the band's right (short of the island's orb, which stays) and
+     * its body the assistant orb's corner */
     lv_obj_add_flag(U.status, LV_OBJ_FLAG_HIDDEN);
     ui_orb_show(false);
     win_layout();
@@ -1396,6 +1577,7 @@ void ui_settings_save(void)
     snprintf(n, sizeof n, "%d", S.tz);
     hal_kv_set("tzi", n);
     hal_kv_set("flip", S.flip ? "1" : "0");
+    hal_kv_set("accent", BZ_ACCENTS[S.accent >= 0 && S.accent < BZ_NACCENTS ? S.accent : 0].name);
 }
 
 static void settings_load(void)
@@ -1423,6 +1605,10 @@ static void settings_load(void)
     S.clicks = true;
     if (hal_kv_get("clicks", buf, sizeof buf)) S.clicks = buf[0] == '1';
     if (hal_kv_get("tzi", buf, sizeof buf)) S.tz = atoi(buf);
+    S.accent = 0;
+    if (hal_kv_get("accent", buf, sizeof buf))
+        for (int i = 0; i < BZ_NACCENTS; i++)
+            if (!strcmp(buf, BZ_ACCENTS[i].name)) S.accent = i;
     /* which way up is main's to decide, before the boot card's first frame (and the card follows the
      * tablet while it plays): taking it from the panel here never turns the picture mid-animation */
     S.flip = hal_flip();
@@ -1456,6 +1642,14 @@ static void orient_frame(double now)
     } else {
         since = 0;
     }
+}
+
+void ui_set_accent(int accent)
+{
+    if (accent < 0 || accent >= BZ_NACCENTS || accent == S.accent) return;
+    S.accent = accent;
+    bz_ui_set_accent(accent); /* shared styles rewritten: every screen, built or not, takes it */
+    ui_settings_save();
 }
 
 void ui_set_tone(bool dark, bool calm)
@@ -1567,6 +1761,7 @@ static void shell_frame(double now, double dt, void *user)
     caches_idle();
     PROF_MARK(1);
     dock_frame();
+    island_frame(now);
     PROF_MARK(2);
     orient_frame(now);
     PROF_MARK(3);
@@ -1667,6 +1862,7 @@ void ui_init(const ui_config_t *cfg)
     ui_sc_boot();
     ui_os_boot(); /* alarms ring whether or not the clock app has been opened */
     ui_apply_addresses();
+    bz_ui_set_accent(S.accent); /* before the tone: the first styles are built with it */
     bz_ui_set_mode(S.dark, S.calm);
     hal_set_brightness(S.brightness);
     hal_set_volume(S.volume);

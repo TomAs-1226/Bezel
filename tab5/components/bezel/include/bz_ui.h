@@ -66,6 +66,11 @@ void bz_ui_swallow_cancel(void);
 void bz_ui_set_mode(bool dark, bool calm);
 bool bz_ui_dark(void);
 bool bz_ui_calm(void);
+/* The accent (an index into BZ_ACCENTS): the `ice` role's colour in both tones. A change rewrites the shared
+ * styles, restyles every object and redraws the whole screen once (~40 ms on the tablet); before the UI is up
+ * it only chooses the palette. */
+void bz_ui_set_accent(int accent);
+int bz_ui_accent(void);
 /* The glass's one light, leaned by tilt: dx, dy in -1..1. Rides the `light` spring. */
 void bz_ui_lean_light(float dx, float dy);
 

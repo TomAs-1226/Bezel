@@ -4,6 +4,12 @@
  *   a greeting, the time (large), the date                 the weather, right-aligned (a tap: the forecast)
  *   what's playing (art, title, progress, controls) · the companion's face · four Home Assistant tiles
  *   the launcher: music, smart home, weather, calendar, timer, alarms, photos, companion, settings, catalyst
+ * The island's orb keeps the top-right corner: the weather sits under it, its foot on the cards' line.
+ *
+ * Settings > look chooses which cards show (the three in the middle row close up left to right, the last
+ * one shown taking the rest of the width; the weather and the next match simply go), the clock (the big face
+ * or the display face, seconds beside it or not) and the ground (plain, or tinted with the accent). hm_layout()
+ * places everything for the choice, once per change.
  *
  * Every label has a width it was measured against at the tablet's type size (the lean faces: body 24, body_s
  * 21, name 30, mono 19/16), and a line that can run long (a song, a reason, a hint) either ellipsizes on one
@@ -30,18 +36,20 @@
 #include <time.h>
 
 #define M 56                        /* the surface's side margin */
-#define TOP_Y 50                    /* the greeting's top; the time under it, the date under that */
+#define TOP_Y 46                    /* the greeting's top; the time under it, the date under that */
 #define WX_W 460                    /* the weather's column, right-aligned */
-#define CARD_Y 240
+#define CARD_Y 250
 #define CARD_H 268
 #define CARD_IN_H (CARD_H - 2 * BZ_PAD_TILE)
 #define NP_W 560                    /* now playing */
 #define CP_X (M + NP_W + BZ_GAP)    /* the companion */
 #define CP_W 232
-#define HA_X (CP_X + CP_W + BZ_GAP) /* the smart home tiles, two by two */
+#define HA_X (CP_X + CP_W + BZ_GAP) /* the smart home tiles, two by two (as laid out with every card shown) */
 #define HA_W (W - M - HA_X)
 #define HT_W ((HA_W - BZ_GAP) / 2)
 #define HT_H ((CARD_H - BZ_GAP) / 2)
+#define CLOCK_DY 20                 /* the time's top under the greeting's */
+#define DATE_DY 114                 /* the date's top under the big clock's (the display face: less by its size) */
 #define HT_PAD 16
 #define ART HOME_ART                /* 160 */
 #define NP_TX (ART + 24)            /* the text column, inside the card */
@@ -90,6 +98,10 @@ hm_cfg_t *hm_cfg(void)
     hal_kv_get("ha_url", CFG->ha_url, sizeof CFG->ha_url);
     hal_kv_get("ha_token", CFG->ha_token, sizeof CFG->ha_token);
     hal_kv_get("ha_picks", CFG->picks, sizeof CFG->picks);
+    CFG->cards = hal_kv_get("hm_cards", v, sizeof v) ? atoi(v) & HM_CARD_ALL : HM_CARD_ALL;
+    CFG->small_clock = kv_bool("hm_clock", false);
+    CFG->seconds = kv_bool("hm_secs", false);
+    CFG->tint = kv_bool("hm_bg", false);
     return CFG;
 }
 
@@ -117,6 +129,11 @@ void hm_cfg_save(void)
     hal_kv_set("ha_url", c->ha_url);
     hal_kv_set("ha_token", c->ha_token);
     hal_kv_set("ha_picks", c->picks);
+    snprintf(v, sizeof v, "%d", c->cards);
+    hal_kv_set("hm_cards", v);
+    hal_kv_set("hm_clock", c->small_clock ? "1" : "0");
+    hal_kv_set("hm_secs", c->seconds ? "1" : "0");
+    hal_kv_set("hm_bg", c->tint ? "1" : "0");
     hm_cfg_apply();
 }
 
@@ -171,7 +188,7 @@ static const hm_app_t LAUNCH[] = {
 #define NLAUNCH ((int)(sizeof LAUNCH / sizeof LAUNCH[0]))
 
 static struct {
-    lv_obj_t *root, *greet, *clock, *date, *match;
+    lv_obj_t *root, *greet, *clock_row, *clock, *secs, *date, *match;
     lv_obj_t *wx, *wx_icon, *wx_temp, *wx_line, *wx_place;
     lv_obj_t *np, *np_img, *np_ph, *np_src, *np_title, *np_artist, *np_meter, *np_time, *np_play;
     lv_obj_t *eye[2], *face;
@@ -180,7 +197,8 @@ static struct {
     lv_image_dsc_t art_dsc;
     uint16_t *art;                 /* ART² RGB565 */
     unsigned art_gen, pc_gen, wx_gen, ha_gen, pl_gen;
-    int last_min, last_sec;
+    int last_min, last_sec, secs_shown;
+    uint32_t ground_sig;           /* the ground as last painted: the tint setting, the accent, the tone */
     bool art_shown;
     bool local;                    /* the card shows the tablet's own player (else the PC's) */
     bool playing_shown, progress_shown;
@@ -289,21 +307,24 @@ static lv_obj_t *card(lv_obj_t *r, int x, int w)
 
 static void build_top(lv_obj_t *r)
 {
-    /* the time, left */
+    /* the time, left: the minutes, and the seconds beside them in the quiet colour when asked for (placed by
+     * hm_layout) */
     HM.greet = bz_label_line(r, "", BZ_F_LABEL, BZ_C_DIM, 420);
     lv_obj_set_pos(HM.greet, M + 2, TOP_Y);
-    HM.clock = bz_label(r, "--:--", BZ_F_CLOCK, BZ_C_INK);
-    lv_obj_set_pos(HM.clock, M - 6, TOP_Y + 20);
+    HM.clock_row = bz_row(r, 10);
+    lv_obj_set_flex_align(HM.clock_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_set_pos(HM.clock_row, M - 6, TOP_Y + CLOCK_DY);
+    HM.clock = bz_label(HM.clock_row, "--:--", BZ_F_CLOCK, BZ_C_INK);
+    HM.secs = bz_label(HM.clock_row, "00", BZ_F_TITLE, BZ_C_DIM);
+    lv_obj_add_flag(HM.secs, LV_OBJ_FLAG_HIDDEN);
+    HM.secs_shown = -1;
     HM.date = bz_label_line(r, "", BZ_F_BODY, BZ_C_DIM, 560);
-    lv_obj_set_pos(HM.date, M + 2, TOP_Y + 134);
     HM.match = bz_label_line(r, "", BZ_F_LABEL, BZ_C_SIGNAL, 560); /* the team's next match (ui_match.c) */
-    lv_obj_set_pos(HM.match, M + 2, TOP_Y + 166);
 
-    /* the weather, right-aligned: a tap opens the forecast */
+    /* the weather, right-aligned under the island's orb: a tap opens the forecast */
     lv_obj_t *wx = bz_col(r, 2);
     HM.wx = wx;
     lv_obj_set_width(wx, WX_W);
-    lv_obj_set_pos(wx, W - M - WX_W, TOP_Y);
     lv_obj_set_flex_align(wx, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
     lv_obj_add_flag(wx, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_set_ext_click_area(wx, 12);
@@ -453,6 +474,96 @@ static void build_launcher(lv_obj_t *r)
     }
 }
 
+static void show(lv_obj_t *o, bool on);
+
+/* The smart home tiles and their hint, in an area `w` wide from x */
+static void layout_home(int x, int w)
+{
+    int tw = (w - BZ_GAP) / 2;
+    for (int i = 0; i < HM_HOME_TILES; i++) {
+        ha_tile_t *t = &HM.ha[i];
+        lv_obj_set_pos(t->tile, x + (i % 2) * (tw + BZ_GAP), CARD_Y + (i / 2) * (HT_H + BZ_GAP));
+        lv_obj_set_width(t->tile, tw);
+        lv_obj_set_width(t->state, tw - 2 * HT_PAD - 50);
+        lv_obj_set_width(t->name, tw - 2 * HT_PAD);
+    }
+    lv_obj_set_pos(HM.ha_hint, x, CARD_Y);
+    lv_obj_set_width(HM.ha_hint, w);
+    lv_obj_set_width(lv_obj_get_child(HM.ha_hint, 1), w - 2 * BZ_PAD_TILE);
+    lv_obj_set_width(HM.ha_hint_text, w - 2 * BZ_PAD_TILE);
+}
+
+/* Everything placed for the look: which cards, which clock. Once per change (each set redraws). */
+static void hm_layout(void)
+{
+    hm_cfg_t *c = hm_cfg();
+    /* the time: the big face or the display face, the date and the next match under it */
+    bz_set_font(HM.clock, c->small_clock ? BZ_F_DISPLAY : BZ_F_CLOCK);
+    show(HM.secs, c->seconds);
+    HM.secs_shown = -1;
+    int big = lv_font_get_line_height(bz_font(BZ_F_CLOCK)), now = lv_font_get_line_height(bz_font(c->small_clock ? BZ_F_DISPLAY : BZ_F_CLOCK));
+    int date_y = TOP_Y + CLOCK_DY + DATE_DY - (big - now);
+    lv_obj_set_pos(HM.date, M + 2, date_y);
+    lv_obj_set_pos(HM.match, M + 2, date_y + 32);
+    show(HM.match, c->cards & HM_CARD_MATCH);
+    /* the weather: its foot on the cards' line (anchored there, so a line coming or going grows it upward),
+     * which keeps it under the orb's corner */
+    show(HM.wx, c->cards & HM_CARD_WEATHER);
+    lv_obj_align(HM.wx, LV_ALIGN_BOTTOM_RIGHT, -M, -(H - CARD_Y + 14));
+    /* the middle row closes up: music and the companion keep their widths, the last card shown takes the rest */
+    bool mu = c->cards & HM_CARD_MUSIC, cp = c->cards & HM_CARD_COMPANION, ha = c->cards & HM_CARD_HOME;
+    int x = M;
+    show(HM.np, mu);
+    if (mu) {
+        lv_obj_set_pos(HM.np, x, CARD_Y);
+        x += NP_W + BZ_GAP;
+    }
+    show(HM.face, cp);
+    if (cp) {
+        lv_obj_set_pos(HM.face, x, CARD_Y);
+        lv_obj_set_width(HM.face, ha ? CP_W : W - M - x);
+        x += CP_W + BZ_GAP;
+    }
+    if (ha) layout_home(x, W - M - x);
+    else {
+        show(HM.ha_hint, false);
+        for (int i = 0; i < HM_HOME_TILES; i++) {
+            show(HM.ha[i].tile, false);
+            HM.ha[i].used = false;
+        }
+    }
+    /* the seconds sit on the minutes' baseline, whichever face */
+    const lv_font_t *cf = bz_font(c->small_clock ? BZ_F_DISPLAY : BZ_F_CLOCK), *sf = bz_font(BZ_F_TITLE);
+    lv_obj_set_style_translate_y(HM.secs, -(int)(cf->base_line - sf->base_line), 0);
+    HM.ha_gen = 0; /* the tiles and the hint shown again, as the entities say */
+}
+
+/* The ground: Bezel's, or tinted with the accent (a solid tint: a gradient this faint bands in 565) */
+static void hm_ground(void)
+{
+    bool tint = hm_cfg()->tint;
+    uint32_t sig = (tint ? bz_color(BZ_C_ICE) ^ 0x1000000u : 0) ^ (bz_ui_dark() ? 0x2000000u : 0);
+    if (sig == HM.ground_sig) return;
+    HM.ground_sig = sig;
+    if (tint) {
+        lv_obj_remove_style(HM.root, bz_style_fill(BZ_C_GROUND), 0);
+        lv_obj_set_style_bg_color(HM.root, bz_lv_rgb(bz_mix(bz_color(BZ_C_GROUND), bz_color(BZ_C_ICE), bz_ui_dark() ? 0.07f : 0.16f)), 0);
+        lv_obj_set_style_bg_opa(HM.root, LV_OPA_COVER, 0);
+    } else {
+        lv_obj_remove_local_style_prop(HM.root, LV_STYLE_BG_COLOR, 0);
+        lv_obj_remove_style(HM.root, bz_style_fill(BZ_C_GROUND), 0);
+        lv_obj_add_style(HM.root, bz_style_fill(BZ_C_GROUND), 0);
+    }
+}
+
+void hm_look_changed(void)
+{
+    if (!HM.built) return;
+    hm_layout();
+    hm_ground();
+    HM.last_min = -1; /* the date and the match line again, where they now are */
+}
+
 static void build(void)
 {
     lv_obj_t *r = bz_box(bz_ui_content());
@@ -492,6 +603,8 @@ static void build(void)
     HM.art_dsc.data = (const uint8_t *)HM.art;
     HM.art_dsc.data_size = ART * ART * 2;
     HM.built = true;
+    hm_layout();
+    hm_ground();
 }
 
 /* ---- what changes ---- */
@@ -544,6 +657,7 @@ static void show(lv_obj_t *o, bool on)
 
 static void refresh_ha(void)
 {
+    if (!(hm_cfg()->cards & HM_CARD_HOME)) return; /* not on this look */
     home_ha_status_t st;
     home_ha_status(&st);
     if (st.gen == HM.ha_gen && HM.ha_gen) return;
@@ -721,6 +835,12 @@ static void refresh_clock(void)
     time_t now = time(NULL);
     struct tm tm;
     localtime_r(&now, &tm);
+    /* the seconds, when shown: one small label a second, nothing else */
+    if (hm_cfg()->seconds && tm.tm_sec != HM.secs_shown) {
+        HM.secs_shown = tm.tm_sec;
+        if (tm.tm_year > 120) ui_text(HM.secs, "%02d", tm.tm_sec);
+        else ui_text(HM.secs, "%s", "");
+    }
     if (tm.tm_min == HM.last_min) return;
     HM.last_min = tm.tm_min;
     char nx[96];
@@ -756,6 +876,7 @@ static void hm_refresh(void *u)
     /* the network only for what's on screen: with an app over it, the app asks for its own */
     if (ui_app_any_open()) return;
     home_want(HOME_WANT_PC | HOME_WANT_HA | HOME_WANT_WEATHER);
+    hm_ground(); /* the accent or the tone may have changed under it */
     refresh_clock();
     refresh_weather();
     refresh_media();
@@ -978,6 +1099,7 @@ static void saver_tick(void)
 static void eyes_tick(double now)
 {
     if (!HM.active || HM.sheet || ui_app_any_open() || ui_asleep() || !HM.eye[0]) return;
+    if (!(hm_cfg()->cards & HM_CARD_COMPANION)) return; /* no face on this look: nothing to blink */
     if (now >= HM.blink_at && HM.lid.target > 0.5f) {
         bz_motion_to(&HM.lid, 0, BZ_TICK);
         HM.blinking = true;

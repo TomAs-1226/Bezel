@@ -79,7 +79,7 @@ Two paths, chosen per motion:
 | Service | Where | Notes |
 |---|---|---|
 | power | `ui_shell.c` (SLP), `ui_lock.c` | dim, sleep, wake (the waking tap presses nothing), lock screen |
-| notifications | `ui_lock.c` | every island message kept; listed in the control center and on the lock screen |
+| notifications | `ui_lock.c`, `ui_shell.c` (the island) | every island message kept; listed in the control center and on the lock screen; the island's orb shows a pip until the control center is opened |
 | settings | `hal_kv_*` (NVS) | one key per setting |
 | storage | `ui_storage.c` | microSD layout `/sdcard/CATOS/{DOCS,PHOTOS,AUDIO,DATA,LOGS}` |
 | network | `hal_tab5_net.c` | Wi-Fi (C6 over SDIO), USB tether, mDNS, HTTPS streaming |
@@ -111,9 +111,17 @@ An alarm before each of the team's matches at its current event (team from setti
   and "in N min", our alliance's colour down the edge, the partners and the opponents, the predicted or scheduled
   time, a big **open checklist** (queue reminder: lifts the lock and opens `APP_CHECK`) and **dismiss**. It wakes
   and lights the screen (`bz_ui_wake`; `bz_ui_swallow_cancel` so the first tap presses its buttons). The sound is
-  a burst every 2 s, two notes, then three, then four higher, from 55 % to full tone level over a minute, with the
+  a burst every 2 s (below), escalating in three steps, from 55 % to full level over a minute, with the
   speaker raised to at least 70 % while it rings (restored after); it stops after 2 min (a notification says so),
   and the screen stays until dismissed or 10 min after the match's time. Sound can be turned off.
+- **The sound.** Synthesized, not tones: bell-like notes (fundamental, octave, twelfth and a faint 4.2x shimmer,
+  the upper partials decaying faster; a 6 ms attack, an exponential decay, a soft limiter), rendered per burst
+  into a PSRAM buffer (a few ms of CPU) and played on the speaker's 24 kHz PCM stream (`hal_play_*`; a music or
+  speech stream gives way, and if none can be had the old `hal_tone` bursts ring). The **queue reminder** is a
+  rising E-major arpeggio (E5 G#5 B5 E6); after 5 bursts a double tap on the top note is added, after 15 a second
+  arpeggio a fifth higher, faster and brighter. The **match reminder** is an urgent A5/E6 two-tone: four notes,
+  then six faster, then eight ending on a brighter D6/A6. A **schedule change** is a soft G5-D6 chime, once, at
+  the tablet's volume (at least 30 %); it doesn't cut a stream that is talking (tones mix over it instead).
 - **Schedule changes.** A tracked match whose time moves by 3 min or more from the time last announced, or a new
   match of ours (a playoff), is an island message and a notification with a chime ("Q34 moved to 14:52 (+8 min)");
   its reminders ring again for the new time. One line per poll ("· 9 more of ours changed"); the first schedule
@@ -124,7 +132,8 @@ An alarm before each of the team's matches at its current event (team from setti
   (off, 3-10 min), the next alarm, and a test alarm. kv `matchalert` = `on,queue,match,sound`.
 - **Home mode** shows "next: Q34 · 14:52 · red with 1234, 5678" under the date.
 - **Testing.** `python tools/tab5_dev.py COM9 alarm test` rings a made-up Q34 queue alarm in 5 s
-  (`alarm test 30`: in 30 s, time to switch apps or let the screen sleep); the alerts view has the same button.
+  (`alarm test 30`: in 30 s, time to switch apps or let the screen sleep); `alarm test 5 match` the match
+  reminder, `alarm test 5 chime` a made-up schedule change (message and chime). The alerts view has a button.
 
 #### Log analysis
 
@@ -196,9 +205,39 @@ The robot can't know which of the team's batteries is in it (`RobotIdentity.batt
 
 ### 4. The shell
 
-Home, robot, devices, power, motion and the app library as pages; the status bar and the island (status
-at rest, messages as they come); the control center (a pull from the top edge anywhere); the lock screen;
-the orb (the assistant, over the pages only).
+Home, robot, devices, power, motion and the app library as pages; the status bar and the island; the control
+center (a pull from the top edge anywhere); the lock screen; the assistant's orb (bottom right, over the pages
+only).
+
+**The island** (`ui_shell.c`) never rests over content. At rest it is a 48 px orb in the top-right corner, over
+the pages, apps and home mode alike: the robot's state is its colour and mark (● connected, ◆ a warning, ■ a fault
+or e-stop, ○ looking for the team), and a small amber pip means notifications not yet seen. A tap opens the
+control center, which lists them (and the link's detail). A message (`ui_island_say`, kept as a notification)
+pulses the orb amber three times while a capsule grows leftwards out of it on the `release` spring, its words
+fading in once it is 55 % grown; it holds 3 s and shrinks back into the orb on `smooth`. A message arriving
+while one shows reshapes the capsule and restarts the hold. The link coming up ("robot · teleop · 12.41 v") or
+going ("lost the robot") shows the same way, once it has held a moment, but isn't kept. Cost: the capsule's own
+strip redraws while it moves, the orb's 48 px disc while it pulses, nothing at rest; nothing moves while a page
+or sheet picture slides.
+
+Layout contract: whatever sits at the band's right ends `ORB_CLEAR` (64 px) short of the page padding: the status
+cluster (link, battery, clock, centred on the orb) and every app head's buttons are aligned at `HEAD_RIGHT_X`
+(`ui_internal.h`). A page's head context can now run to the status cluster (`ui_head_width`).
+
+**Look** (settings > look). The tone (dark, light); the **accent**, one of eight curated colours (ice, orange,
+leaf, violet, rose, amber, teal, white; `BZ_ACCENTS` in `bz_tokens.c`, each with a dark-tone fill and a light-tone
+container and their on-colours), which is Bezel's `ice` role: selected chips and modes, levels, meters, lit
+tiles, the companion's eyes. `signal` (orange) stays the one signal colour for the primary action and the team
+itself. Changing it (`bz_ui_set_accent`) rebuilds the palette, rewrites the shared styles and restyles every
+object (`lv_obj_report_style_change`), then redraws the screen once (~40 ms); every screen, built or not, takes
+it, because nothing stores a raw accent colour. Home mode's face: which cards show (music, companion, smart home,
+weather, next match; the middle row closes up and the last card takes the rest of the width), the clock (big or
+the smaller display face, seconds beside it or not: one small label a second) and the ground (plain, or a solid
+tint of the accent). kv: `accent` (the accent's name), `hm_cards` (bits: music 1, companion 2, smart home 4,
+weather 8, next match 16), `hm_clock` (1 small), `hm_secs`, `hm_bg` (1 tinted).
+
+Dev console (`tools/tab5_dev.py COM9 "..."`): `say <text>` sends a message through the island, `accent <name|n>`
+sets the accent, `settings <section>` opens settings on a section (`settings look`).
 
 ### 5. Apps
 
