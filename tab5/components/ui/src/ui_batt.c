@@ -594,8 +594,8 @@ static lv_obj_t *batt_tile(lv_obj_t *parent, const cat_batt_t *b, int64_t now, t
     lv_obj_align(mk, LV_ALIGN_TOP_RIGHT, 0, 8);
     int m = 0;
     float r = cat_batt_r_now(b, &m);
-    if (KNOWN(r)) snprintf(s, sizeof s, "%.0f m\xce\xa9", r);
-    else snprintf(s, sizeof s, "\xe2\x80\x94 m\xce\xa9");
+    if (KNOWN(r)) snprintf(s, sizeof s, "%.0f mohm", r);
+    else snprintf(s, sizeof s, "\xe2\x80\x94 mohm");
     l = bz_label_line(t, s, BZ_F_NAME, ink, o.w - 32);
     lv_obj_set_pos(l, 0, 42);
     short_state(b, now, s, sizeof s);
@@ -874,7 +874,7 @@ static void build_detail(int64_t now)
     int m = 0;
     float rn = cat_batt_r_now(b, &m);
     char rs[32] = "not measured", bs[32] = "", yr[16] = "year unknown", ch[48];
-    if (KNOWN(rn)) snprintf(rs, sizeof rs, "%.1f m\xce\xa9", rn);
+    if (KNOWN(rn)) snprintf(rs, sizeof rs, "%.1f mohm", rn);
     if (KNOWN(b->r_base)) snprintf(bs, sizeof bs, " (baseline %.1f)", b->r_base);
     if (b->year) snprintf(yr, sizeof yr, "bought %d", b->year);
     short_state(b, now, ch, sizeof ch);
@@ -895,7 +895,7 @@ static void build_detail(int64_t now)
         day_hhmm(u->t, when, sizeof when);
         if (KNOWN(u->v_rest)) snprintf(v0, sizeof v0, "%.2f v", u->v_rest);
         if (KNOWN(u->v_min)) snprintf(vm, sizeof vm, "%.1f v", u->v_min);
-        if (KNOWN(u->r_mohm)) snprintf(rr, sizeof rr, "%.0f m\xce\xa9", u->r_mohm);
+        if (KNOWN(u->r_mohm)) snprintf(rr, sizeof rr, "%.0f mohm", u->r_mohm);
         if (KNOWN(u->wh)) snprintf(wh, sizeof wh, "%.1f wh", u->wh);
         if (u->brownouts >= 0) snprintf(br, sizeof br, "%d", u->brownouts);
         static const char *const CH[CC_NCHARGE] = { "", " \xc2\xb7 fresh off charger", " \xc2\xb7 rested", " \xc2\xb7 not charged" };
@@ -984,7 +984,7 @@ static void ba_show(void)
 static void batt_build(lv_obj_t *b)
 {
     lv_obj_t *hr = bz_row(b, 14);
-    lv_obj_align(hr, LV_ALIGN_TOP_RIGHT, -PAD, 18);
+    lv_obj_align(hr, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, 18); /* clear of the orb */
     lv_obj_set_height(hr, 60);
     BA.sub = bz_label(hr, "", BZ_F_LABEL, BZ_C_DIM);
     ui_button(hr, BZ_I_SYNC, "read logs", ba_scan, NULL);

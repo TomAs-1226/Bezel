@@ -336,6 +336,9 @@ bool hal_rtc_get(struct tm *out)
     out->tm_mday = bcd(r[4] & 0x3f);
     out->tm_mon = bcd(r[5] & 0x1f) - 1;
     out->tm_year = bcd(r[6]) + 100;
+    /* the chip keeps local wall time with no DST flag: -1 lets mktime work it out. Left 0 (standard time), a
+     * start in PDT came up an hour ahead until SNTP set it right a minute later */
+    out->tm_isdst = -1;
     return true;
 }
 
