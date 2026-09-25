@@ -86,6 +86,8 @@ static struct {
     char base[128];                /* the direct route's base URL (tests point it at a fake) */
     char oai_base[128];            /* the OpenAI route's ("oai_base"; "" → https://api.openai.com) */
     char *pending;
+    void (*job)(void *);           /* assist_post_job's: run by the worker between turns */
+    void *job_arg;
     bool busy, stop, started;
     uint32_t gen;                  /* bumps on assist_reset: a stale worker's writes are dropped */
     int team;
@@ -802,7 +804,19 @@ static void *worker(void *arg)
     pthread_mutex_unlock(&A.lock);
     for (;;) {
         pthread_mutex_lock(&A.lock);
-        while (!A.pending) pthread_cond_wait(&A.wake, &A.lock);
+        while (!A.pending && !A.job) pthread_cond_wait(&A.wake, &A.lock);
+        if (A.job) {
+            /* a one-shot job (a log analysis) between conversation turns, on this thread's stack */
+            void (*job)(void *) = A.job;
+            void *arg = A.job_arg;
+            pthread_mutex_unlock(&A.lock);
+            job(arg);
+            pthread_mutex_lock(&A.lock);
+            A.job = NULL;
+            A.job_arg = NULL;
+            pthread_mutex_unlock(&A.lock);
+            continue;
+        }
         char *text = A.pending;
         A.pending = NULL;
         A.stop = false;
@@ -1221,6 +1235,35 @@ void assist_set_base_url(const char *url)
     pthread_mutex_lock(&A.lock);
     snprintf(A.base, sizeof A.base, "%s", url ? url : "");
     pthread_mutex_unlock(&A.lock);
+}
+
+bool assist_post_job(void (*fn)(void *), void *arg)
+{
+    pthread_mutex_lock(&A.lock);
+    bool ok = A.started && !A.job;
+    if (ok) {
+        A.job = fn;
+        A.job_arg = arg;
+        pthread_cond_signal(&A.wake);
+    }
+    pthread_mutex_unlock(&A.lock);
+    return ok;
+}
+
+bool assist_oai_endpoint(char *url, size_t un, char *hdr, size_t hn, char *model, size_t mn)
+{
+    pthread_mutex_lock(&A.lock);
+    snprintf(url, un, "%s", A.oai_base[0] ? A.oai_base : AS_OAI_DEFAULT_BASE);
+    snprintf(model, mn, "%s", A.cfg.oai_model[0] ? A.cfg.oai_model : AS_OAI_DEFAULT_MODEL);
+    bool ok = A.cfg.oai_key[0] != 0;
+    /* not as_oai_headers': this answer isn't streamed */
+    snprintf(hdr, hn, "Authorization: Bearer %s\r\ncontent-type: application/json\r\naccept: application/json\r\n",
+             A.cfg.oai_key);
+    pthread_mutex_unlock(&A.lock);
+    size_t l = strlen(url);
+    while (l && url[l - 1] == '/') url[--l] = 0;
+    snprintf(url + l, un - l, "/v1/chat/completions");
+    return ok;
 }
 
 bool assist_ready(char *why, size_t n)

@@ -4,7 +4,8 @@
  * It runs on the home services' worker (home.h): no thread of its own. The UI calls tba_want() from the
  * app's 10 Hz refresh while the app is on screen; the worker then polls every 60 s (20 s on a day the event
  * is running), with If-Modified-Since so an unchanged answer is a 304 and no body. Nothing polls while
- * nothing wants it. The last answer per endpoint is kept in PSRAM and on the card under
+ * nothing wants it. The match alerts (ui_match.c) also call tba_want() once per background poll, every
+ * ~2 min on an event day with matches to come and every 30 min otherwise. The last answer per endpoint is kept in PSRAM and on the card under
  * <sd>/CATOS/DATA/tba/, so the app has something to show before the network answers, or without it.
  *
  * The key (X-TBA-Auth-Key, from thebluealliance.com/account) is the UI's to read from kv "tba_key" (NVS:
@@ -88,6 +89,10 @@ void tba_get(tba_state_t *out); /* ~9 KB: give it a PSRAM copy, not a stack */
 /* Our next unplayed match at the current event, from the last data (no network): false when there is
  * none. For a line like "your next match is Q34 in 12 min" (when = predicted, else scheduled, else 0). */
 bool tba_next_match(tba_match_t *out, time_t *when);
+/* Our unplayed matches at the current event, in order (at most max into out, the count in *n), from the last
+ * data (no network): the match alerts' view, without tba_get()'s ~9 KB copy. Returns the phase; *live and
+ * *offline as in tba_state_t, event_key ("" none) may be NULL. */
+tba_phase_t tba_upcoming(tba_match_t *out, int max, int *n, bool *live, bool *offline, char *event_key, size_t kn);
 
 #ifdef __cplusplus
 }

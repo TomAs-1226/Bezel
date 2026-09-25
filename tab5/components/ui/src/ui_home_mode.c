@@ -171,7 +171,7 @@ static const hm_app_t LAUNCH[] = {
 #define NLAUNCH ((int)(sizeof LAUNCH / sizeof LAUNCH[0]))
 
 static struct {
-    lv_obj_t *root, *greet, *clock, *date;
+    lv_obj_t *root, *greet, *clock, *date, *match;
     lv_obj_t *wx, *wx_icon, *wx_temp, *wx_line, *wx_place;
     lv_obj_t *np, *np_img, *np_ph, *np_src, *np_title, *np_artist, *np_meter, *np_time, *np_play;
     lv_obj_t *eye[2], *face;
@@ -296,6 +296,8 @@ static void build_top(lv_obj_t *r)
     lv_obj_set_pos(HM.clock, M - 6, TOP_Y + 20);
     HM.date = bz_label_line(r, "", BZ_F_BODY, BZ_C_DIM, 560);
     lv_obj_set_pos(HM.date, M + 2, TOP_Y + 134);
+    HM.match = bz_label_line(r, "", BZ_F_LABEL, BZ_C_SIGNAL, 560); /* the team's next match (ui_match.c) */
+    lv_obj_set_pos(HM.match, M + 2, TOP_Y + 166);
 
     /* the weather, right-aligned: a tap opens the forecast */
     lv_obj_t *wx = bz_col(r, 2);
@@ -721,6 +723,9 @@ static void refresh_clock(void)
     localtime_r(&now, &tm);
     if (tm.tm_min == HM.last_min) return;
     HM.last_min = tm.tm_min;
+    char nx[96];
+    if (!ui_match_next_line(nx, sizeof nx)) nx[0] = 0;
+    ui_text(HM.match, "%s", nx);
     if (tm.tm_year > 120) {
         /* rolls up into place, unless this is the first time it's set */
         if (HM.clock && lv_label_get_text(HM.clock)[0] != '-' && HM.active && HM.roll.keep) {

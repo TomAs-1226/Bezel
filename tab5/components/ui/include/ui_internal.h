@@ -62,6 +62,7 @@ void ui_notify_age(const ui_note_t *n, char *out, size_t len);
 /* The lock screen (ui_lock.c): shown as the screen goes to sleep, lifted by a push up. */
 void ui_lock_init(void);
 void ui_lock_show(void);
+void ui_lock_lift(void);   /* gone at once, without the push (an alarm's button opening an app) */
 bool ui_locked(void);
 bool ui_overlay_up(void);  /* the lock screen or the control center covers the pages */
 bool ui_asleep(void);
@@ -130,6 +131,16 @@ extern const ui_app_t APP_TIMER, APP_CALC, APP_NOTES, APP_CHECK, APP_LIGHT, APP_
 extern const ui_app_t APP_GEAR, APP_RULER, APP_REF; /* ui_apps_shop.c */
 /* The Blue Alliance (ui_app_tba.c): the team's event, its next match, standing and the rankings. */
 extern const ui_app_t APP_TBA;
+/* Match alerts (ui_match.c): alarms before the team's matches from The Blue Alliance, polled in the background,
+ * and schedule changes as notifications. ui_match_boot once at start-up, after the lock screen. */
+void ui_match_boot(void);
+bool ui_alarm_up(void);                          /* the alarm screen covers everything */
+void ui_match_test(double delay_s);              /* a made-up match's alarm in delay_s (dev console "alarm test") */
+bool ui_match_next_line(char *out, size_t n);    /* "next: Q34 · 14:52 · red with 1234, 5678"; false: none */
+void ui_match_settings(lv_obj_t *pane, int w);   /* the tba app's alerts view, into a flex column */
+void ui_match_settings_refresh(void);            /* its status line, while shown */
+/* The logs app straight onto a log's (or a recorder run's) analysis: the recorder's analyze button. */
+void ui_logs_analyze(const char *path);
 /* Catalyst OS's everyday apps (ui_apps_os.c), on the card's CATOS layout (ui_storage.h). */
 extern const ui_app_t APP_CLOCK, APP_CALENDAR, APP_DOCS, APP_PHOTOS, APP_STORAGE;
 /* The photos app straight into a full-screen slideshow of the card's pictures (home mode's screensaver); a tap

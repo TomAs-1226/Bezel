@@ -113,6 +113,22 @@ bool tba_next_match(tba_match_t *out, time_t *when)
     return found;
 }
 
+tba_phase_t tba_upcoming(tba_match_t *out, int max, int *n, bool *live, bool *offline, char *event_key, size_t kn)
+{
+    int k = 0;
+    pthread_mutex_lock(&g_lock);
+    const tba_state_t *s = T ? &T->st : NULL;
+    tba_phase_t ph = s ? s->phase : TBA_IDLE;
+    if (live) *live = s && s->live;
+    if (offline) *offline = s && s->offline;
+    if (event_key && kn) snprintf(event_key, kn, "%s", s && s->have_event ? s->event_key : "");
+    for (int i = 0; s && ph == TBA_READY && i < s->nmatches && k < max; i++)
+        if (!s->matches[i].played && s->matches[i].ours) out[k++] = s->matches[i];
+    pthread_mutex_unlock(&g_lock);
+    *n = k;
+    return ph;
+}
+
 /* ---- the card cache ---- */
 
 /* "<sd>/CATOS/DATA/tba/team_frc5805_events_2026_simple.json": the URL's path under /api/v3, '/' → '_' */

@@ -151,6 +151,14 @@ void ui_lock_show(void)
     bz_motion_set(&LK.k, 1, 0);
 }
 
+void ui_lock_lift(void)
+{
+    if (!LK.locked || LK.sheet) return;
+    LK.locked = false;
+    lock_visible(false);
+    bz_motion_set(&LK.k, 0, 0);
+}
+
 bool ui_locked(void) { return LK.locked; }
 
 /* something covers the pages (the orb, which floats over them, stays out of its way) */
@@ -160,7 +168,7 @@ static void lock_frame(double now, double dt, void *user)
 {
     (void)dt; (void)user;
     if (!LK.locked) return;
-    if (ui_asleep()) return;
+    if (ui_asleep() || (ui_alarm_up() && !LK.sheet)) return; /* a push on the alarm screen isn't the lock's */
     int x0, y0, x, y;
     bool down = bz_ui_press(&x0, &y0, &x, &y);
     if (!LK.dragging && !LK.sheet && down && y0 - y > LK_SLOP && y0 - y > abs(x - x0)) {

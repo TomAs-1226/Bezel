@@ -138,6 +138,15 @@ int assist_suggestions(const char **out, int max);
 void assist_import_card(void);
 const char *assist_import_note(void);
 
+/* Runs fn(arg) once on the assistant's worker, between conversation turns (a turn in flight finishes first):
+ * for one-shot jobs like a log analysis (analyze.h), which then need no thread of their own. false while
+ * another job is queued or running. Any thread. */
+bool assist_post_job(void (*fn)(void *), void *arg);
+/* OpenAI's Chat Completions URL, the headers with the stored key ("oai_key") for a plain JSON answer, and the
+ * model from settings ("oai_model", default gpt-4o-mini). false when no key is stored. The caller wipes hdr
+ * after use. Any thread. */
+bool assist_oai_endpoint(char *url, size_t un, char *hdr, size_t hn, char *model, size_t mn);
+
 /* Points the direct route at another base URL instead of https://api.anthropic.com (tests use a local
  * fake; "" restores the default). assist_init also reads it from the kv key "ai_base". */
 void assist_set_base_url(const char *url);
