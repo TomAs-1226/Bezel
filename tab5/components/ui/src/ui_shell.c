@@ -348,8 +348,37 @@ static void strip_layer(float offset)
     bz_comp_set_layer(bz_ui_comp(), 0, &l);
 }
 
+static bool s_track_quiet;
+
+static void track_move(void *u)
+{
+    (void)u;
+    if (MC.pages) strip_layer(U.offset.value);
+    else lv_obj_set_x(U.track, (int)lroundf(U.offset.value));
+#if BZ_LEAN
+    for (int i = 0; i < NPAGES; i++) {
+        bool on = i == U.page;
+        if (on == lv_obj_has_flag(U.pages[i], LV_OBJ_FLAG_HIDDEN)) {
+            if (on) lv_obj_remove_flag(U.pages[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_add_flag(U.pages[i], LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+    lv_obj_update_layout(U.track);
+#endif
+}
+
 static void place_track(void)
 {
+#if BZ_LEAN
+    /* after a slide: the glass shows the page already; moved in with no redraw, then its numbers
+     * brought up to date, which redraws only what changed since the slide's picture of it */
+    if (s_track_quiet) {
+        s_track_quiet = false;
+        bz_ui_quiet(track_move, NULL);
+        page_refresh_now(U.page);
+        return;
+    }
+#endif
     if (MC.pages) strip_layer(U.offset.value);
     else lv_obj_set_x(U.track, (int)lroundf(U.offset.value));
 #if BZ_LEAN
@@ -686,8 +715,10 @@ static void dev_run(void)
     } else if (!strcmp(s_dev_cmd, "perf")) {
         /* where a frame's time has gone since the last "perf": the frame hooks, LVGL's handler, its
          * refresh (layout + render) and the render alone, per frame; and the presents */
-        float hk, lv, rf, rd;
+        float hk, lv, rf, rd, hkm, lvm;
+        bz_ui_split_max(&hkm, &lvm);
         bz_ui_split(&hk, &lv, &rf, &rd);
+        printf("  slowest: hooks %.1f lvgl %.1f ms\n", hkm, lvm);
         bz_ui_perf_t pf;
         bz_ui_perf(&pf);
         printf("perf: hooks %.1f lvgl %.1f refresh %.1f render %.1f ms/frame; present %.1f ms, %.0f fps\n", hk, lv, rf, rd,
@@ -963,7 +994,10 @@ static void slide_frame(void)
     bz_ui_slide((int)lroundf(SL.x.value));
     if (moving) return;
     SL.active = SL.settling = false;
-    if (SL.aim != U.page) ui_go(SL.aim);
+    if (SL.aim != U.page) {
+        ui_go(SL.aim);
+        s_track_quiet = true; /* the glass already shows the page: place_track moves it in quietly */
+    }
     bz_ui_slide_end();
 }
 
@@ -1487,7 +1521,8 @@ static void perf_frame(double now)
 
 /* ------------------------------------------------------------------ frame */
 
-#define PROF_MARK(i) do { double t_ = bz_ui_clock(); s_prof[i] += t_ - p_; p_ = t_; } while (0)
+static double s_pf[12]; /* PROFILING: this frame's sections */
+#define PROF_MARK(i) do { double t_ = bz_ui_clock(); s_prof[i] += t_ - p_; s_pf[i] += t_ - p_; p_ = t_; } while (0)
 
 static void shell_frame(double now, double dt, void *user)
 {
@@ -1592,6 +1627,18 @@ static void shell_frame(double now, double dt, void *user)
         }
     }
     PROF_MARK(11);
+    {
+        double tot = 0;
+        for (int k = 0; k < 12; k++) tot += s_pf[k];
+        if (tot > 0.015) {
+            char line[200];
+            int o = snprintf(line, sizeof line, "slow shell frame %.1f ms:", tot * 1000);
+            for (int k = 0; k < 12 && o < (int)sizeof line - 20; k++)
+                if (s_pf[k] > 0.002) o += snprintf(line + o, sizeof line - o, " %s %.1f", s_prof_name[k], s_pf[k] * 1000);
+            puts(line); /* PROFILING */
+        }
+        memset(s_pf, 0, sizeof s_pf);
+    }
 }
 
 void ui_init(const ui_config_t *cfg)

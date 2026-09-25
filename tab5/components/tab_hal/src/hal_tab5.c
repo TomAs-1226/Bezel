@@ -591,6 +591,21 @@ static void rotate_cpu(const bz_present_t *p, uint16_t *fb)
                     ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 }
 
+/* A slide's picture turned in by the PPA while the CPU goes on (slide_patch): at most one in flight, waited
+ * for (rot_wait) before anything reads that picture or uses the PPA's queue again */
+static bool s_rot_nowait, s_rot_pending;
+static volatile bool s_job_frame; /* the job last handed to core 0 is a composed frame, not a present */
+
+static void rot_wait(void)
+{
+    if (!s_rot_pending) return;
+    s_rot_pending = false;
+    if (xSemaphoreTake(ROTQ.done, pdMS_TO_TICKS(300)) != pdTRUE) {
+        ROTQ.wedged = true;
+        ESP_LOGE(TAG, "present: a slide patch didn't finish in 300 ms: the CPU turns the picture until it does");
+    }
+}
+
 /* One area from its own source into the portrait back buffer. true: queued non-blocking (wait for it). */
 static bool rotate_area(const bz_present_t *p, void *fb, bool async)
 {
@@ -637,6 +652,10 @@ static bool rotate_area(const bz_present_t *p, void *fb, bool async)
         if (!ROTQ.wedged) {
             op.mode = PPA_TRANS_MODE_NON_BLOCKING;
             if (ppa_do_scale_rotate_mirror(ROTQ.client, &op) == ESP_OK) {
+                if (s_rot_nowait) {
+                    s_rot_pending = true;
+                    return false;
+                }
                 if (xSemaphoreTake(ROTQ.done, pdMS_TO_TICKS(300)) == pdTRUE) return false;
                 ROTQ.wedged = true;
                 ESP_LOGE(TAG, "present: a PPA rotation (%dx%d) didn't finish in 300 ms (%u so far): the CPU turns "
@@ -963,6 +982,7 @@ static struct {
     bool staged;
     uint16_t *stage;
     bool task;
+    void (*fn)(void); /* a composed frame (a slide's, a sheet's) instead of areas */
 } J;
 
 static void present_sync(void)
@@ -977,7 +997,9 @@ static void present_task(void *arg)
     (void)arg;
     for (;;) {
         xSemaphoreTake(J.go, portMAX_DELAY);
-        present_do(J.a, J.n);
+        if (J.fn) J.fn();
+        else present_do(J.a, J.n);
+        J.fn = NULL;
         xSemaphoreGive(J.idle);
     }
 }
@@ -990,7 +1012,9 @@ void hal_present(const bz_present_t *areas, int n, void *user)
     for (int i = 0; i < n; i++)
         if (areas[i].src)
             px += (uint32_t)(areas[i].a.x2 - areas[i].a.x1 + 1) * (uint32_t)(areas[i].a.y2 - areas[i].a.y1 + 1);
+    rot_wait(); /* the PPA's queue is the present's again */
     if (J.task) xSemaphoreTake(J.idle, portMAX_DELAY);
+    s_job_frame = false;
     /* this frame's scrolls go with it */
     memcpy(s_jscroll, s_scroll, sizeof s_scroll[0] * (size_t)s_nscroll);
     s_njscroll = s_nscroll;
@@ -1158,6 +1182,9 @@ static bool slide_begin(uint32_t ground_rgb, const bz_area_t *chrome, int nchrom
         rect_copy(SLD.chrome, front, x, y, w, h);
     }
     blk_copy_async(SLD.snap, 0, 0, front, 0, 0, PANEL_W, PANEL_H);
+    /* done here, once, at touch-down: the frames that follow run their DMA2D copies on core 0, and a
+     * wait for this one from the UI's core could take their completion instead */
+    fbcpy_wait();
     SLD.active = true;
     return true;
 }
@@ -1165,16 +1192,21 @@ static bool slide_begin(uint32_t ground_rgb, const bz_area_t *chrome, int nchrom
 /* a landscape area turned into the snapshot (the page without its chrome) or the neighbour */
 static void slide_patch(const bz_present_t *p, bool neighbour)
 {
-    present_sync();
+    /* a slide's or a sheet's frame in flight on core 0 reads rows of the pictures this doesn't write
+     * (the ones not shown yet), and uses the DMA2D, not the PPA: no need to wait for it. A present
+     * uses the PPA's queue: that one is waited for. */
+    if (!s_job_frame) present_sync();
+    rot_wait();
     if (!SLD.active) return;
-    fbcpy_wait(); /* the capture may still be copying into the snapshot */
+    /* not waited for: the renderer draws the next band (or the frame goes on) while the PPA turns this */
+    s_rot_nowait = true;
     rotate_area(p, neighbour ? SLD.nb : SLD.snap, false);
+    s_rot_nowait = false;
 }
 
-static void slide_frame(int dx, int side, const bz_area_t *chrome, int nchrome)
+static void slide_frame_do(int dx, int side, const bz_area_t *chrome, int nchrome)
 {
-    if (!SLD.active) return;
-    int b = present_begin();
+    int b = fb_pick();
     double tf0 = hal_seconds();
     uint16_t *fb = T.fb[b];
     int W = HAL_W; /* portrait rows */
@@ -1204,6 +1236,39 @@ static void slide_frame(int dx, int side, const bz_area_t *chrome, int nchrome)
     present_end(b);
 }
 
+/* A composed frame goes to core 0 like any other present: the UI's core draws the next band meanwhile */
+static struct {
+    int dx, side, n, h, sh;
+    bool swapped, bottom;
+    bz_area_t chrome[8];
+} SJ;
+
+static void slide_job(void) { slide_frame_do(SJ.dx, SJ.side, SJ.chrome, SJ.n); }
+
+static void job_run(void (*fn)(void))
+{
+    if (!J.task) {
+        fn();
+        return;
+    }
+    xSemaphoreTake(J.idle, portMAX_DELAY);
+    s_job_frame = true;
+    J.fn = fn;
+    xSemaphoreGive(J.go);
+}
+
+static void slide_frame(int dx, int side, const bz_area_t *chrome, int nchrome)
+{
+    if (!SLD.active) return;
+    if (side) rot_wait(); /* the neighbour is shown once all of it is drawn: its last band may be turning */
+    present_sync();
+    SJ.dx = dx;
+    SJ.side = side;
+    SJ.n = nchrome < 8 ? nchrome : 8;
+    for (int i = 0; i < SJ.n; i++) SJ.chrome[i] = chrome[i];
+    job_run(slide_job);
+}
+
 /* At start-up, while internal RAM has room: the DMA2D's descriptors must be in internal, DMA-capable
  * memory, and by the first swipe there is none left (the install failed, the slide never started). */
 static void slide_init(void)
@@ -1228,6 +1293,7 @@ static void slide_init(void)
 static void slide_end(void)
 {
     present_sync();
+    rot_wait();
     SLD.active = false;
     P.nprev = 0;
 }
@@ -1244,16 +1310,15 @@ static void lrows_copy(uint16_t *dst, int dy, const uint16_t *src, int sy, int n
     else blk_copy_async(dst, HAL_H - dy - n, 0, src, HAL_H - sy - n, 0, n, PANEL_H);
 }
 
-static void sheet_frame(int h, int sh, bool swapped, bool bottom)
+static void sheet_frame_do(int h, int sh, bool swapped, bool bottom)
 {
-    if (!SLD.active) return;
     const int H = HAL_H; /* landscape rows = portrait columns = PANEL_W */
     if (sh > H || bottom) sh = H;
     if (h < 8) h = 0;    /* a sliver would be a DMA block a few pixels wide: none at all */
     if (h > sh - 8) h = sh;
     /* the sheet's picture, and the page's rows it has uncovered; past the sheet, the glass as it was */
     const uint16_t *sheet = swapped ? SLD.snap : SLD.nb, *under = swapped ? SLD.nb : SLD.snap;
-    int b = present_begin();
+    int b = fb_pick();
     uint16_t *fb = T.fb[b];
     fbcpy_wait();
     if (!bottom) {
@@ -1266,6 +1331,20 @@ static void sheet_frame(int h, int sh, bool swapped, bool bottom)
     }
     fbcpy_wait();
     present_end(b);
+}
+
+static void sheet_job(void) { sheet_frame_do(SJ.h, SJ.sh, SJ.swapped, SJ.bottom); }
+
+static void sheet_frame(int h, int sh, bool swapped, bool bottom)
+{
+    if (!SLD.active) return;
+    rot_wait(); /* the rows just patched are shown now */
+    present_sync();
+    SJ.h = h;
+    SJ.sh = sh;
+    SJ.swapped = swapped;
+    SJ.bottom = bottom;
+    job_run(sheet_job);
 }
 
 static void slide_scroll(const bz_area_t *a, int dy)
@@ -1376,11 +1455,10 @@ bool hal_touch(int *x, int *y, void *user)
 }
 
 /* The buffer on the glass now (the one handed over last), portrait 720x1280: what the panel shows. */
-const uint16_t *hal_front_fb(void)
-{
-    present_sync();
-    return T.fb[fb_latest()];
-}
+/* For the dev console's panel shot, on its own low-priority task: it never waits for the present (the
+ * UI's core takes that lock back every frame, and a waiter on the other core starved behind it). A shot
+ * taken mid-present may show that frame half-made. */
+const uint16_t *hal_front_fb(void) { return T.fb[fb_latest()]; }
 
 void hal_set_flip(bool flip)
 {

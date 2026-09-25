@@ -113,6 +113,9 @@ void bz_ui_prof_take(float out[8]);
 void bz_ui_slide_begin(void);
 void bz_ui_slide(int dx);
 void bz_ui_slide_end(void);
+/* fn run with LVGL's invalidation off: for a change the glass already shows (a page a slide came to rest
+ * on), so it isn't drawn again */
+void bz_ui_quiet(void (*fn)(void *u), void *u);
 /* The page beside it during a slide: a screen-sized buffer to draw it into (bz_ui_render_offscreen), and
  * which side it shows on once drawn — +1 to the right (the next page), -1 left, 0 none: ground. */
 uint16_t *bz_ui_slide_nb_buf(void);
@@ -137,6 +140,8 @@ void bz_ui_hooks_report(void);
 void bz_ui_trace_inv(int frames); /* log every invalidated area for this many frames */ /* logs each frame hook's time since the last call */
 /* Per-frame averages since the last call: frame hooks, lv_timer_handler, display refreshes, renders. */
 void bz_ui_split(float *hooks_ms, float *lvgl_ms, float *refr_ms, float *render_ms);
+/* the slowest frame's hooks and LVGL since the last bz_ui_split (which resets both) */
+void bz_ui_split_max(float *hooks_ms, float *lvgl_ms);
 
 /* Frame hooks, run every frame before LVGL renders. */
 typedef void (*bz_frame_fn)(double now_s, double dt, void *user);

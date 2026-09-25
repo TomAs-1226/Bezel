@@ -84,6 +84,10 @@ static struct {
      * would keep the picture's stale pixels wherever something animated meanwhile */
     bz_area_t sheet_dirty[8];
     int nsheet_dirty;
+    /* what LVGL drew while a slide or a sheet held the glass (none of it was presented): drawn again,
+     * and only that, when it ends */
+    bz_area_t late[8];
+    int nlate;
 #endif
 } U;
 
@@ -700,7 +704,7 @@ void bz_ui_thaw_cancel(void) { U.thaw = -1; }
 /* Where LVGL's time goes, summed since the last bz_ui_split(): hooks before it, refresh (layout plus
  * render) per display, and the render alone. lv_timer_handler minus refresh is LVGL's own timers and
  * animations. */
-static struct { double hooks, lvgl, refr, render, t_refr, t_render; int frames; } SP;
+static struct { double hooks, lvgl, refr, render, t_refr, t_render, lvgl_max, hooks_max; int frames; } SP;
 
 static void split_cb(lv_event_t *e)
 {
@@ -714,6 +718,12 @@ static void split_cb(lv_event_t *e)
     }
 }
 
+void bz_ui_split_max(float *hooks_ms, float *lvgl_ms)
+{
+    *hooks_ms = (float)(SP.hooks_max * 1000);
+    *lvgl_ms = (float)(SP.lvgl_max * 1000);
+}
+
 void bz_ui_split(float *hooks_ms, float *lvgl_ms, float *refr_ms, float *render_ms)
 {
     int n = SP.frames > 0 ? SP.frames : 1;
@@ -723,6 +733,46 @@ void bz_ui_split(float *hooks_ms, float *lvgl_ms, float *refr_ms, float *render_
     *render_ms = (float)(SP.render * 1000 / n);
     memset(&SP, 0, sizeof SP);
 }
+
+#if BZ_LEAN
+/* a to the late list: joined into a box it touches, or into the first when the list is full */
+static void late_add(const bz_area_t *a)
+{
+    int j = 0;
+    for (; j < U.nlate; j++) {
+        bz_area_t *d = &U.late[j];
+        if (a->x1 <= d->x2 + 8 && d->x1 <= a->x2 + 8 && a->y1 <= d->y2 + 8 && d->y1 <= a->y2 + 8) break;
+    }
+    if (j == U.nlate) {
+        if (U.nlate < 8) {
+            U.late[U.nlate++] = *a;
+            return;
+        }
+        j = 0;
+    }
+    bz_area_t *d = &U.late[j];
+    if (a->x1 < d->x1) d->x1 = a->x1;
+    if (a->y1 < d->y1) d->y1 = a->y1;
+    if (a->x2 > d->x2) d->x2 = a->x2;
+    if (a->y2 > d->y2) d->y2 = a->y2;
+}
+
+/* the late areas invalidated: the next frame draws them and presents them as usual */
+static void late_redraw(void)
+{
+    uint32_t px = 0;
+    for (int i = 0; i < U.nlate; i++) {
+        bz_area_t *a = &U.late[i];
+        lv_area_t la = { a->x1, a->y1, a->x2, a->y2 };
+        lv_inv_area(U.disp_content, &la);
+        px += (uint32_t)(a->x2 - a->x1 + 1) * (uint32_t)(a->y2 - a->y1 + 1);
+    }
+#ifdef ESP_PLATFORM
+    ESP_LOGI("bz_ui", "redrawn after: %d areas, %u px", U.nlate, (unsigned)px);
+#endif
+    U.nlate = 0;
+}
+#endif
 
 bool bz_ui_frame(double now_s)
 {
@@ -756,7 +806,30 @@ bool bz_ui_frame(double now_s)
     thaw_step();
 
     double t1 = wall();
+#if BZ_LEAN
+    /* While a slide or a sheet holds the glass, nothing LVGL draws is shown: it only has to say what
+     * changed (sheet_dirty, late), and draws it once the glass is back. Drawing it every frame anyway
+     * cost up to ~90 ms a frame while an app's window came in under its sheet. */
+    lv_timer_t *refr = lv_display_get_refr_timer(U.disp_content);
+    bool held = U.sheeting || U.sliding;
+    if (held && refr) lv_timer_pause(refr);
     lv_timer_handler();
+    if (held && refr) {
+        lv_display_t *d = U.disp_content;
+        lv_obj_update_layout(lv_display_get_screen_active(d));
+        lv_obj_update_layout(lv_display_get_layer_top(d));
+        for (uint32_t i = 0; i < d->inv_p && i < LV_INV_BUF_SIZE; i++) {
+            if (d->inv_area_joined[i]) continue;
+            const lv_area_t *m = &d->inv_areas[i];
+            if (U.nlean < BZ_COMP_MAX_PRESENT)
+                U.lean[U.nlean++].a = (bz_area_t){ (int16_t)m->x1, (int16_t)m->y1, (int16_t)m->x2, (int16_t)m->y2 };
+        }
+        d->inv_p = 0;
+        lv_timer_resume(refr);
+    }
+#else
+    lv_timer_handler();
+#endif
     double t2 = wall();
     if (s_trace_inv > 0 && --s_trace_inv == 0) {
 #ifdef ESP_PLATFORM
@@ -766,6 +839,8 @@ bool bz_ui_frame(double now_s)
     prof_handler += t2 - t1;
     SP.hooks += t1 - t0;
     SP.lvgl += t2 - t1;
+    if (t2 - t1 > SP.lvgl_max) SP.lvgl_max = t2 - t1;
+    if (t1 - t0 > SP.hooks_max) SP.hooks_max = t1 - t0;
     SP.frames++;
     moving |= update_glass();
 
@@ -825,6 +900,7 @@ bool bz_ui_frame(double now_s)
             U.cfg.slide->sheet(h, sh, !U.sheet_open, U.sheet_bottom);
         }
     } else if (U.sliding && U.cfg.slide) {
+        for (int i = 0; i < U.nlean; i++) late_add(&U.lean[i].a);
         U.nlean = 0;
         if (U.slide_dx != U.slide_shown) {
             U.slide_shown = U.slide_dx;
@@ -1030,6 +1106,7 @@ void bz_ui_slide_begin(void)
             }
     }
     U.sliding = true;
+    U.nlate = 0;
     (void)tb; (void)tg; (void)tr; (void)tc;
 #endif
 }
@@ -1082,8 +1159,15 @@ void bz_ui_slide_end(void)
     if (!U.sliding) return;
     U.sliding = false;
     if (U.cfg.slide) U.cfg.slide->end();
-    lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
-    lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
+    /* The glass shows the page the slide came to rest on. Drawing the whole screen again for it took
+     * ~40 ms of LVGL and a full-screen turn, a hitch at the end of every swipe: only what LVGL drew
+     * while the slide held the glass is drawn again (the caller moves the page in quietly: see
+     * bz_ui_quiet) */
+    if (!U.cfg.slide) {
+        lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
+        lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
+    }
+    late_redraw();
 #endif
 }
 
@@ -1111,6 +1195,7 @@ bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool 
     ESP_LOGI("bz_ui", "sheet %s %s, %d rows", opening ? "opening" : "closing", bottom ? "from the bottom" : "from the top", height);
 #endif
     U.sheeting = true;
+    U.nlate = 0;
     U.nsheet_dirty = 0;
     U.sheet_open = opening;
     U.sheet_prep = prep;
@@ -1164,25 +1249,28 @@ void bz_ui_sheet_end(void)
     ESP_LOGI("bz_ui", "sheet end at %d", U.sheet_shown);
 #endif
     U.cfg.slide->end();
-    /* The glass already shows the sheet at rest (or the page): LVGL draws everything into its own buffer
-     * once, and that isn't sent again; the panel's other buffer is made the same so later areas land
-     * on the picture that is showing. */
-    lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
-    lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
-    lv_refr_now(U.disp_content);
+    /* The glass already shows the sheet at rest (or the page). LVGL used to draw the whole screen again
+     * into its own buffer here (~40 ms, a hitch at the end of every sheet) so the areas that changed
+     * underneath could be copied from it. A present only ever reads what LVGL has just drawn, and LVGL
+     * draws an area whole from the screen's ground up, so the rest of its buffer may be stale: only
+     * what changed after the sheet captured it is drawn again, next frame. */
     U.nlean = 0;
     if (U.cfg.slide->settle) U.cfg.slide->settle();
-    /* and what changed underneath while it moved, from LVGL's buffer (whole again after the refresh) */
-    if (U.nsheet_dirty && U.cfg.present) {
-        bz_present_t p[8];
-        for (int i = 0; i < U.nsheet_dirty; i++) {
-            bz_area_t *a = &U.sheet_dirty[i];
-            p[i] = (bz_present_t){ *a, U.cfg.content + (size_t)a->y1 * U.cfg.w + a->x1, U.cfg.w };
-        }
-        U.cfg.present(p, U.nsheet_dirty, U.cfg.user);
-        U.nsheet_dirty = 0;
-    }
+    /* rows the sheet had not yet captured when something changed were captured later, as they were
+     * then: only changes to rows already captured (sheet_dirty) are missing from the glass */
+    U.nlate = 0;
+    for (int i = 0; i < U.nsheet_dirty; i++) late_add(&U.sheet_dirty[i]);
+    U.nsheet_dirty = 0;
+    late_redraw();
 #endif
+}
+
+void bz_ui_quiet(void (*fn)(void *u), void *u)
+{
+    /* LVGL's invalidation switch is a counter: disable and enable are matched */
+    lv_display_enable_invalidation(U.disp_content, false);
+    fn(u);
+    lv_display_enable_invalidation(U.disp_content, true);
 }
 
 /* ------------------------------------------------------------------ motion caches */
