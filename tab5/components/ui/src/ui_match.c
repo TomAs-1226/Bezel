@@ -737,6 +737,29 @@ static void desk_matches(void)
         if (s->playoff[0]) PUT(", %s", s->playoff);
         PUT("\n");
     }
+    /* the answer to "when do we play next" spelled out: the list alone had a model call a match from April,
+     * never scored, the next one */
+    const tba_match_t *next = NULL;
+    for (int i = 0; i < s->nmatches && !next; i++) {
+        time_t w = when_of(&s->matches[i]);
+        if (!s->matches[i].played && w && w >= now - 15 * 60) next = &s->matches[i];
+    }
+    char today[11];
+    struct tm tn;
+    localtime_r(&now, &tn);
+    strftime(today, sizeof today, "%Y-%m-%d", &tn);
+    if (next) {
+        char at[24], with[64], vs[64];
+        day_time(when_of(next), now, at, sizeof at);
+        partners(next, s->team, with, sizeof with, vs, sizeof vs);
+        PUT("next match: %s %s, %s, %s\n", next->label, at, with, vs);
+    } else if (s->end[0] && strcmp(today, s->end) > 0) {
+        PUT("next match: none. This event ended on %s; the team has no later event on TBA yet\n", s->end);
+    } else if (s->start[0] && strcmp(today, s->start) < 0) {
+        PUT("next match: not scheduled yet. The event starts on %s\n", s->start);
+    } else {
+        PUT("next match: none scheduled for us on TBA right now\n");
+    }
     PUT("our matches (times are local; \"about\" = TBA's prediction):\n");
     for (int i = 0; i < s->nmatches; i++) {
         const tba_match_t *m = &s->matches[i];
