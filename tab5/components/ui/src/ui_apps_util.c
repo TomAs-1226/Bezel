@@ -41,7 +41,7 @@ static void beep(float hz, int ms) { hal_tone(hz, ms, S.volume * 0.6f); }
 enum { TM_MATCH, TM_STOPWATCH, TM_COUNTDOWN };
 
 static struct {
-    lv_obj_t *mode_chips[3], *big, *phase, *sub, *start_lbl, *laps, *presets, *auto_chips[2];
+    lv_obj_t *mode_chips[3], *big, *phase, *sub, *start_lbl, *laps, *presets, *auto_chips[2], *side[4], *lap_btn;
     int mode;
     bool running;
     double started, acc;       /* running since, and time banked before it */
@@ -49,14 +49,43 @@ static struct {
     int auto_s;                /* the match's autonomous period */
     int last_beep;
     int nlaps;
-} TM = { .count_s = 120, .auto_s = 20, .last_beep = -1 };
+    int col;                   /* the big numbers' colour as set (-1: not yet) */
+} TM = { .count_s = 120, .auto_s = 20, .last_beep = -1, .col = -1 };
 
 #define TELEOP_S 140
 
 static double tm_elapsed(void) { return TM.acc + (TM.running ? hal_seconds() - TM.started : 0); }
 
+/* The field's cues and the ends, whether or not the app is on screen: a countdown closed behind another app
+ * rang only when it was opened again. true when a countdown or a match just ended. */
+static bool tm_tick(void)
+{
+    if (!TM.running) return false;
+    double e = tm_elapsed();
+    if (TM.mode == TM_MATCH) {
+        double total = TM.auto_s + TELEOP_S;
+        int cue = e < 0.05 ? -1 : e < TM.auto_s ? 0 : e < total - 30 ? 1 : e < total ? 2 : 3;
+        if (cue != TM.last_beep && cue >= 0) {
+            TM.last_beep = cue;
+            beep(cue == 3 ? 520 : 880, cue == 3 ? 500 : 180);
+        }
+        if (e >= total) {
+            TM.acc = total;
+            TM.running = false;
+            return true;
+        }
+    } else if (TM.mode == TM_COUNTDOWN && e >= TM.count_s) {
+        TM.acc = TM.count_s;
+        TM.running = false;
+        beep(660, 600);
+        return true;
+    }
+    return false;
+}
+
 static void tm_show(void)
 {
+    tm_tick();
     double e = tm_elapsed();
     char b[32];
     bz_color_role_t col = BZ_C_INK;
@@ -97,24 +126,12 @@ static void tm_show(void)
         int m = (int)ceil(left);
         ui_text(TM.sub, "match %d:%02d left · auto %d s · teleop %d:%02d", m / 60, m % 60, TM.auto_s, TELEOP_S / 60,
                 TELEOP_S % 60);
-        /* the field's cues: start, auto to teleop, endgame, end */
-        int cue = e < 0.05 ? -1 : e < TM.auto_s ? 0 : e < total - 30 ? 1 : e < total ? 2 : 3;
-        if (TM.running && cue != TM.last_beep && cue >= 0) {
-            TM.last_beep = cue;
-            beep(cue == 3 ? 520 : 880, cue == 3 ? 500 : 180);
-        }
-        if (TM.running && e >= total) {
-            TM.acc = total;
-            TM.running = false;
-        }
-    }
-    if (TM.mode == TM_COUNTDOWN && TM.running && tm_elapsed() >= TM.count_s) {
-        TM.acc = TM.count_s;
-        TM.running = false;
-        beep(660, 600);
     }
     ui_text(TM.big, "%s", b);
-    bz_set_color(TM.big, col);
+    if ((int)col != TM.col) { /* a colour set restyles: only when it changes, not every frame */
+        TM.col = (int)col;
+        bz_set_color(TM.big, col);
+    }
     ui_text(TM.start_lbl, "%s", TM.running ? "pause" : tm_elapsed() > 0 ? "resume" : "start");
 }
 
@@ -128,8 +145,12 @@ static void tm_mode(lv_obj_t *o, void *u)
     TM.last_beep = -1;
     lv_obj_clean(TM.laps);
     for (int i = 0; i < 3; i++) ui_chip_set(TM.mode_chips[i], i == TM.mode);
-    if (TM.mode == TM_COUNTDOWN) lv_obj_remove_flag(TM.presets, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(TM.presets, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *const each[] = { TM.side[0], TM.side[1], TM.side[2], TM.presets, TM.side[3], TM.laps, TM.lap_btn };
+    const int mode_of[] = { TM_MATCH, TM_MATCH, TM_COUNTDOWN, TM_COUNTDOWN, TM_STOPWATCH, TM_STOPWATCH, TM_STOPWATCH };
+    for (int i = 0; i < 7; i++) {
+        if (mode_of[i] == TM.mode) lv_obj_remove_flag(each[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(each[i], LV_OBJ_FLAG_HIDDEN);
+    }
     tm_show();
 }
 
@@ -189,6 +210,8 @@ static void tm_auto(lv_obj_t *o, void *u)
     tm_show();
 }
 
+static void timer_bg(void *u);
+
 static void timer_build(lv_obj_t *b)
 {
     int lw = 760, rw = W - 2 * PAD - lw - BZ_GAP;
@@ -207,17 +230,21 @@ static void timer_build(lv_obj_t *b)
     lv_obj_align(cr, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     lv_obj_t *sb = ui_button(cr, BZ_I_PLAY_ARROW, "start", tm_start, NULL);
     TM.start_lbl = lv_obj_get_child(sb, 1);
-    ui_button(cr, BZ_I_FLAG, "lap", tm_lap, NULL);
+    TM.lap_btn = ui_button(cr, BZ_I_FLAG, "lap", tm_lap, NULL); /* the stopwatch's only (tm_mode) */
     ui_button(cr, BZ_I_RESTART_ALT, "reset", tm_reset, NULL);
 
     lv_obj_t *r = bz_tile(b, rw, APP_H);
     lv_obj_set_pos(r, PAD + lw + BZ_GAP, APP_Y);
     lv_obj_set_flex_flow(r, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(r, 12, 0);
-    bz_label(r, "match autonomous", BZ_F_LABEL, BZ_C_DIM);
+    /* the side card holds what the mode takes: autonomous's length, the countdown's presets, or the laps (a
+     * "laps" heading over nothing, beside a match, read as something missing) */
+    TM.side[0] = bz_label(r, "match autonomous", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *ar = chip_row(r, IN(rw));
+    TM.side[1] = ar;
     TM.auto_chips[0] = ui_chip(ar, "15 s", tm_auto, (void *)15);
     TM.auto_chips[1] = ui_chip(ar, "20 s", tm_auto, (void *)20);
+    TM.side[2] = bz_label(r, "count down from", BZ_F_LABEL, BZ_C_DIM);
     TM.presets = chip_row(r, IN(rw));
     static const int PRE[6] = { 30, 60, 120, 180, 300, 600 };
     for (int i = 0; i < 6; i++) {
@@ -226,10 +253,11 @@ static void timer_build(lv_obj_t *b)
         else snprintf(n, sizeof n, "%d min", PRE[i] / 60);
         ui_chip(TM.presets, n, tm_preset, (void *)(intptr_t)PRE[i]);
     }
-    bz_label(r, "laps", BZ_F_LABEL, BZ_C_DIM);
+    TM.side[3] = bz_label(r, "laps · tap lap while it runs", BZ_F_LABEL, BZ_C_DIM);
     TM.laps = bz_col(r, 6);
     tm_auto(NULL, (void *)20);
     tm_mode(NULL, (void *)TM_MATCH);
+    ui_on_refresh(timer_bg, NULL);
 }
 
 static void timer_frame(double now, double dt)
@@ -239,6 +267,14 @@ static void timer_frame(double now, double dt)
         tm_show();
         bz_ui_keep_alive();
     }
+}
+
+/* 10 Hz, whatever is on screen: the timer keeps its cues and rings its end behind other apps */
+static void timer_bg(void *u)
+{
+    (void)u;
+    if (!TM.running || ui_app_is_open(&APP_TIMER)) return;
+    if (tm_tick()) ui_island_say(BZ_I_TIMER, TM.mode == TM_COUNTDOWN ? "the countdown is done" : "the match timer is over");
 }
 
 const ui_app_t APP_TIMER = { .name = "timer", .icon = BZ_I_TIMER, .build = timer_build, .frame = timer_frame };
@@ -306,17 +342,20 @@ static double ca_expr(void)
     }
 }
 
-static void ca_show(void)
+/* The entry evaluated: true (and CA.last) when it is a whole, finite number. */
+static bool ca_show(void)
 {
     ui_text(CA.expr, "%s", CA.buf[0] ? CA.buf : "0");
     ca_p = CA.buf;
     double v = CA.buf[0] ? ca_expr() : 0;
-    if (v == v && !*ca_p) {
+    if (v == v && !*ca_p && isfinite(v)) {
         CA.last = v;
         ui_text(CA.result, "= %.10g", v);
-    } else {
-        ui_text(CA.result, " ");
+        return true;
     }
+    /* a division by zero says so; an unfinished entry ("5+") shows nothing yet */
+    ui_text(CA.result, "%s", v == v && !*ca_p ? "no answer: divided by zero, or too big" : " ");
+    return false;
 }
 
 static void ca_key(lv_obj_t *o, void *u)
@@ -327,8 +366,9 @@ static void ca_key(lv_obj_t *o, void *u)
     if (!strcmp(k, "C")) CA.buf[0] = 0;
     else if (!strcmp(k, "<")) { if (n) CA.buf[n - 1] = 0; }
     else if (!strcmp(k, "=")) {
-        ca_show();
-        snprintf(CA.buf, sizeof CA.buf, "%.10g", CA.last);
+        /* only a whole answer replaces the entry: "5+ =" used to put the previous answer there instead */
+        if (ca_show()) snprintf(CA.buf, sizeof CA.buf, "%.10g", CA.last);
+        else hal_tone(300, 60, S.volume * 0.4f);
     } else if (n + strlen(k) < sizeof CA.buf - 1) {
         strcat(CA.buf, k);
     }
@@ -348,7 +388,7 @@ static void ca_conv(lv_obj_t *o, void *u)
     int i = (int)(intptr_t)u;
     ca_p = CA.buf;
     double v = CA.buf[0] ? ca_expr() : CA.last;
-    if (!(v == v)) return;
+    if (!(v == v) || !isfinite(v) || (CA.buf[0] && *ca_p)) return; /* an unfinished entry isn't converted */
     double r = (v + CONV[i].off) * CONV[i].k;
     ui_text(CA.conv_note, "%.6g %s", r, CONV[i].unit);
     snprintf(CA.buf, sizeof CA.buf, "%.8g", r);

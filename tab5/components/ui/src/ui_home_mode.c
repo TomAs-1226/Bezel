@@ -869,18 +869,23 @@ static void refresh_clock(void)
     }
 }
 
-static void hm_refresh(void *u)
+static void hm_refresh_now(void)
 {
-    (void)u;
-    if (!HM.active || HM.sheet) return;
-    /* the network only for what's on screen: with an app over it, the app asks for its own */
-    if (ui_app_any_open()) return;
     home_want(HOME_WANT_PC | HOME_WANT_HA | HOME_WANT_WEATHER);
     hm_ground(); /* the accent or the tone may have changed under it */
     refresh_clock();
     refresh_weather();
     refresh_media();
     refresh_ha();
+}
+
+static void hm_refresh(void *u)
+{
+    (void)u;
+    if (!HM.active || HM.sheet) return;
+    /* the network only for what's on screen: with an app over it, the app asks for its own */
+    if (ui_app_any_open()) return;
+    hm_refresh_now();
 }
 
 /* ---- coming and going ---- */
@@ -930,7 +935,9 @@ static void go(bool enter)
         bz_motion_to(&HM.k, enter ? 1 : 0, BZ_RELEASE);
     }
     set_state(enter);
-    if (enter) hm_refresh(NULL);
+    /* its words brought up to date before the sheet draws them (hm_refresh waits out the sheet: the surface
+     * slid in with the clock, date and song of the last time it was up, then jumped) */
+    if (enter) hm_refresh_now();
     bz_ui_keep_alive();
 }
 
