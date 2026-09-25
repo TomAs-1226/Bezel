@@ -310,6 +310,14 @@ void hal_kv_set(const char *key, const char *value)
     fclose(f);
 }
 
+void hal_wifi_rejoin(void) {}
+
+void hal_net_report(char *out, size_t n, const char *host)
+{
+    (void)host;
+    snprintf(out, n, "simulator");
+}
+
 void hal_net(hal_net_t *o)
 {
     memset(o, 0, sizeof *o);

@@ -34,7 +34,8 @@ static bool nt_connected(char *host, size_t n)
 
 static bool spawn(const char *name, void *(*fn)(void *), void *arg)
 {
-    if (G.env.spawn) return G.env.spawn(name, fn, arg, 12288);
+    /* plain HTTP to the robot, no TLS: the state stream peaked at ~1.6 KB of its 12 KB (internal RAM) */
+    if (G.env.spawn) return G.env.spawn(name, fn, arg, 8192);
     pthread_t th;
     if (pthread_create(&th, NULL, fn, arg) != 0) return false;
     pthread_detach(th);

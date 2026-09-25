@@ -930,14 +930,16 @@ static void face_tap(lv_obj_t *o, void *u)
         CP.mood_until = now + 0.6;
         return;
     }
-    if (voice_ok()) {
+    char why[80];
+    if (voice_ready(why, sizeof why)) {
         voice_listen();
         return;
     }
-    CP.mood = VO_EMO_HAPPY;
-    CP.mood_k = 0.7f;
-    CP.mood_until = now + 1.2;
-    CP.bounce_t0 = now;
+    /* it can't listen: say why (no Wi-Fi, no key) rather than a cheerful bounce that looks like it works */
+    ui_island_say(BZ_I_WIFI_OFF, why);
+    CP.mood = VO_EMO_SAD;
+    CP.mood_k = 0.6f;
+    CP.mood_until = now + 1.5;
 }
 
 /* The IMU at ~20 Hz: a knock on the desk or the tablet makes it start; a tilt rolls the eyes downhill. */

@@ -180,6 +180,16 @@ static void run(char *line)
         else snprintf(buf, sizeof buf, "MEM battery: no reading\n");
         say(buf);
         say("OK\n");
+    } else if (!strncmp(line, "net", 3) && (line[3] == 0 || line[3] == ' ')) {
+        char buf[256];
+        hal_net_report(buf, sizeof buf, line[3] ? line + 4 : "api.openai.com");
+        say("MEM ");
+        say(buf);
+        say("\n");
+        say("OK\n");
+    } else if (!strcmp(line, "rejoin")) {
+        hal_wifi_rejoin();
+        say("OK\n");
     } else if (!strcmp(line, "mem")) {
         /* internal RAM (the scarce kind) and PSRAM: free, the lowest it has been, the largest block; then
          * each task's stack headroom */

@@ -1134,7 +1134,9 @@ void assist_init(void)
     if (!start) return;
     snap_init();
     link_init();
-    hal_thread("assist", worker, NULL, 48 * 1024); /* TLS plus a tool's buffers */
+    /* TLS plus a tool's buffers (a 4 KB error body at most): 48 KB of internal RAM used ~0.5 KB, and the
+     * network stack starved for buffers (DNS and connects failing) with it taken */
+    hal_thread("assist", worker, NULL, 20 * 1024);
     voice_init(); /* the companion's own conversation, spoken (voice.h) */
 }
 

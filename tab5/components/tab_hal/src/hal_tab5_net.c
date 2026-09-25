@@ -41,6 +41,10 @@
 #include "iot_usbh_ecm.h"
 #include "iot_usbh_rndis.h"
 #include "lwip/netif.h"
+#include "lwip/netdb.h"
+#include "lwip/sockets.h"
+#include <fcntl.h>
+#include "lwip/inet.h"
 #include "esp_sntp.h"
 #include "mdns.h"
 #include "usb/usb_helpers.h"
@@ -106,23 +110,21 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 static void rssi_task(void *arg)
 {
     (void)arg;
-    /* The C6's stock esp-hosted slave doesn't answer this one: every call waited out a 5 s RPC timeout, with
-     * the RPC channel (every other esp_wifi_* call) held up behind it. Two misses and it stops asking. */
-    int misses = 0;
-    while (misses < 2) {
-        vTaskDelay(pdMS_TO_TICKS(3000));
+    /* The C6 answers this in a few ms, except when it stalls for a few seconds now and then (every RPC and
+     * the data with it): then the call waits out a 5 s timeout. Asked from here, never from the UI; slower
+     * after a miss, so a stalling C6 isn't asked more. */
+    int wait_ms = 3000;
+    for (;;) {
+        vTaskDelay(pdMS_TO_TICKS(wait_ms));
         wifi_ap_record_t ap;
         if (!N.up || s_scanning) continue;
         if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
             N.rssi = ap.rssi;
-            misses = 0;
+            wait_ms = 3000;
         } else {
-            misses++;
+            wait_ms = 30000;
         }
     }
-    ESP_LOGW(TAG, "wi-fi: the C6 doesn't report the signal; not asking again");
-    N.rssi_task = NULL;
-    vTaskDelete(NULL);
 }
 
 static void wifi_init(void)
@@ -137,6 +139,9 @@ static void wifi_init(void)
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL);
     xTaskCreatePinnedToCore(rssi_task, "rssi", 3072, NULL, 2, &N.rssi_task, 0);
+    /* esp-hosted logs every RPC at info (one line each 3 s from the signal poll alone) */
+    esp_log_level_set("rpc_core", ESP_LOG_WARN);
+    esp_log_level_set("rpc_rsp", ESP_LOG_WARN);
     esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_ps(WIFI_PS_NONE); /* latency over battery: a dashboard wants its packets now */
     esp_err_t s = esp_wifi_start();
@@ -145,6 +150,9 @@ static void wifi_init(void)
     ESP_LOGI(TAG, "wi-fi: mode %s, start %s, country %s %.2s ch %d+%d", esp_err_to_name(m), esp_err_to_name(s),
              esp_err_to_name(c), cc.cc, cc.schan, cc.nchan);
 }
+
+/* drop the network and join it again (the disconnect handler reconnects): for the dev console's "rejoin" */
+void hal_wifi_rejoin(void) { esp_wifi_disconnect(); }
 
 void hal_wifi_join(const char *ssid, const char *pass)
 {
@@ -623,6 +631,59 @@ void hal_tether_fallback(const char *ip, const char *mask)
         if (TE[i].netif && TE[i].fallback && TE[i].link) apply_fallback(&TE[i]);
 }
 
+/* for the dev console's "net": the Wi-Fi interface's address, gateway, DNS servers, and which interface is
+ * the default, plus a lookup of `host` */
+void hal_net_report(char *out, size_t n, const char *host)
+{
+    esp_netif_ip_info_t ip = { 0 };
+    esp_netif_dns_info_t d0 = { 0 }, d1 = { 0 };
+    if (N.sta) {
+        esp_netif_get_ip_info(N.sta, &ip);
+        esp_netif_get_dns_info(N.sta, ESP_NETIF_DNS_MAIN, &d0);
+        esp_netif_get_dns_info(N.sta, ESP_NETIF_DNS_BACKUP, &d1);
+    }
+    esp_netif_t *def = esp_netif_get_default_netif();
+    int r = -1;
+    char resolved[20] = "-";
+    if (host && host[0]) {
+        struct addrinfo hints = { .ai_family = AF_INET, .ai_socktype = SOCK_STREAM }, *res = NULL;
+        r = getaddrinfo(host, "443", &hints, &res);
+        if (r == 0 && res) {
+            struct sockaddr_in *sa = (struct sockaddr_in *)res->ai_addr;
+            inet_ntoa_r(sa->sin_addr, resolved, sizeof resolved);
+        }
+        if (res) freeaddrinfo(res);
+    }
+    /* and a plain TCP connect to 1.1.1.1:443 and to the gateway's :80, 3 s each: does anything get out */
+    int tcp[2] = { -1, -1 };
+    const char *dst[2] = { "1.1.1.1", NULL };
+    char gw[16];
+    snprintf(gw, sizeof gw, IPSTR, IP2STR(&ip.gw));
+    dst[1] = gw;
+    for (int i = 0; i < 2; i++) {
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) continue;
+        struct sockaddr_in sa = { .sin_family = AF_INET, .sin_port = htons(i ? 80 : 443) };
+        inet_aton(dst[i], &sa.sin_addr);
+        int fl = fcntl(fd, F_GETFL, 0);
+        fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+        connect(fd, (struct sockaddr *)&sa, sizeof sa);
+        fd_set w;
+        FD_ZERO(&w);
+        FD_SET(fd, &w);
+        struct timeval tv = { .tv_sec = 3 };
+        int so = -1;
+        socklen_t sl = sizeof so;
+        if (select(fd + 1, NULL, &w, NULL, &tv) > 0) getsockopt(fd, SOL_SOCKET, SO_ERROR, &so, &sl);
+        tcp[i] = so;
+        close(fd);
+    }
+    snprintf(out, n, "tcp 1.1.1.1 %d gw %d; up %d ip " IPSTR " gw " IPSTR " dns " IPSTR " / " IPSTR " default %s; %s -> %s (%d)",
+             tcp[0], tcp[1], N.up,
+             IP2STR(&ip.ip), IP2STR(&ip.gw), IP2STR(&d0.ip.u_addr.ip4), IP2STR(&d1.ip.u_addr.ip4),
+             def ? esp_netif_get_desc(def) : "none", host ? host : "", resolved, r);
+}
+
 void hal_net(hal_net_t *o)
 {
     memset(o, 0, sizeof *o);
@@ -735,6 +796,22 @@ static void http_headers(esp_http_client_handle_t c, const char *h)
     }
 }
 
+/* The C6 sometimes goes on reporting "connected, with an address" while nothing gets through (no DNS, no TCP
+ * even to the gateway; the PC can't ping the tablet). Joining the network again clears it: three requests
+ * failing in a row with Wi-Fi "up" rejoin it, at most once a minute. */
+static volatile int s_http_fails;
+static void wifi_heal(void)
+{
+    static int64_t last;
+    if (!N.up || ++s_http_fails < 3) return;
+    int64_t now = esp_timer_get_time();
+    if (last && now - last < 60 * 1000000LL) return;
+    last = now;
+    s_http_fails = 0;
+    ESP_LOGW(TAG, "wi-fi: connected but nothing gets through: joining again");
+    esp_wifi_disconnect(); /* the disconnect handler connects again */
+}
+
 hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, size_t errn)
 {
     if (status) *status = -1;
@@ -770,27 +847,42 @@ hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, siz
     }
     http_headers(h->c, req->headers);
     size_t blen = req->body ? req->body_len : 0;
-    esp_err_t e = esp_http_client_open(h->c, (int)blen);
-    if (e != ESP_OK) {
-        int tls = 0, flags = 0;
-        esp_http_client_get_and_clear_last_tls_error(h->c, &tls, &flags);
-        if (tls && err && errn) snprintf(err, errn, "TLS failed (-0x%x)", -tls);
-        else http_err(err, errn, "can't connect", e);
-        hal_http_close(h);
-        return NULL;
-    }
-    for (size_t sent = 0; sent < blen;) {
-        int w = esp_http_client_write(h->c, req->body + sent, (int)(blen - sent));
-        if (w <= 0) {
-            http_err(err, errn, "send failed", ESP_FAIL);
-            hal_http_close(h);
-            return NULL;
+    /* The C6 now and then stops answering for a few seconds (its RPCs time out alongside): a request caught in
+     * that fails to connect, to send, or to get headers. Nothing has been answered yet at any of those
+     * points, so one more try a moment later is safe for any method. */
+    for (int attempt = 0;; attempt++) {
+        const char *what = NULL;
+        esp_err_t why = ESP_FAIL;
+        int tls = 0;
+        esp_err_t e = esp_http_client_open(h->c, (int)blen);
+        if (e != ESP_OK) {
+            int flags = 0;
+            esp_http_client_get_and_clear_last_tls_error(h->c, &tls, &flags);
+            what = "can't connect";
+            why = e;
         }
-        sent += (size_t)w;
-    }
-    if (esp_http_client_fetch_headers(h->c) < 0) {
-        http_err(err, errn, "no response", ESP_ERR_HTTP_FETCH_HEADER);
+        for (size_t sent = 0; !what && sent < blen;) {
+            int w = esp_http_client_write(h->c, req->body + sent, (int)(blen - sent));
+            if (w <= 0) what = "send failed";
+            else sent += (size_t)w;
+        }
+        if (!what && esp_http_client_fetch_headers(h->c) < 0) {
+            what = "no response";
+            why = ESP_ERR_HTTP_FETCH_HEADER;
+        }
+        if (!what) {
+            s_http_fails = 0;
+            break;
+        }
+        if (attempt == 0 && N.up) {
+            esp_http_client_close(h->c);
+            vTaskDelay(pdMS_TO_TICKS(1200));
+            continue;
+        }
+        if (tls && err && errn) snprintf(err, errn, "TLS failed (-0x%x)", -tls);
+        else http_err(err, errn, what, why);
         hal_http_close(h);
+        wifi_heal();
         return NULL;
     }
     if (status) *status = esp_http_client_get_status_code(h->c);
