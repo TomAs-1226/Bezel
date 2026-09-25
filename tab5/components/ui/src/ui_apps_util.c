@@ -192,10 +192,21 @@ static void tm_lap(lv_obj_t *o, void *u)
     beep(1500, 15);
 }
 
+/* the preset chips show which length is set, as the autonomous ones do */
+static void tm_presets_mark(void)
+{
+    uint32_t n = lv_obj_get_child_count(TM.presets);
+    for (uint32_t i = 0; i < n; i++) {
+        lv_obj_t *c = lv_obj_get_child(TM.presets, (int32_t)i);
+        ui_chip_set(c, (intptr_t)lv_obj_get_user_data(c) == (intptr_t)TM.count_s);
+    }
+}
+
 static void tm_preset(lv_obj_t *o, void *u)
 {
     (void)o;
     TM.count_s = (double)(intptr_t)u;
+    tm_presets_mark();
     TM.acc = 0;
     TM.running = false;
     tm_show();
@@ -251,8 +262,10 @@ static void timer_build(lv_obj_t *b)
         char n[16];
         if (PRE[i] < 60) snprintf(n, sizeof n, "%d s", PRE[i]);
         else snprintf(n, sizeof n, "%d min", PRE[i] / 60);
-        ui_chip(TM.presets, n, tm_preset, (void *)(intptr_t)PRE[i]);
+        lv_obj_t *c = ui_chip(TM.presets, n, tm_preset, (void *)(intptr_t)PRE[i]);
+        lv_obj_set_user_data(c, (void *)(intptr_t)PRE[i]);
     }
+    tm_presets_mark();
     TM.side[3] = bz_label(r, "laps · tap lap while it runs", BZ_F_LABEL, BZ_C_DIM);
     TM.laps = bz_col(r, 6);
     tm_auto(NULL, (void *)20);
