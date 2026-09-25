@@ -34,6 +34,8 @@ typedef enum { BZ_OK, BZ_WARN, BZ_FAULT, BZ_STALE, BZ_INFO } bz_status_t;
 void bz_theme_init(void);
 uint32_t bz_color(bz_color_role_t role);
 lv_color_t bz_lv(bz_color_role_t role);
+/* A raw 0xRRGGBB (a mix of roles, bz_mix) as the panel shows it: rounded to 565 without turning greys. */
+lv_color_t bz_lv_rgb(uint32_t rgb);
 const lv_font_t *bz_font(bz_font_role_t role);
 bz_color_role_t bz_status_color(bz_status_t s);
 

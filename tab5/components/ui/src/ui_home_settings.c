@@ -483,6 +483,62 @@ void ui_home_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     ui_on_refresh(hs_tick, NULL);
 }
 
+/* ---- settings > look: home mode's face ---- */
+
+static const char *const CARD_L[5] = { "music", "companion", "smart home", "weather", "next match" };
+static const int CARD_BIT[5] = { HM_CARD_MUSIC, HM_CARD_COMPANION, HM_CARD_HOME, HM_CARD_WEATHER, HM_CARD_MATCH };
+
+static struct {
+    lv_obj_t *card[5], *big, *small, *secs, *plain, *tint;
+} LK;
+
+static void look_show(void)
+{
+    if (!LK.big) return;
+    hm_cfg_t *c = hm_cfg();
+    for (int i = 0; i < 5; i++) ui_chip_set(LK.card[i], c->cards & CARD_BIT[i]);
+    ui_chip_set(LK.big, !c->small_clock);
+    ui_chip_set(LK.small, c->small_clock);
+    ui_chip_set(LK.secs, c->seconds);
+    ui_chip_set(LK.plain, !c->tint);
+    ui_chip_set(LK.tint, c->tint);
+}
+
+static void look_tap(lv_obj_t *o, void *u)
+{
+    (void)o;
+    hm_cfg_t *c = hm_cfg();
+    int k = (int)(intptr_t)u;
+    if (k < 5) c->cards ^= CARD_BIT[k];
+    else if (k == 5 || k == 6) c->small_clock = k == 6;
+    else if (k == 7) c->seconds = !c->seconds;
+    else c->tint = k == 9;
+    hm_cfg_save();
+    hm_look_changed(); /* laid out now, under the settings: it shows as it is when they close */
+    look_show();
+}
+
+void ui_home_look_settings(lv_obj_t *col, int w)
+{
+    bz_label(col, "home mode shows", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_t *r = wrap(col, w);
+    for (int i = 0; i < 5; i++) LK.card[i] = ui_chip(r, CARD_L[i], look_tap, (void *)(intptr_t)i);
+    bz_label(col, "home mode clock", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    LK.big = ui_chip(r, "big", look_tap, (void *)(intptr_t)5);
+    LK.small = ui_chip(r, "small", look_tap, (void *)(intptr_t)6);
+    LK.secs = ui_chip(r, "seconds", look_tap, (void *)(intptr_t)7);
+    bz_label(col, "home mode ground", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    LK.plain = ui_chip(r, "plain", look_tap, (void *)(intptr_t)8);
+    LK.tint = ui_chip(r, "tinted with the accent", look_tap, (void *)(intptr_t)9);
+    caption(col, "Seconds redraw one small label a second; everything else on home mode stays still until it changes.", w);
+    ui_button(col, BZ_I_HOME, "see home mode", enter_now, NULL);
+    look_show();
+}
+
+void ui_home_look_settings_open(void) { look_show(); }
+
 void ui_home_settings_open(void)
 {
     if (!HS.list) return;

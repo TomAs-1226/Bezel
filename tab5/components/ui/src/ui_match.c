@@ -9,8 +9,9 @@
  * the time the team was last told of, and which reminders have rung. At the queue lead (default 25 min: time
  * for the checklist) and the match lead (default 5 min) before it, the alarm screen comes up over everything
  * (the pages, apps, home mode, the lock screen: the glass layer's top), wakes the screen, and a burst of
- * notes repeats every RING_EVERY_S, louder as it goes, until it is dismissed or RING_S passes (the screen
- * stays until dismissed). A reminder rings late if the tablet only learns of the match late, but never once
+ * chimes repeats every RING_EVERY_S, fuller and louder as it goes, until it is dismissed or RING_S passes (the
+ * screen stays until dismissed). The sound is synthesized here (see "the sound" below) and played on the
+ * speaker's PCM stream. A reminder rings late if the tablet only learns of the match late, but never once
  * the match's time has passed. A known match moving by MOVE_S or more, or a new one appearing, is a
  * notification with a chime, and its reminders are armed again for the new time.
  *
@@ -21,6 +22,7 @@
 #include "ui_home_mode.h"
 #include "tba.h"
 
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -74,7 +76,9 @@ static struct {
     int bursts;
     bool vol_raised;
     double test_at;
+    int test_kind;
     long shown_min;
+    bool playing;            /* the speaker's stream is ours (a burst or the chime) */
     /* the alarm screen */
     lv_obj_t *root, *bar, *kind_l, *title, *with_l, *vs_l, *check_btn, *dismiss_btn;
     /* the settings view (the tba app's) */
@@ -148,10 +152,103 @@ static void partners(const tba_match_t *m, int team, char *with, size_t wn, char
     if (first) snprintf(vs, vn, "opponents not known yet");
 }
 
+/* ------------------------------------------------------------------ the sound
+ *
+ * Bell-like notes, synthesized: each is four partials (the fundamental, the octave, the twelfth and a faint
+ * inharmonic shimmer at 4.2x, the upper ones decaying faster, as a struck bar's do) under a 6 ms raised-cosine
+ * attack and an exponential decay, summed into a PSRAM buffer and run through a soft limiter, then streamed to
+ * the speaker at 24 kHz (hal_play_*; the output task mixes hal_tone's ticks over it). Oscillators are rotations,
+ * not sinf per sample: a burst of eight notes costs a few milliseconds on the P4, once per burst.
+ *
+ *   queue reminder   a rising E-major arpeggio, E5 G#5 B5 E6: "time to go"; later bursts add a double tap on
+ *                    the top note, then a second arpeggio a fifth higher, faster
+ *   match reminder   an urgent A5/E6 two-tone, four notes, then six faster, then eight with a brighter D6/A6 end
+ *   schedule change  a soft two-note chime, G5 then D6, once
+ *
+ * Louder over the first minute (the old tone bursts' ramp, 55 % to full), with the speaker raised to at least
+ * ALARM_VOL while it rings. When the stream can't be had, the old hal_tone bursts ring instead. */
+
+#define SR 24000
+#define PCM_MAX_S 1.8f
+
+typedef struct {
+    float hz, at, tau, amp;
+} note_t;
+
+static float *s_mix;       /* PCM_MAX_S of float mix, PSRAM */
+static int16_t *s_pcm;     /* the same as 16-bit, PSRAM */
+
+static int synth(const note_t *n, int nn, float len_s, float gain, float bright)
+{
+    int cap = (int)(PCM_MAX_S * SR);
+    int len = (int)(len_s * SR);
+    if (len > cap) len = cap;
+    if (!s_mix) s_mix = calloc((size_t)cap, sizeof *s_mix);
+    if (!s_pcm) s_pcm = calloc((size_t)cap, sizeof *s_pcm);
+    if (!s_mix || !s_pcm) return 0;
+    memset(s_mix, 0, (size_t)len * sizeof *s_mix);
+    static const float MUL[4] = { 1.0f, 2.0f, 3.0f, 4.2f };
+    const float AMP[4] = { 1.0f, 0.38f * bright, 0.16f * bright, 0.05f * bright };
+    const int attack = SR * 6 / 1000;
+    for (int i = 0; i < nn; i++) {
+        int start = (int)(n[i].at * SR);
+        for (int p = 0; p < 4; p++) {
+            float hz = n[i].hz * MUL[p];
+            if (hz > SR * 0.45f) continue;
+            float w = 2 * (float)M_PI * hz / SR, cw = cosf(w), sw = sinf(w);
+            float x = 1, y = 0;                                  /* cos and sin of the phase */
+            float tau = n[i].tau / (1 + 0.7f * p);               /* the upper partials ring shorter */
+            float d = expf(-1.0f / (tau * SR)), e = n[i].amp * AMP[p];
+            int end = start + (int)(6 * tau * SR);
+            if (end > len) end = len;
+            for (int k = start; k < end; k++) {
+                int t = k - start;
+                float a = t < attack ? 0.5f - 0.5f * cosf((float)M_PI * t / attack) : 1;
+                s_mix[k] += y * e * a;
+                e *= d;
+                float nx = x * cw - y * sw;
+                y = x * sw + y * cw;
+                x = nx;
+                if ((t & 1023) == 1023) { /* keep the rotation on the unit circle */
+                    float r = 1.5f - 0.5f * (x * x + y * y);
+                    x *= r;
+                    y *= r;
+                }
+            }
+        }
+    }
+    /* a soft limiter: loud without the square edges of clipping; a 4 ms fade at the very end */
+    int fade = SR / 250;
+    for (int k = 0; k < len; k++) {
+        float v = s_mix[k] * gain;
+        v = v / sqrtf(1 + v * v);
+        if (k > len - fade) v *= (float)(len - k) / fade;
+        s_pcm[k] = (int16_t)(v * 30000);
+    }
+    return len;
+}
+
+/* The stream for a burst. A stream already going gives way (the music, the assistant's speech, or our own last
+ * burst still ringing out); false: no stream, ring with tones. */
+static bool play(int len)
+{
+    if (len <= 0) return false;
+    if (hal_play_busy()) hal_play_stop();
+    if (!hal_play_start(SR)) return false;
+    MA.playing = true;
+    hal_play_write(s_pcm, len, 0); /* the queue holds seconds: this never waits */
+    hal_play_end();
+    return true;
+}
+
+/* A schedule change: soft, once, at the tablet's own volume (a little at least). */
 static void chime(void)
 {
     if (!MA.sound) return;
     float v = S.volume > 0.3f ? S.volume : 0.3f;
+    static const note_t N[2] = { { 784.0f, 0, 0.45f, 1 }, { 1174.7f, 0.16f, 0.8f, 0.9f } };
+    /* a stream that's talking isn't cut for a chime: tones mix over it */
+    if (!hal_play_busy() && play(synth(N, 2, 1.4f, 0.9f * v, 0.6f))) return;
     hal_tone(988, 70, v);
     hal_tone(1319, 110, v);
 }
@@ -258,6 +355,10 @@ static void screen_show(void)
 static void sound_stop(void)
 {
     MA.ringing = false;
+    if (MA.playing) {
+        MA.playing = false;
+        if (hal_play_busy()) hal_play_stop();
+    }
     if (MA.vol_raised) {
         MA.vol_raised = false;
         hal_set_volume(S.volume);
@@ -310,18 +411,56 @@ static void ma_checklist(lv_obj_t *o, void *u)
     ui_app_open(&APP_CHECK, NULL);
 }
 
-/* A burst every RING_EVERY_S, escalating: two notes, then three, then four higher and faster, and louder. Gaps
- * are silent tones, so a burst is queued whole (the tone queue holds eight). */
+/* A burst every RING_EVERY_S, escalating in three steps (the first 5 bursts, the next 10, then the rest: fuller,
+ * faster, brighter) and louder over the first minute. */
+static int burst_pcm(int kind, int level, float v)
+{
+    note_t n[12];
+    int k = 0;
+    float len;
+    if (kind == K_QUEUE) {
+        static const float ARP[4] = { 659.3f, 830.6f, 987.8f, 1318.5f };
+        float step = level < 2 ? 0.12f : 0.09f;
+        for (int i = 0; i < 4; i++) n[k++] = (note_t){ ARP[i], i * step, i == 3 ? 0.6f : 0.4f, i == 3 ? 1.0f : 0.85f };
+        len = 1.4f;
+        if (level == 1) {
+            n[k++] = (note_t){ 1318.5f, 0.62f, 0.22f, 0.8f };
+            n[k++] = (note_t){ 1318.5f, 0.78f, 0.45f, 0.9f };
+            len = 1.5f;
+        } else if (level == 2) {
+            static const float UP[4] = { 987.8f, 1244.5f, 1480.0f, 1975.5f }; /* B major, a fifth up */
+            for (int i = 0; i < 4; i++) n[k++] = (note_t){ UP[i], 0.46f + i * step, i == 3 ? 0.6f : 0.3f, 0.9f };
+            len = 1.6f;
+        }
+    } else {
+        int notes = level == 0 ? 4 : level == 1 ? 6 : 8;
+        float step = level == 0 ? 0.16f : level == 1 ? 0.13f : 0.11f;
+        for (int i = 0; i < notes; i++) {
+            bool hi = i & 1, late = level == 2 && i >= 4;
+            float hz = late ? (hi ? 1760.0f : 1174.7f) : (hi ? 1318.5f : 880.0f);
+            n[k++] = (note_t){ hz, i * step, i == notes - 1 ? 0.35f : 0.16f, hi ? 0.9f : 1.0f };
+        }
+        len = notes * step + 0.5f;
+    }
+    /* gains measured offline (the same synth in numpy): single notes stay under the limiter's knee, the
+     * overlaps are what it rounds off; the match reminder sits ~20 % hotter than the queue one */
+    return synth(n, k, len, (kind == K_QUEUE ? 0.62f : 0.8f) * v, level == 2 ? 1.3f : 1.0f);
+}
+
 static void burst(double el)
 {
     float v = 0.55f + (float)(el / 60.0) * 0.45f;
     if (v > 1) v = 1;
-    int notes = MA.bursts < 5 ? 2 : MA.bursts < 15 ? 3 : 4;
-    static const float HZ[4] = { 880, 1175, 1480, 1760 };
-    int ms = notes < 4 ? 150 : 110;
-    for (int i = 0; i < notes; i++) {
-        if (i) hal_tone(0, 70, 0.02f);
-        hal_tone(HZ[i], ms, v);
+    int level = MA.bursts < 5 ? 0 : MA.bursts < 15 ? 1 : 2;
+    if (!play(burst_pcm(MA.kind, level, v))) {
+        /* no stream: tone bursts. Gaps are silent tones, so a burst is queued whole (the queue holds eight) */
+        int notes = level + 2;
+        static const float HZ[4] = { 880, 1175, 1480, 1760 };
+        int ms = notes < 4 ? 150 : 110;
+        for (int i = 0; i < notes; i++) {
+            if (i) hal_tone(0, 70, 0.02f);
+            hal_tone(HZ[i], ms, v);
+        }
     }
     MA.bursts++;
 }
@@ -472,7 +611,8 @@ static void ma_tick(void *u)
     time_t wall = time(NULL);
     if (MA.up_now || MA.ringing) ring_tick(now, wall);
     if (MA.test_at && now >= MA.test_at) {
-        /* a made-up match, 25 minutes out, so the queue reminder's screen and sound can be seen */
+        /* a made-up match, 25 minutes out (5 for the match reminder), so a reminder's screen and sound can be
+         * seen; or a made-up schedule change, its message and chime */
         MA.test_at = 0;
         tracked_t t;
         memset(&t, 0, sizeof t);
@@ -480,9 +620,19 @@ static void ma_tick(void *u)
         t.m.ours = 1;
         t.m.red[0] = S.team > 0 ? S.team : 5805, t.m.red[1] = 1234, t.m.red[2] = 5678;
         t.m.blue[0] = 111, t.m.blue[1] = 222, t.m.blue[2] = 333;
-        t.when = t.m.predicted = wall + 25 * 60;
-        ring(&t, K_QUEUE); /* the queue reminder's screen, checklist button and all */
-        ui_text(MA.kind_l, "test alarm \xc2\xb7 time to queue: run the checklist");
+        t.when = t.m.predicted = wall + (MA.test_kind == 1 ? 5 : 25) * 60;
+        if (MA.test_kind == 2) {
+            char at[16], msg[64];
+            hhmm(t.when, at, sizeof at);
+            snprintf(msg, sizeof msg, "test: Q34 moved to %s (+8 min)", at);
+            news(msg);
+        } else if (MA.test_kind == 1) {
+            ring(&t, K_MATCH);
+            ui_text(MA.kind_l, "test alarm \xc2\xb7 match reminder");
+        } else {
+            ring(&t, K_QUEUE); /* the queue reminder's screen, checklist button and all */
+            ui_text(MA.kind_l, "test alarm \xc2\xb7 time to queue: run the checklist");
+        }
     }
     if (S.team != MA.team) {
         ma_config();
@@ -516,7 +666,13 @@ void ui_match_boot(void)
     ui_on_refresh(ma_tick, NULL);
 }
 
-void ui_match_test(double delay_s) { MA.test_at = hal_seconds() + (delay_s > 0 ? delay_s : 0.01); }
+void ui_match_test_kind(double delay_s, int kind)
+{
+    MA.test_kind = kind < 0 || kind > 2 ? 0 : kind;
+    MA.test_at = hal_seconds() + (delay_s > 0 ? delay_s : 0.01);
+}
+
+void ui_match_test(double delay_s) { ui_match_test_kind(delay_s, 0); }
 
 bool ui_match_next_line(char *out, size_t n)
 {

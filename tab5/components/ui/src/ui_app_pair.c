@@ -145,7 +145,7 @@ static void done(lv_obj_t *o, void *u)
 static void pair_build(lv_obj_t *b)
 {
     lv_obj_t *hr = bz_row(b, 14);
-    lv_obj_align(hr, LV_ALIGN_TOP_RIGHT, -PAD, 18);
+    lv_obj_align(hr, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, 18);
     lv_obj_set_height(hr, 60);
     PR.head_state = bz_label_line(hr, "", BZ_F_LABEL, BZ_C_DIM, 560);
     lv_obj_set_style_text_align(PR.head_state, LV_TEXT_ALIGN_RIGHT, 0);

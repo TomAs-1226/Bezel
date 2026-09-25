@@ -2,6 +2,7 @@
  * logs (microSD) and settings. */
 #include "ui_internal.h"
 #include "ui_home_mode.h"
+#include "ui_home_priv.h"
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
 #include "cat_can.h"
 #include "cat_logs.h"
@@ -23,7 +24,7 @@
 static lv_obj_t *head_right(lv_obj_t *body)
 {
     lv_obj_t *r = bz_row(body, 14);
-    lv_obj_align(r, LV_ALIGN_TOP_RIGHT, -PAD, 18);
+    lv_obj_align(r, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, 18);
     lv_obj_set_height(r, 60);
     return r;
 }
@@ -1097,6 +1098,8 @@ static void st_level(lv_obj_t *lv, float v, bool final, void *u)
     if (final) ui_settings_save();
 }
 
+static void sx_swatches(void);
+
 static void st_tone(lv_obj_t *o, void *u)
 {
     (void)o;
@@ -1104,6 +1107,7 @@ static void st_tone(lv_obj_t *o, void *u)
     bz_ui_set_mode(S.dark, S.calm);
     ui_chip_set(ST.dark_chip, S.dark);
     ui_chip_set(ST.light_chip, !S.dark);
+    sx_swatches();
     ui_settings_save();
 }
 
@@ -1255,9 +1259,9 @@ static void settings_refresh(void)
 
 /* ---- the settings app: a list of sections on the left, the chosen one on the right ---- */
 
-enum { SS_DISPLAY, SS_SOUND, SS_ROBOT, SS_NETWORK, SS_LINK, SS_ASSIST, SS_HOME, SS_TIME, SS_STORAGE, SS_POWER, SS_ABOUT,
-       SS_COUNT };
-static const char *const SS_NAME[SS_COUNT] = { "display", "sound", "robot", "network", "pc link",
+enum { SS_DISPLAY, SS_LOOK, SS_SOUND, SS_ROBOT, SS_NETWORK, SS_LINK, SS_ASSIST, SS_HOME, SS_TIME, SS_STORAGE, SS_POWER,
+       SS_ABOUT, SS_COUNT };
+static const char *const SS_NAME[SS_COUNT] = { "display", "look", "sound", "robot", "network", "pc link",
                                                "assistant", "home", "date and time", "storage", "power", "about" };
 static const char *SS_ICON[SS_COUNT];
 
@@ -1266,7 +1270,9 @@ static struct {
     int cur;
     lv_obj_t *lock_chip, *sleep_chips[4], *dim_chips[4], *click_chip, *tz_chips[5], *clock, *sd_state, *batt, *off_btn, *link_state, *assist_state;
     double off_armed;
-} SX;
+    lv_obj_t *swatch[BZ_NACCENTS];
+    int wanted;          /* a section asked for by name (ui_settings_show), -1 none */
+} SX = { .wanted = -1 };
 
 static const int DIM_S[4] = { 30, 90, 300, 0 };
 static const char *const DIM_L[4] = { "30 s", "90 s", "5 min", "never" };
@@ -1275,6 +1281,29 @@ static const char *const SLEEP_L[4] = { "1 min", "5 min", "15 min", "never" };
 static const char *const TZ_L[5] = { "pacific", "mountain", "central", "eastern", "utc" };
 static const char *const TZ_V[5] = { "PST8PDT,M3.2.0,M11.1.0", "MST7MDT,M3.2.0,M11.1.0", "CST6CDT,M3.2.0,M11.1.0",
                                      "EST5EDT,M3.2.0,M11.1.0", "UTC0" };
+
+/* The accents as swatches: each its colour in the tone showing, the one in use ringed in ink */
+static void sx_swatches(void)
+{
+    for (int i = 0; i < BZ_NACCENTS; i++) {
+        lv_obj_t *t = SX.swatch[i];
+        if (!t) return;
+        bool on = i == S.accent;
+        bz_tile_set_fill(t, on ? BZ_C_SURFACE3 : BZ_C_SURFACE2);
+        lv_obj_set_style_border_color(t, bz_lv(BZ_C_INK), 0);
+        lv_obj_set_style_border_width(t, on ? 3 : 0, 0);
+        const bz_accent_t *a = &BZ_ACCENTS[i];
+        lv_obj_set_style_bg_color(lv_obj_get_child(t, 0), bz_lv_rgb(bz_ui_dark() ? a->dark : a->light), 0);
+        bz_set_color(lv_obj_get_child(t, 1), on ? BZ_C_INK : BZ_C_DIM);
+    }
+}
+
+static void sx_accent(lv_obj_t *o, void *u)
+{
+    (void)o;
+    ui_set_accent((int)(intptr_t)u); /* one full redraw: every screen takes it */
+    sx_swatches();
+}
 
 static void sx_show(int i)
 {
@@ -1426,7 +1455,11 @@ static void settings_open(void)
     lv_label_set_text(lv_obj_get_child(SX.off_btn, 1), "turn off");
     ui_assist_settings_open();
     ui_home_settings_open();
+    ui_home_look_settings_open();
+    sx_swatches();
     if (ui_home_settings_wanted()) SX.cur = SS_HOME; /* "settings" from home mode */
+    if (SX.wanted >= 0) SX.cur = SX.wanted;
+    SX.wanted = -1;
     sx_show(SX.cur);
 }
 
@@ -1454,6 +1487,7 @@ static void settings_refresh_more(void)
 static void settings_build(lv_obj_t *b)
 {
     SS_ICON[SS_DISPLAY] = BZ_I_BRIGHTNESS_6;
+    SS_ICON[SS_LOOK] = BZ_I_PALETTE;
     SS_ICON[SS_SOUND] = BZ_I_VOLUME_UP;
     SS_ICON[SS_ROBOT] = BZ_I_SMART_TOY;
     SS_ICON[SS_NETWORK] = BZ_I_WIFI;
@@ -1474,7 +1508,7 @@ static void settings_build(lv_obj_t *b)
     lv_obj_set_style_pad_row(nav, 4, 0);
     for (int i = 0; i < SS_COUNT; i++) {
         lv_obj_t *n = ui_button(nav, SS_ICON[i], SS_NAME[i], sx_nav, (void *)(intptr_t)i);
-        /* eleven sections in the tile's height (APP_H less its padding) */
+        /* twelve sections in the tile's height (APP_H less its padding) */
         lv_obj_set_size(n, nav_w - 24, (APP_H - 24 - (SS_COUNT - 1) * 4) / SS_COUNT);
         lv_obj_set_style_radius(n, 16, 0);
         lv_obj_set_flex_align(n, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1486,10 +1520,8 @@ static void settings_build(lv_obj_t *b)
     bz_label(t, "brightness", BZ_F_LABEL, BZ_C_DIM);
     ST.bright = bz_level(t, iw, 52, 0.05f, 1, 0.01f);
     bz_level_on_change(ST.bright, st_level, (void *)(intptr_t)0);
-    bz_label(t, "look", BZ_F_LABEL, BZ_C_DIM);
+    bz_label(t, "overlay", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *r = sx_wrap_row(t, iw);
-    ST.dark_chip = ui_chip(r, "dark", st_tone, (void *)(intptr_t)0);
-    ST.light_chip = ui_chip(r, "light", st_tone, (void *)(intptr_t)1);
     ST.perf_chip = ui_chip(r, "frame-rate overlay", st_perf, NULL);
     bz_label(t, "turn the picture", BZ_F_LABEL, BZ_C_DIM);
     r = sx_wrap_row(t, iw);
@@ -1502,6 +1534,43 @@ static void settings_build(lv_obj_t *b)
     bz_label(t, "dim when untouched for", BZ_F_LABEL, BZ_C_DIM);
     r = sx_wrap_row(t, iw);
     for (int i = 0; i < 4; i++) SX.dim_chips[i] = ui_chip(r, DIM_L[i], sx_dim, (void *)(intptr_t)i);
+
+    /* look: the tone, the accent, and home mode's face (a scroller: it runs past the pane) */
+    t = sx_pane(b, SS_LOOK, px, pw);
+    lv_obj_update_layout(t);
+    {
+        int lh = lv_obj_get_content_height(t) - 60;
+        lv_obj_t *col = ui_scroller(t, iw, lh > 200 ? lh : 200);
+        lv_obj_set_style_pad_row(col, 12, 0);
+        bz_label(col, "tone", BZ_F_LABEL, BZ_C_DIM);
+        r = sx_wrap_row(col, iw);
+        ST.dark_chip = ui_chip(r, "dark", st_tone, (void *)(intptr_t)0);
+        ST.light_chip = ui_chip(r, "light", st_tone, (void *)(intptr_t)1);
+        bz_label(col, "accent", BZ_F_LABEL, BZ_C_DIM);
+        r = sx_wrap_row(col, iw);
+        for (int i = 0; i < BZ_NACCENTS; i++) {
+            lv_obj_t *sw = bz_tile(r, 96, 108);
+            lv_obj_set_style_pad_all(sw, 0, 0);
+            lv_obj_set_style_radius(sw, 24, 0);
+            lv_obj_add_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_t *dot = bz_box(sw);
+            lv_obj_set_size(dot, 44, 44);
+            lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
+            lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
+            lv_obj_align(dot, LV_ALIGN_TOP_MID, 0, 16);
+            lv_obj_t *nm = bz_label(sw, BZ_ACCENTS[i].name, BZ_F_CAPTION, BZ_C_DIM);
+            lv_obj_align(nm, LV_ALIGN_BOTTOM_MID, 0, -14);
+            bz_on_tap(sw, sx_accent, (void *)(intptr_t)i);
+            SX.swatch[i] = sw;
+        }
+        lv_obj_t *an = bz_label(col, "The accent fills what is on or chosen everywhere: chips, levels, meters, lit tiles. "
+                                     "The signal orange stays for the one thing to do and for the team itself.",
+                                BZ_F_CAPTION, BZ_C_DIM);
+        lv_obj_set_width(an, iw);
+        ui_home_look_settings(col, iw);
+        lv_obj_t *sp = bz_box(col);
+        lv_obj_set_height(sp, 40);
+    }
 
     /* sound */
     t = sx_pane(b, SS_SOUND, px, pw);
@@ -1648,6 +1717,18 @@ static void settings_build(lv_obj_t *b)
     lv_obj_add_event_cb(ST.kb, st_kb_event, LV_EVENT_ALL, NULL);
     lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
     sx_show(SS_DISPLAY);
+}
+
+void ui_settings_show(const char *section)
+{
+    for (int i = 0; i < SS_COUNT; i++)
+        if (!strcmp(section, SS_NAME[i])) SX.wanted = i;
+    if (ui_app_is_open(&APP_SETTINGS) && SX.wanted >= 0) {
+        sx_show(SX.wanted);
+        SX.wanted = -1;
+        return;
+    }
+    ui_app_open(&APP_SETTINGS, NULL);
 }
 
 const ui_app_t APP_SETTINGS = { .name = "settings", .icon = BZ_I_SETTINGS, .build = settings_build, .open = settings_open,

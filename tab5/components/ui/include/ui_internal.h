@@ -14,15 +14,23 @@
 #define W HAL_W
 #define H HAL_H
 #define PAD BZ_PAD_PAGE
-/* The frame, top to bottom: the status band (page title and context on the left, the island centred,
- * link, battery and clock on the right), the body, and the dock. */
+/* The frame, top to bottom: the status band (page title and context on the left; link, battery and clock on
+ * the right, then the island's orb in the corner), the body, and the dock. */
 #define STATUS_H 76        /* the status band */
-#define HEAD_Y 20          /* the page title's top, inside the band; the island floats at 12 */
+#define HEAD_Y 20          /* the page title's top, inside the band */
+/* The island at rest: an orb in the top-right corner, over pages, apps and home mode alike. Whatever sits at
+ * the band's right (the status cluster, an app head's buttons) ends ORB_CLEAR short of the page's right
+ * padding: align it LV_ALIGN_TOP_RIGHT at HEAD_RIGHT_X. A message grows out of the orb leftwards for a few
+ * seconds, over whatever is there, and shrinks back into it. */
+#define ORB_D 48
+#define ORB_Y 20
+#define ORB_CLEAR (ORB_D + 16)
+#define HEAD_RIGHT_X (-(PAD + ORB_CLEAR))
+#define STATUS_W 240       /* the status cluster, at its widest */
 #define BODY_Y 88          /* page bodies start under the band */
 #define DOCK_BOTTOM 14     /* the dock's gap to the bottom edge */
 #define DOCK_CLEAR 118     /* the dock's top edge from the bottom, and a gap: 14 + 92 + 12 */
 #define BODY_BOTTOM (H - DOCK_CLEAR) /* 602: where a page's tiles end */
-#define ISLAND_HALF 200    /* half the island's widest: page context stays left of W/2 - this */
 
 /* The robot as of the last model update (10 Hz), and the tablet's own state. */
 extern cat_robot_t *R;
@@ -39,6 +47,7 @@ typedef struct {
     bool lock;             /* the screen wakes to the lock screen (a push up opens it) */
     bool clicks;           /* a soft tick on taps */
     int tz;                /* index into the time zones settings offers */
+    int accent;            /* BZ_ACCENTS: the system's accent (kv "accent", by name) */
     char wifi_ssid[33];
 } ui_settings_t;
 extern ui_settings_t S;
@@ -67,6 +76,7 @@ bool ui_locked(void);
 bool ui_overlay_up(void);  /* the lock screen or the control center covers the pages */
 bool ui_asleep(void);
 void ui_set_flip(bool flip); /* turns the picture 180° and redraws everything */
+void ui_set_accent(int accent); /* the accent everywhere (one full redraw), saved */
 void ui_apply_addresses(void);
 
 /* Called at 10 Hz after the model updates. Pages and apps register one each. */
@@ -75,7 +85,9 @@ void ui_on_refresh(ui_refresh_fn fn, void *user);
 /* A page's refresh: runs only while that page is on screen (and once when it comes back). */
 void ui_on_page_refresh(int page, ui_refresh_fn fn, void *user);
 
-/* The island: robot status at rest; a message morphs it for 2.4 s (controls.js:284-323). */
+/* The island: an orb in the top-right corner, the robot's state in its colour and mark, a pip while there are
+ * notifications not yet seen; a tap opens the control center. A message (kept as a notification) flashes it
+ * amber and grows out of it as a capsule for ~3 s, then shrinks back in (Bezel's top island). */
 void ui_island_say(const char *icon, const char *text);
 
 /* App windows grow out of the icon that opened them and can be dragged down to close. */
@@ -109,6 +121,9 @@ void ui_page_motion(lv_obj_t *page);
 void ui_page_tools(lv_obj_t *page);
 
 /* Apps. */
+/* The settings app opened on a section by its name ("look", "display", "home"...): the dev console's
+ * "settings <section>". */
+void ui_settings_show(const char *section);
 extern const ui_app_t APP_PREFLIGHT, APP_ALERTS, APP_TUNE, APP_AUTO, APP_FIELD, APP_LEVEL, APP_LENS,
     APP_CANTAP, APP_LOGS, APP_ROBOT, APP_SETTINGS;
 /* Systemcore and Catalyst depth (ui_apps_sc.c): the controller's own health through catalyst-agent,
@@ -136,6 +151,8 @@ extern const ui_app_t APP_TBA;
 void ui_match_boot(void);
 bool ui_alarm_up(void);                          /* the alarm screen covers everything */
 void ui_match_test(double delay_s);              /* a made-up match's alarm in delay_s (dev console "alarm test") */
+/* The same, choosing what: 0 the queue reminder, 1 the match reminder, 2 a schedule change's chime and message. */
+void ui_match_test_kind(double delay_s, int kind);
 bool ui_match_next_line(char *out, size_t n);    /* "next: Q34 · 14:52 · red with 1234, 5678"; false: none */
 void ui_match_settings(lv_obj_t *pane, int w);   /* the tba app's alerts view, into a flex column */
 void ui_match_settings_refresh(void);            /* its status line, while shown */
@@ -161,7 +178,7 @@ void ui_orb_show(bool show); /* the orb floats over the pages; an open app takes
 void ui_sc_boot(void);
 
 /* Helpers. */
-int ui_head_width(const char *title); /* room for context beside a page title, before the island */
+int ui_head_width(const char *title); /* room for context beside a page title, before the status cluster */
 lv_obj_t *ui_head(lv_obj_t *page, const char *title, const char *label); /* returns the right-hand row */
 /* Sets a label's text only when it changes (a set always invalidates). printf-style. */
 void ui_text(lv_obj_t *label, const char *fmt, ...) __attribute__((format(printf, 2, 3)));

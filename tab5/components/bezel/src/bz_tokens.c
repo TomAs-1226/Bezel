@@ -30,3 +30,17 @@ const bz_palette_t BZ_PAL_LIGHT = {
 };
 
 const bz_palette_t *bz_pal = &BZ_PAL_DARK;
+
+/* Pastel tonal fills for the dark ground (lightness near Bezel's ice, so a meter or a selected chip reads the
+ * same weight whatever the hue), and pale containers for the light one; each on-colour is the hue's own near-
+ * black (near-white for white's light-tone graphite). */
+const bz_accent_t BZ_ACCENTS[BZ_NACCENTS] = {
+    { "ice", 0xCFE0EE, 0x0E2233, 0xCDE1F3, 0x0C2436 },
+    { "orange", 0xFFA066, 0x2B1000, 0xFFD5BD, 0x3A1400 },
+    { "leaf", 0xA8DB8F, 0x0F2A08, 0xCDEBC0, 0x12300A },
+    { "violet", 0xC7B5FF, 0x21124A, 0xDCD2FF, 0x241456 },
+    { "rose", 0xFFB1C4, 0x3D0A1C, 0xFFD3DF, 0x46101F },
+    { "amber", 0xF4CD5C, 0x2A2000, 0xF7E09A, 0x2E2300 },
+    { "teal", 0x86DDCF, 0x00302A, 0xBDEDE5, 0x00352E },
+    { "white", 0xF2F3F5, 0x15181B, 0x2A2E33, 0xF2F3F5 },
+};

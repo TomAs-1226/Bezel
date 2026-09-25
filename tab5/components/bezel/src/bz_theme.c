@@ -77,6 +77,7 @@ static lv_color_t q565(uint32_t c)
 }
 
 lv_color_t bz_lv(bz_color_role_t r) { return q565(bz_color(r)); }
+lv_color_t bz_lv_rgb(uint32_t rgb) { return q565(rgb); }
 const lv_font_t *bz_font(bz_font_role_t f) { return FONTS[f]; }
 
 bz_color_role_t bz_status_color(bz_status_t s)

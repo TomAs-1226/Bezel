@@ -636,7 +636,7 @@ static void assist_build(lv_obj_t *b)
 {
     AS.body = b;
     lv_obj_t *head = bz_col(b, 2);
-    lv_obj_align(head, LV_ALIGN_TOP_RIGHT, -PAD, 26);
+    lv_obj_align(head, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, 26);
     lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
     bz_label(head, "ai technician", BZ_F_LABEL, BZ_C_DIM);
     bz_label(head, "Assist", BZ_F_TITLE, BZ_C_INK);
@@ -1015,7 +1015,7 @@ static void link_open(void)
 static void link_build(lv_obj_t *b)
 {
     lv_obj_t *head = bz_col(b, 2);
-    lv_obj_align(head, LV_ALIGN_TOP_RIGHT, -PAD, 26);
+    lv_obj_align(head, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, 26);
     lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
     bz_label(head, "catalyst link", BZ_F_LABEL, BZ_C_DIM);
     bz_label(head, "The PC", BZ_F_TITLE, BZ_C_INK);

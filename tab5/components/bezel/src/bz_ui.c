@@ -1463,6 +1463,35 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
     return true;
 }
 
+/* The palette in use: the tone's table with the accent laid over its `ice` role. */
+static bz_palette_t s_live;
+static int s_accent;
+
+static void palette_build(void)
+{
+    const bz_accent_t *a = &BZ_ACCENTS[s_accent];
+    s_live = U.dark ? BZ_PAL_DARK : BZ_PAL_LIGHT;
+    s_live.ice = U.dark ? a->dark : a->light;
+    s_live.on_ice = U.dark ? a->on_dark : a->on_light;
+    bz_pal = &s_live;
+}
+
+void bz_ui_set_accent(int accent)
+{
+    if (accent < 0 || accent >= BZ_NACCENTS) accent = 0;
+    bool changed = accent != s_accent;
+    s_accent = accent;
+    palette_build();
+    if (changed && U.comp) {
+        /* the shared styles rewritten, every object restyled, and the whole screen drawn once */
+        bz_theme_changed();
+        lv_obj_invalidate(bz_ui_content());
+        lv_obj_invalidate(bz_ui_glass());
+    }
+}
+
+int bz_ui_accent(void) { return s_accent; }
+
 void bz_ui_set_mode(bool dark, bool calm)
 {
 #if BZ_LEAN
@@ -1471,7 +1500,7 @@ void bz_ui_set_mode(bool dark, bool calm)
     bool changed = dark != U.dark || calm != U.calm;
     U.dark = dark;
     U.calm = calm;
-    bz_pal = dark ? &BZ_PAL_DARK : &BZ_PAL_LIGHT;
+    palette_build();
     bz_motion_set_calm(calm);
     bz_comp_set_mode(U.comp, dark, calm);
     if (changed) {

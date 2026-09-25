@@ -19,7 +19,7 @@
 static lv_obj_t *head_right(lv_obj_t *body)
 {
     lv_obj_t *r = bz_row(body, 14);
-    lv_obj_align(r, LV_ALIGN_TOP_RIGHT, -PAD, 18);
+    lv_obj_align(r, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, 18);
     lv_obj_set_height(r, 60);
     return r;
 }
