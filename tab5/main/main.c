@@ -46,7 +46,9 @@ static void ui_task(void *arg)
     bool first = true;
     double beat = t0;
     for (;;) {
-        bool busy = bz_ui_frame(hal_seconds());
+        double tw0 = hal_seconds();
+        bool busy = bz_ui_frame(tw0);
+        hal_loop_note(hal_seconds() - tw0, busy); /* PROFILING */
         double up = hal_seconds() - t0;
         /* a heartbeat in the log: a UI that stops drawing shows as the beats stopping */
         if (first) {

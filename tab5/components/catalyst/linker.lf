@@ -1,0 +1,12 @@
+# Internal RAM (768 KB, shared with Wi-Fi, USB, DMA and every task stack) is the scarce memory; this
+# component's statics are only touched by tasks, never from an interrupt or by DMA, so they live in PSRAM.
+# (esp_wifi defines an extram_bss scheme, but this firmware's Wi-Fi is on the C6 and esp_wifi isn't linked.)
+[scheme:catalyst_psram_bss]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:catalyst_psram]
+archive: libcatalyst.a
+entries:
+    * (catalyst_psram_bss)

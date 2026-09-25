@@ -689,6 +689,7 @@ static void dev_run(void)
         bz_ui_perf(&pf);
         printf("perf: hooks %.1f lvgl %.1f refresh %.1f render %.1f ms/frame; present %.1f ms, %.0f fps\n", hk, lv, rf, rd,
                pf.present_ms, pf.fps);
+        printf("  frame %.1f ms: compose %.1f\n", pf.frame_ms, pf.compose_ms);
         bz_ui_hooks_report();
         for (int i = 0; i < 12; i++) {
             printf("  shell %s %.0f ms\n", s_prof_name[i], s_prof[i] * 1000);
@@ -696,6 +697,12 @@ static void dev_run(void)
         }
         int gp[4];
         hal_frame_gaps(gp);
+        double lp[4];
+        hal_loop_prof(lp);
+        printf("  loops: %.0f busy, work mean %.1f max %.1f ms; %.0f idle\n", lp[0], lp[1] * 1000, lp[2] * 1000, lp[3]);
+        int lh[5];
+        hal_loop_hist(lh);
+        printf("  loops: work <5 ms %d, <10 %d, <16.7 %d, <25 %d, more %d\n", lh[0], lh[1], lh[2], lh[3], lh[4]);
         printf("  frames: %d at 60, %d at 30, %d at 20, %d slower\n", gp[0], gp[1], gp[2], gp[3]);
         double pp[6];
         hal_present_prof(pp);

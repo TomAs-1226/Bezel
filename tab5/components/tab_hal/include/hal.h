@@ -43,6 +43,9 @@ bool hal_touch(int *x, int *y, void *user);
 void hal_set_brightness(float v01);
 /* Which way up: false the default landscape, true turned 180°. The caller redraws the whole screen after. */
 void hal_set_flip(bool flip);
+void hal_loop_note(double work_s, bool busy); /* PROFILING: one UI loop's bz_ui_frame time */
+void hal_loop_prof(double out[4]);
+void hal_loop_hist(int out[5]); /* PROFILING: busy loops under 5, 10, 16.7, 25 ms, more */ /* PROFILING: busy loops, their mean and max work (s), loops idle */
 void hal_frame_gaps(int out[4]); /* PROFILING: frame gaps of 1, 2, 3, more vsyncs since the last call */
 void hal_present_prof(double out[6]); /* PROFILING: s per stage (pick, catch-up, scroll, rotate, hand-over), count */
 bool hal_flip(void);

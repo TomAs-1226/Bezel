@@ -39,6 +39,7 @@
 #include "driver/twai.h"
 #include "esp_cache.h"
 #include "esp_async_fbcpy.h" /* esp_lcd's private DMA2D copier (priv_include added in CMakeLists) */
+#include "hal/axi_icm_ll.h"
 #include "hal/color_types.h"
 #include "esp_codec_dev.h"
 #include "esp_core_dump.h"
@@ -699,7 +700,12 @@ static struct {
     int dy;
 } s_scroll[SCROLL_MAX];
 static int s_nscroll;
+/* the scrolls the present being worked on applies: handed over from s_scroll with its frame */
+static typeof(s_scroll[0]) s_jscroll[SCROLL_MAX];
+static int s_njscroll;
+static bool s_jstaged; /* its areas' pixels are a staging copy, gone by the next frame */
 static bool scroll_apply(void *fb);
+static void present_sync(void);
 static void blk_copy(uint16_t *dst, int dx, int dy, const uint16_t *src, int sx, int sy, int w, int h);
 static void portrait_rect(const bz_area_t *a, int *x, int *y, int *w, int *h);
 
@@ -742,8 +748,8 @@ static bool covered_by(const bz_area_t *r, const bz_present_t *areas, int n)
 {
     for (int j = 0; j < n; j++)
         if (covers(&areas[j].a, r)) return true;
-    for (int j = 0; j < s_nscroll; j++)
-        if (covers(&s_scroll[j].a, r)) return true;
+    for (int j = 0; j < s_njscroll; j++)
+        if (covers(&s_jscroll[j].a, r)) return true;
     return false;
 }
 
@@ -775,6 +781,35 @@ static void fb_catch_up(int b, const bz_present_t *areas, int n, bool cover_full
 /* PROFILING: gaps between consecutive hand-overs while something moves (under 200 ms), bucketed by how
  * many vsyncs they span: 1, 2, 3, more */
 static int s_gap[4];
+static double s_lw, s_lmax;
+static int s_ln, s_lidle, s_lh[5];
+void hal_loop_hist(int out[5])
+{
+    for (int i = 0; i < 5; i++) {
+        out[i] = s_lh[i];
+        s_lh[i] = 0;
+    }
+}
+void hal_loop_note(double work_s, bool busy)
+{
+    if (!busy) {
+        s_lidle++;
+        return;
+    }
+    s_lw += work_s;
+    s_ln++;
+    s_lh[work_s < 0.005 ? 0 : work_s < 0.010 ? 1 : work_s < 0.0167 ? 2 : work_s < 0.025 ? 3 : 4]++;
+    if (work_s > s_lmax) s_lmax = work_s;
+}
+void hal_loop_prof(double out[4])
+{
+    out[0] = s_ln;
+    out[1] = s_ln ? s_lw / s_ln : 0;
+    out[2] = s_lmax;
+    out[3] = s_lidle;
+    s_lw = s_lmax = 0;
+    s_ln = s_lidle = 0;
+}
 void hal_frame_gaps(int out[4])
 {
     for (int i = 0; i < 4; i++) {
@@ -821,9 +856,8 @@ void hal_present_prof(double out[6])
     s_ppn = 0;
 }
 
-void hal_present(const bz_present_t *areas, int n, void *user)
+static void present_do(const bz_present_t *areas, int n)
 {
-    (void)user;
     double t0 = hal_seconds();
     int b = fb_pick();
     void *fb = T.fb[b];
@@ -839,16 +873,17 @@ void hal_present(const bz_present_t *areas, int n, void *user)
     /* scrolled lists before anything drawn over them; remembered as copies from the newest picture */
     bz_present_t rec[PRESENT_MAX + SCROLL_MAX];
     int nrec = 0;
-    for (int i = 0; i < s_nscroll; i++) {
-        rec[nrec++] = (bz_present_t){ s_scroll[i].a, NULL, 0 };
-        rows_of(&s_scroll[i].a, &y0, &y1);
+    for (int i = 0; i < s_njscroll; i++) {
+        rec[nrec++] = (bz_present_t){ s_jscroll[i].a, NULL, 0 };
+        rows_of(&s_jscroll[i].a, &y0, &y1);
     }
     scroll_apply(fb);
     double t3 = hal_seconds();
     for (int i = 0; i < n; i++) {
         rotate_area(&areas[i], fb, false);
         rows_of(&areas[i].a, &y0, &y1);
-        if (nrec < PRESENT_MAX + SCROLL_MAX) rec[nrec++] = areas[i];
+        /* a staged source is gone by the next frame: the catch-up copies from the newest buffer instead */
+        if (nrec < PRESENT_MAX + SCROLL_MAX) rec[nrec++] = (bz_present_t){ areas[i].a, s_jstaged ? NULL : areas[i].src, areas[i].stride };
         else if (!P.overflow++) ESP_LOGW(TAG, "present: %d areas, the catch-up keeps %d", n, PRESENT_MAX);
     }
     if (y1 < y0) { y0 = 0; y1 = 0; }
@@ -864,7 +899,89 @@ void hal_present(const bz_present_t *areas, int n, void *user)
     s_ppn++;
 }
 
-static void present_init(void) {}
+/* The present runs on core 0 while core 1 goes on to the next frame: hooks and LVGL (~6 ms) overlap the
+ * DMA copies and rotations (~14 ms), where one after the other they took ~21 ms, a frame every other
+ * vsync. LVGL draws its next frame into the same buffer the areas point into, so their pixels are first
+ * copied out (the areas of a moving frame are small: the strip a list scrolled into view, a label); a
+ * frame too big to copy (a full redraw) is presented on the spot instead, as before. One job in flight:
+ * a frame waits for the last one's present to finish, and anything else that touches the frame buffers
+ * (a slide, a sheet, a flip, a shot) waits for it too (present_sync). */
+#define STAGE_PX (HAL_W * 240)
+static struct {
+    SemaphoreHandle_t go, idle;
+    bz_present_t a[BZ_COMP_MAX_PRESENT];
+    int n;
+    bool staged;
+    uint16_t *stage;
+    bool task;
+} J;
+
+static void present_sync(void)
+{
+    if (!J.task) return;
+    xSemaphoreTake(J.idle, portMAX_DELAY);
+    xSemaphoreGive(J.idle);
+}
+
+static void present_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        xSemaphoreTake(J.go, portMAX_DELAY);
+        present_do(J.a, J.n);
+        xSemaphoreGive(J.idle);
+    }
+}
+
+void hal_present(const bz_present_t *areas, int n, void *user)
+{
+    (void)user;
+    if (n > BZ_COMP_MAX_PRESENT) n = BZ_COMP_MAX_PRESENT;
+    uint32_t px = 0;
+    for (int i = 0; i < n; i++)
+        if (areas[i].src)
+            px += (uint32_t)(areas[i].a.x2 - areas[i].a.x1 + 1) * (uint32_t)(areas[i].a.y2 - areas[i].a.y1 + 1);
+    if (J.task) xSemaphoreTake(J.idle, portMAX_DELAY);
+    /* this frame's scrolls go with it */
+    memcpy(s_jscroll, s_scroll, sizeof s_scroll[0] * (size_t)s_nscroll);
+    s_njscroll = s_nscroll;
+    s_nscroll = 0;
+    J.n = n;
+    J.staged = J.task && J.stage && px <= STAGE_PX;
+    s_jstaged = J.staged;
+    if (!J.staged) {
+        memcpy(J.a, areas, sizeof *areas * (size_t)n);
+        present_do(J.a, J.n);
+        if (J.task) xSemaphoreGive(J.idle);
+        return;
+    }
+    uint16_t *st = J.stage;
+    for (int i = 0; i < n; i++) {
+        J.a[i] = areas[i];
+        if (!areas[i].src) continue;
+        int w = areas[i].a.x2 - areas[i].a.x1 + 1, h = areas[i].a.y2 - areas[i].a.y1 + 1;
+        for (int y = 0; y < h; y++) memcpy(st + (size_t)y * w, areas[i].src + (size_t)y * areas[i].stride, (size_t)w * 2);
+        J.a[i].src = st;
+        J.a[i].stride = w;
+        st += (size_t)w * h;
+    }
+    /* out of the cache: the PPA reads the staging copy from memory */
+    if (st > J.stage)
+        esp_cache_msync(J.stage, (size_t)(st - J.stage) * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    xSemaphoreGive(J.go);
+}
+
+static void present_init(void)
+{
+    J.go = xSemaphoreCreateBinary();
+    J.idle = xSemaphoreCreateBinary();
+    xSemaphoreGive(J.idle);
+    J.stage = heap_caps_aligned_alloc(128, STAGE_PX * 2 + 256, MALLOC_CAP_SPIRAM);
+    /* above everything on core 0 but the Wi-Fi link's own tasks: its work is mostly waiting on DMA */
+    J.task = J.go && J.idle && J.stage &&
+             xTaskCreatePinnedToCore(present_task, "present", 4096, NULL, 8, NULL, 0) == pdPASS;
+    if (!J.task) ESP_LOGW(TAG, "present: on the UI's core (no memory for the core-0 task)");
+}
 
 /* ---- a page slide in the panel's own orientation ----
  *
@@ -882,7 +999,11 @@ static struct {
 } SLD;
 
 /* a whole frame composed by DMA (a slide, a sheet): a free buffer, then handed over as the full screen */
-static int present_begin(void) { return fb_pick(); }
+static int present_begin(void)
+{
+    present_sync();
+    return fb_pick();
+}
 static void present_end(int b) { fb_handover(b, NULL, 0, true, 0, 0); }
 
 /* Block copies between portrait buffers on the DMA2D, the P4's 2D copy engine (esp_lcd's frame-buffer
@@ -973,6 +1094,7 @@ static void portrait_rect(const bz_area_t *a, int *x, int *y, int *w, int *h)
 
 static bool slide_begin(uint32_t ground_rgb, const bz_area_t *chrome, int nchrome)
 {
+    present_sync();
     if (!SLD.snap || !SLD.nb || !SLD.chrome || !s_fbcpy || !s_ground) return false;
     SLD.ground = (uint16_t)(((ground_rgb >> 19) & 31) << 11 | ((ground_rgb >> 10) & 63) << 5 | ((ground_rgb >> 3) & 31));
     /* the latest picture handed to the panel — final in memory even if the panel switches to it only at
@@ -994,6 +1116,7 @@ static bool slide_begin(uint32_t ground_rgb, const bz_area_t *chrome, int nchrom
 /* a landscape area turned into the snapshot (the page without its chrome) or the neighbour */
 static void slide_patch(const bz_present_t *p, bool neighbour)
 {
+    present_sync();
     if (!SLD.active) return;
     fbcpy_wait(); /* the capture may still be copying into the snapshot */
     rotate_area(p, neighbour ? SLD.nb : SLD.snap, false);
@@ -1055,6 +1178,7 @@ static void slide_init(void)
 
 static void slide_end(void)
 {
+    present_sync();
     SLD.active = false;
     P.nprev = 0;
 }
@@ -1110,11 +1234,11 @@ static void slide_scroll(const bz_area_t *a, int dy)
  * buffer a landscape row is a column, so it's one DMA2D rectangle. */
 static bool scroll_apply(void *fb)
 {
-    if (!s_nscroll) return false;
+    if (!s_njscroll) return false;
     const uint16_t *front = T.fb[fb_latest()];
-    for (int i = 0; i < s_nscroll; i++) {
-        const bz_area_t *a = &s_scroll[i].a;
-        int dy = s_scroll[i].dy, d0 = a->y1 > a->y1 + dy ? a->y1 : a->y1 + dy, d1 = a->y2 < a->y2 + dy ? a->y2 : a->y2 + dy;
+    for (int i = 0; i < s_njscroll; i++) {
+        const bz_area_t *a = &s_jscroll[i].a;
+        int dy = s_jscroll[i].dy, d0 = a->y1 > a->y1 + dy ? a->y1 : a->y1 + dy, d1 = a->y2 < a->y2 + dy ? a->y2 : a->y2 + dy;
         if (d1 < d0) continue;
         bz_area_t dst = { a->x1, (int16_t)d0, a->x2, (int16_t)d1 }, src = { a->x1, (int16_t)(d0 - dy), a->x2, (int16_t)(d1 - dy) };
         int dx, dyy, sx, sy, w, h;
@@ -1123,12 +1247,13 @@ static bool scroll_apply(void *fb)
         blk_copy_async(fb, dx, dyy, front, sx, sy, w, h);
     }
     fbcpy_wait(); /* before anything is turned over it */
-    s_nscroll = 0;
+    s_njscroll = 0;
     return true;
 }
 
 static void slide_settle(void)
 {
+    present_sync();
     /* the glass's buffer copied into the other one: the next present, a few areas, lands on the same picture */
     /* nothing to do: a buffer taken up again is brought up to date from the newest (fb_catch_up) */
 }
@@ -1149,6 +1274,14 @@ static void display_init(void)
     ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(T.lcd.panel, 2, &T.fb[0], &T.fb[1]));
 #endif
     s_scan = 0; /* the panel starts on the first */
+    /* PSRAM is shared by the panel's scan-out (DW-GDMA, ~110 MB/s, a hard deadline), DMA2D (a scrolled list
+     * moves ~3 MB a frame), the PPA and the CPU's cache. Every master starts at QoS 0, equal: a long DMA2D
+     * copy could hold off the scan-out until its FIFO ran dry, and an underrun shows as a cyan screen. The
+     * scan-out's reads go first now, the cache next, the copy engines last. */
+    axi_icm_ll_set_dw_gdma_qos_arbiter_prio(0, 8, 15);
+    axi_icm_ll_set_dw_gdma_qos_arbiter_prio(1, 8, 15);
+    axi_icm_ll_set_cache_qos_arbiter_prio(6, 6);
+    axi_icm_ll_set_dma2d_qos_arbiter_prio(2, 2);
     T.vsync = xSemaphoreCreateBinary();
     esp_lcd_dpi_panel_event_callbacks_t cbs = { .on_refresh_done = on_refresh_done };
     esp_lcd_dpi_panel_register_event_callbacks(T.lcd.panel, &cbs, NULL);
@@ -1194,10 +1327,15 @@ bool hal_touch(int *x, int *y, void *user)
 }
 
 /* The buffer on the glass now (the one handed over last), portrait 720x1280: what the panel shows. */
-const uint16_t *hal_front_fb(void) { return T.fb[fb_latest()]; }
+const uint16_t *hal_front_fb(void)
+{
+    present_sync();
+    return T.fb[fb_latest()];
+}
 
 void hal_set_flip(bool flip)
 {
+    present_sync();
     if (flip == s_flip) return;
     s_flip = flip;
     P.nprev = 0; /* last frame's areas are in the old orientation: the caller redraws the whole screen */
