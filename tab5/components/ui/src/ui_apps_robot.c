@@ -39,6 +39,8 @@ static void pf_run(lv_obj_t *o, void *u)
     cat_preflight_start(&PF.pf, ui_now(), S.team);
     PF.shown = -1;
     lv_obj_clean(PF.list);
+    /* "listening" in the display face is wider than the tile: a step down while it listens */
+    bz_set_font(PF.verdict, BZ_F_VALUE);
     ui_text(PF.verdict, "listening");
     bz_mark_set(PF.vmark, BZ_STALE);
     ui_text(PF.counts, "three seconds of the robot, then the checklist");
@@ -63,14 +65,16 @@ static void pf_show(void)
         bz_status_t st = c->v == CAT_FAIL ? BZ_FAULT : c->v == CAT_WARN ? BZ_WARN : c->v == CAT_PASS ? BZ_OK : BZ_INFO;
         bz_mark(row, st, 12);
         lv_obj_t *w = bz_label(row, verdict_word(c->v), BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_set_width(w, 40);
+        lv_obj_set_width(w, 44);
+        /* "driver station" is 14 of the mono face's 11 px: 150 wrapped it onto two lines */
         lv_obj_t *what = bz_label(row, c->what, BZ_F_LABEL, BZ_C_INK);
-        lv_obj_set_width(what, 150);
+        lv_obj_set_width(what, 164);
         lv_obj_t *d = bz_label(row, c->detail, BZ_F_BODY_S, BZ_C_INK);
         lv_obj_set_flex_grow(d, 1);
         lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
     }
     bool go = PF.pf.fails == 0;
+    bz_set_font(PF.verdict, BZ_F_DISPLAY);
     ui_text(PF.verdict, "%s", go ? "go" : "no-go");
     bz_mark_set(PF.vmark, go ? (PF.pf.warns ? BZ_WARN : BZ_OK) : BZ_FAULT);
     ui_text(PF.counts, "%d fail · %d warn · %d pass", PF.pf.fails, PF.pf.warns, PF.pf.passes);
@@ -116,8 +120,9 @@ static void pf_build(lv_obj_t *b)
     lv_obj_set_pos(PF.counts, 0, 146);
     PF.meter = bz_meter(t, 420 - 2 * BZ_PAD_TILE, 12);
     lv_obj_set_pos(PF.meter, 0, 196);
-    PF.note = bz_label(t, "Ported from Catalyst X1's preflight.py: the same checks and thresholds, "
-                          "plus the robot's own Preflight and SystemCheck results. Any fail is a no-go.",
+    PF.note = bz_label(t, "three seconds of the robot: link, program, battery, brownout, can, loop, motors, "
+                          "cameras, gyro, pose and auto, with the robot's own preflight and system check. "
+                          "any fail is a no-go.",
                        BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(PF.note, 420 - 2 * BZ_PAD_TILE);
     lv_obj_set_pos(PF.note, 0, 236);
@@ -144,18 +149,21 @@ static void al_refresh(void)
 {
     const cat_robot_t *r = R;
     uint32_t sig = 2166136261u ^ (uint32_t)r->nalerts ^ (uint32_t)r->connected << 16;
-    for (int i = 0; i < r->nalerts; i++) sig = hash_str(sig, r->alerts[i].text);
-    ui_text(AL.summary, "%d error%s · %d warning%s · %d note%s", r->n_errors, r->n_errors == 1 ? "" : "s", r->n_warnings,
-            r->n_warnings == 1 ? "" : "s", r->n_infos, r->n_infos == 1 ? "" : "s");
+    /* the rows show severity and source too: an alert that changes only those must rebuild them */
+    for (int i = 0; i < r->nalerts; i++)
+        sig = hash_str(hash_str(sig ^ (uint32_t)r->alerts[i].sev * 31u ^ (uint32_t)r->alerts[i].health, r->alerts[i].source),
+                       r->alerts[i].text);
+    /* offline, "0 errors" would claim a clean robot */
+    if (r->connected)
+        ui_text(AL.summary, "%d error%s · %d warning%s · %d note%s", r->n_errors, r->n_errors == 1 ? "" : "s", r->n_warnings,
+                r->n_warnings == 1 ? "" : "s", r->n_infos, r->n_infos == 1 ? "" : "s");
+    else ui_text(AL.summary, "no robot");
     if (sig == AL.sig) return;
     AL.sig = sig;
     lv_obj_clean(AL.list);
     if (!r->connected || !r->nalerts) {
-        lv_obj_t *t = bz_tile(AL.list, W - 2 * PAD, 120);
-        bz_label(t, r->connected ? "nothing to report" : "not connected", BZ_F_NAME, BZ_C_INK);
-        lv_obj_t *l = bz_label(t, "Catalyst's AlertManager, WPILib Alerts groups and firing HealthMonitor checks all land here.",
-                               BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        ui_empty(AL.list, W - 2 * PAD, r->connected ? "nothing to report" : "not connected",
+                 "Catalyst's AlertManager, WPILib Alerts groups and firing HealthMonitor checks all land here.");
         return;
     }
     for (int sev = CAT_SEV_ERROR; sev >= CAT_SEV_INFO; sev--) {
@@ -169,10 +177,10 @@ static void al_refresh(void)
             lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
             lv_obj_set_style_pad_column(row, 16, 0);
             bz_mark(row, ui_sev_status(a->sev), 12);
-            lv_obj_t *src = bz_label(row, a->source[0] ? a->source : "robot", BZ_F_LABEL, BZ_C_DIM);
-            lv_obj_set_width(src, 150);
+            bz_label_line(row, a->source[0] ? a->source : "robot", BZ_F_LABEL, BZ_C_DIM, 150); /* a long source stays in its column */
             lv_obj_t *txt = bz_label(row, a->text, BZ_F_BODY, BZ_C_INK);
             lv_obj_set_flex_grow(txt, 1);
+            lv_label_set_long_mode(txt, LV_LABEL_LONG_WRAP);
             if (a->health) bz_label(row, "health check", BZ_F_CAPTION, BZ_C_DIM);
         }
     }
@@ -254,7 +262,7 @@ static void tu_toggle(lv_obj_t *o, void *u)
     cat_set_tunable(R, i, on);
     TU.last_sent_at[i] = ui_now();
     ui_chip_set(o, on);
-    lv_label_set_text(lv_obj_get_child(o, 0), on ? "on" : "off");
+    ui_text(lv_obj_get_child(o, 0), "%s", on ? "on" : "off");
     char msg[96];
     snprintf(msg, sizeof msg, "%s \xe2\x86\x92 %s", t->name, on ? "on" : "off");
     ui_island_say(BZ_I_TUNE, msg);
@@ -284,14 +292,9 @@ static void tu_rebuild(void)
     lv_obj_clean(TU.list);
     TU.n = r->ntunables;
     if (!r->ntunables) {
-        lv_obj_t *t = bz_tile(TU.list, W - 2 * PAD, 150);
-        bz_label(t, r->connected ? "nothing to tune" : "not connected", BZ_F_NAME, BZ_C_INK);
-        lv_obj_t *l = bz_label(t, "A robot declares what may be tuned in /Catalyst/Tunables/.manifest (2.x and teams "
-                                  "that publish one); 1.x TunableNumbers under /Catalyst/Tuning/ appear too. "
-                                  "Nothing undeclared is ever written.",
-                               BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_set_width(l, W - 2 * PAD - 2 * BZ_PAD_TILE);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        ui_empty(TU.list, W - 2 * PAD, r->connected ? "nothing to tune" : "not connected",
+                 "A robot declares what may be tuned in /Catalyst/Tunables/.manifest (2.x and teams that publish one); "
+                 "1.x TunableNumbers under /Catalyst/Tuning/ appear too. Nothing undeclared is ever written.");
         return;
     }
     lv_obj_t *grid = bz_row(TU.list, BZ_GAP);
@@ -300,10 +303,8 @@ static void tu_rebuild(void)
     for (int i = 0; i < r->ntunables; i++) {
         const cat_tunable_t *t = &r->tunables[i];
         lv_obj_t *tile = bz_tile(grid, TU_W, 150);
-        bz_label(tile, t->group[0] ? t->group : "tunable", BZ_F_LABEL, BZ_C_DIM);
-        lv_obj_t *nm = bz_label_line(tile, t->name, BZ_F_NAME, BZ_C_INK, TU_W - 2 * BZ_PAD_TILE - 200);
-        lv_obj_set_pos(nm, 0, 26);
-        /* the value is right-aligned in a fixed box so a wider number never re-flows the tile */
+        /* the value is right-aligned in a fixed box so a wider number never re-flows the tile; the group and
+         * name keep to the left of that box (and the unit), so a long name is cut rather than run under it */
         int unit_w = 0;
         if (t->unit[0]) {
             lv_obj_t *un = bz_label(tile, t->unit, BZ_F_LABEL, BZ_C_DIM);
@@ -311,8 +312,11 @@ static void tu_rebuild(void)
             lv_obj_update_layout(un);
             unit_w = lv_obj_get_width(un) + 8;
         }
-        TU.vals[i] = bz_label(tile, "\xe2\x80\x94", BZ_F_VALUE, BZ_C_INK);
-        lv_obj_set_width(TU.vals[i], 220);
+        int name_w = TU_W - 2 * BZ_PAD_TILE - 220 - unit_w - 12;
+        bz_label_line(tile, t->group[0] ? t->group : "tunable", BZ_F_LABEL, BZ_C_DIM, name_w);
+        lv_obj_t *nm = bz_label_line(tile, t->name, BZ_F_NAME, BZ_C_INK, name_w);
+        lv_obj_set_pos(nm, 0, 26);
+        TU.vals[i] = bz_label_line(tile, "\xe2\x80\x94", BZ_F_VALUE, BZ_C_INK, 220);
         lv_obj_set_style_text_align(TU.vals[i], LV_TEXT_ALIGN_RIGHT, 0);
         lv_obj_align(TU.vals[i], LV_ALIGN_TOP_RIGHT, -unit_w, -8);
         TU.levels[i] = TU.chips[i] = NULL;
@@ -355,7 +359,11 @@ static void tu_refresh(void)
         char b[24];
         if (t->is_bool) {
             ui_text(TU.vals[i], "%s", t->have ? (t->value ? "on" : "off") : "\xe2\x80\x94");
-            if (TU.chips[i]) ui_chip_set(TU.chips[i], t->have && t->value);
+            if (TU.chips[i]) {
+                /* the chip's word follows the robot too, not only its fill: it said "on" over an off value */
+                ui_chip_set(TU.chips[i], t->have && t->value);
+                ui_text(lv_obj_get_child(TU.chips[i], 0), "%s", t->have && t->value ? "on" : "off");
+            }
         } else {
             if (t->have) tu_fmt(b, sizeof b, t, t->value);
             ui_text(TU.vals[i], "%s", t->have ? b : "\xe2\x80\x94");
@@ -406,7 +414,7 @@ static void au_pick(lv_obj_t *o, void *u)
 static void au_refresh(void)
 {
     const cat_robot_t *r = R;
-    uint32_t sig = 2166136261u ^ (uint32_t)r->nautos;
+    uint32_t sig = 2166136261u ^ (uint32_t)r->nautos ^ (uint32_t)r->connected << 16; /* the empty state's words too */
     for (int i = 0; i < r->nautos; i++) sig = hash_str(sig, r->autos[i]);
     if (sig != AU.sig) {
         AU.sig = sig;
@@ -418,17 +426,14 @@ static void au_refresh(void)
             lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
             bz_on_tap(t, au_pick, (void *)(intptr_t)i);
             lv_obj_t *l = bz_label(t, r->autos[i], BZ_F_NAME, BZ_C_INK);
+            lv_obj_set_width(l, w - 2 * BZ_PAD_TILE); /* a long routine's name wraps inside its tile */
             lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
             AU.marks[i] = bz_label(t, "", BZ_F_LABEL, BZ_C_DIM);
             AU.chips[i] = t;
         }
-        if (!r->nautos) {
-            lv_obj_t *t = bz_tile(AU.grid, W - 2 * PAD, 130);
-            bz_label(t, r->connected ? "no auto selector" : "not connected", BZ_F_NAME, BZ_C_INK);
-            lv_obj_t *l = bz_label(t, "Catalyst's AutoSelector: /Auto Selector on 2.x, /SmartDashboard/Auto Selector on 1.x.",
-                                   BZ_F_CAPTION, BZ_C_DIM);
-            lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        }
+        if (!r->nautos)
+            ui_empty(AU.grid, W - 2 * PAD, r->connected ? "no auto selector" : "not connected",
+                     "Catalyst's AutoSelector: /Auto Selector on 2.x, /SmartDashboard/Auto Selector on 1.x.");
     }
     for (int i = 0; i < AU.n && i < r->nautos; i++) {
         bool sel = !strcmp(r->autos[i], r->auto_selected), act = !strcmp(r->autos[i], r->auto_active);
@@ -445,14 +450,21 @@ static void au_refresh(void)
 
 static void au_open(void) { AU.sig = 0; }
 
+#define AU_NOTE_H 44 /* two caption lines under the list */
+
 static void au_build(lv_obj_t *b)
 {
     AU.note = bz_label(b, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(AU.note, W - 2 * PAD); /* the 2.x op-mode note wraps rather than running off the screen */
     lv_obj_align(AU.note, LV_ALIGN_BOTTOM_LEFT, PAD, -PAD);
-    AU.grid = bz_row(b, BZ_GAP);
+    /* the autos scroll: past nine of them (24 are allowed) the rest were off the bottom of the screen */
+    lv_obj_t *wrap = bz_box(b);
+    lv_obj_set_pos(wrap, PAD, APP_Y);
+    lv_obj_t *col = ui_scroller(wrap, W - 2 * PAD, APP_H - AU_NOTE_H);
+    AU.grid = bz_row(col, BZ_GAP);
     lv_obj_set_flex_flow(AU.grid, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_style_pad_row(AU.grid, BZ_GAP, 0);
     lv_obj_set_width(AU.grid, W - 2 * PAD);
-    lv_obj_set_pos(AU.grid, PAD, APP_Y);
 }
 
 const ui_app_t APP_AUTO = { .name = "auto", .icon = BZ_I_FLAG, .build = au_build, .open = au_open, .refresh = au_refresh };
@@ -470,7 +482,8 @@ static lv_obj_t *kv_tile(lv_obj_t *parent, int w, int h, const char *title, kv_t
 {
     lv_obj_t *t = bz_tile(parent, w, h);
     lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(t, 10, 0);
+    /* a title and six 23 px rows in 250 - 48: at 10 px apart the last row ran into the bottom padding */
+    lv_obj_set_style_pad_row(t, 6, 0);
     bz_label(t, title, BZ_F_LABEL, BZ_C_DIM);
     for (int i = 0; i < n; i++) {
         lv_obj_t *r = bz_row(t, 10);
@@ -522,13 +535,20 @@ static void rb_refresh(void)
     kv(&RB.link[4], "received", "%.1f kB", st.rx_bytes / 1024.0);
     kv(&RB.link[5], "last error", "%s", st.last_error);
     if (r->have_sc) {
-        kv(&RB.sc[0], "cpu", "%.0f %%", r->sc_cpu);
-        kv(&RB.sc[1], "temperature", "%.0f °c", r->sc_temp);
-        kv(&RB.sc[2], "memory", "%.0f %%", r->sc_ram * 100);
-        kv(&RB.sc[3], "storage", "%.0f %%", r->sc_storage * 100);
+        /* each published on its own: one missing is a dash, never "nan" */
+        char f[4][24];
+        kv(&RB.sc[0], "cpu", "%s", bz_fmt(f[0], sizeof f[0], true, "%.0f %%", r->sc_cpu));
+        kv(&RB.sc[1], "temperature", "%s", bz_fmt(f[1], sizeof f[1], true, "%.0f °c", r->sc_temp));
+        kv(&RB.sc[2], "memory", "%s", bz_fmt(f[2], sizeof f[2], true, "%.0f %%", r->sc_ram * 100));
+        kv(&RB.sc[3], "storage", "%s", bz_fmt(f[3], sizeof f[3], true, "%.0f %%", r->sc_storage * 100));
         kv(&RB.sc[4], "emmc", "%s", r->sc_emmc >= 3 ? "replace" : r->sc_emmc == 2 ? "wearing" : "healthy");
     } else {
-        for (int i = 0; i < 5; i++) kv(&RB.sc[i], i == 0 ? "systemcore" : "", "%s", i == 0 ? "not published (1.x)" : "");
+        /* the same keys with dashes: four unlabelled dashes under one key read as a broken table */
+        kv(&RB.sc[0], "cpu", "%s", r->connected && !r->line2 ? "not published by 1.x" : "");
+        kv(&RB.sc[1], "temperature", "%s", "");
+        kv(&RB.sc[2], "memory", "%s", "");
+        kv(&RB.sc[3], "storage", "%s", "");
+        kv(&RB.sc[4], "emmc", "%s", "");
     }
     if (r->have_loop) kv(&RB.sc[5], "loop", "%.1f ms, worst %.1f", r->loop_avg_ms, r->loop_max_ms);
     else kv(&RB.sc[5], "loop", "%s", "");
@@ -570,8 +590,22 @@ const ui_app_t APP_ROBOT = { .name = "robot", .icon = BZ_I_SMART_TOY, .build = r
 #define FIELD_SCALE 56.0f
 
 static struct {
-    lv_obj_t *map, *side, *pose, *tag, *cams[CAT_MAX_CAMERAS];
+    lv_obj_t *map, *side, *pose, *tag, *cams[CAT_MAX_CAMERAS], *nocam, *blink;
+    uint32_t map_sig; /* what the map shows: redrawn only when it changes */
 } FD;
+
+/* The pose and the path as drawn (a centimetre, a tenth of a degree): a robot at rest redraws nothing. */
+static uint32_t field_sig(const cat_robot_t *r)
+{
+    uint32_t h = 2166136261u ^ (uint32_t)r->have_pose ^ (uint32_t)r->npath << 1;
+    if (r->have_pose) {
+        int32_t q[3] = { (int32_t)lround(r->pose_x * 100), (int32_t)lround(r->pose_y * 100), (int32_t)lround(r->pose_rad * 573) };
+        for (int k = 0; k < 3; k++) h = (h ^ (uint32_t)q[k]) * 16777619u;
+    }
+    for (int i = 0; i < 3 * r->npath && i < (int)(sizeof r->path / sizeof r->path[0]); i++)
+        h = (h ^ (uint32_t)(int32_t)lround(r->path[i] * 100)) * 16777619u;
+    return h;
+}
 
 static void field_draw(lv_event_t *e)
 {
@@ -658,8 +692,24 @@ static void fd_refresh(void)
             lv_obj_add_flag(FD.cams[i], LV_OBJ_FLAG_HIDDEN);
         }
     }
-    lv_obj_invalidate(FD.map);
+    /* no camera: say so, and no blink button that would do nothing */
+    if (r->ncameras) {
+        lv_obj_add_flag(FD.nocam, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(FD.blink, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        ui_text(FD.nocam, "%s", r->connected ? "none published" : "no robot");
+        lv_obj_remove_flag(FD.nocam, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(FD.blink, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* the map only when the pose or the path moved: it was a 926 × 452 redraw 10 times a second */
+    uint32_t ms = field_sig(r);
+    if (ms != FD.map_sig) {
+        FD.map_sig = ms;
+        lv_obj_invalidate(FD.map);
+    }
 }
+
+static void fd_open(void) { FD.map_sig = 0; }
 
 static void blink_tap(lv_obj_t *o, void *u)
 {
@@ -680,18 +730,20 @@ static void fd_build(lv_obj_t *b)
 {
     FD.map = bz_box(b);
     lv_obj_set_size(FD.map, (int)(FIELD_L * FIELD_SCALE), (int)(FIELD_W * FIELD_SCALE));
-    lv_obj_set_pos(FD.map, PAD, APP_Y + 20);
+    lv_obj_set_pos(FD.map, PAD, APP_Y);
     lv_obj_add_event_cb(FD.map, field_draw, LV_EVENT_DRAW_MAIN, NULL);
     int sx = PAD + (int)(FIELD_L * FIELD_SCALE) + BZ_GAP;
     lv_obj_t *t = bz_tile(b, W - PAD - sx, (int)(FIELD_W * FIELD_SCALE));
-    lv_obj_set_pos(t, sx, APP_Y + 20);
+    lv_obj_set_pos(t, sx, APP_Y);
     lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(t, 12, 0);
+    int cw = W - PAD - (PAD + (int)(FIELD_L * FIELD_SCALE) + BZ_GAP) - 2 * BZ_PAD_TILE;
     bz_label(t, "pose", BZ_F_LABEL, BZ_C_DIM);
     FD.pose = bz_label(t, "", BZ_F_BODY_S, BZ_C_INK);
+    lv_obj_set_width(FD.pose, cw); /* "(12.34, 5.67) m · -179°" wraps inside the tile */
     FD.tag = bz_label(t, "", BZ_F_BODY_S, BZ_C_INK);
+    lv_obj_set_width(FD.tag, cw);
     bz_label(t, "cameras", BZ_F_LABEL, BZ_C_DIM);
-    int cw = W - PAD - (PAD + (int)(FIELD_L * FIELD_SCALE) + BZ_GAP) - 2 * BZ_PAD_TILE;
     for (int i = 0; i < CAT_MAX_CAMERAS; i++) {
         lv_obj_t *row = bz_row(t, 8);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
@@ -702,9 +754,11 @@ static void fd_build(lv_obj_t *b)
         lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
         FD.cams[i] = row;
     }
-    ui_button(t, BZ_I_LIGHTBULB, "blink", blink_tap, NULL);
+    FD.nocam = bz_label(t, "", BZ_F_BODY_S, BZ_C_DIM);
+    FD.blink = ui_button(t, BZ_I_LIGHTBULB, "blink", blink_tap, NULL);
     lv_obj_t *cap = bz_label(b, "blue alliance wall on the left · the signal edge is the robot's front", BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_set_pos(cap, PAD, APP_Y + 20 + (int)(FIELD_W * FIELD_SCALE) + 12);
+    lv_obj_set_pos(cap, PAD, APP_Y + (int)(FIELD_W * FIELD_SCALE) + 12);
 }
 
-const ui_app_t APP_FIELD = { .name = "field", .icon = BZ_I_STADIUM, .build = fd_build, .refresh = fd_refresh, .close = fd_close };
+const ui_app_t APP_FIELD = { .name = "field", .icon = BZ_I_STADIUM, .build = fd_build, .open = fd_open, .refresh = fd_refresh,
+                             .close = fd_close };
