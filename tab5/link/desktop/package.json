@@ -1,0 +1,19 @@
+{
+  "name": "catalyst-link-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Catalyst Link's desktop app: a window and tray icon around the Link for Catalyst Tab",
+  "type": "module",
+  "scripts": {
+    "test": "node scripts/check-identity.mjs && node --test \"src/**/*.test.js\"",
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "node scripts/check-identity.mjs && tauri build",
+    "build:debug": "node scripts/check-identity.mjs && tauri build --debug --no-bundle",
+    "identity": "node scripts/check-identity.mjs --write",
+    "check-identity": "node scripts/check-identity.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

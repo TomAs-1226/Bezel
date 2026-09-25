@@ -9,10 +9,10 @@ the contract between `components/assist/src/link.c` (the tablet) and the `cataly
 
 - Default port **8765**. The Link advertises `_catalyst-link._tcp` over mDNS (with the optional
   `zeroconf` package) with TXT `name=<pc>`, `version`, `path=/link/status` and `pair=1|0`.
-- Every request carries `X-Link-Token: <token>`. The Link writes its token to
-  `~/.catalyst-link/token` on first start. The tablet gets it by **pairing** (below): the PC shows a
-  six-digit code, the code typed on the tablet brings the token back. Typing the token by hand (the link
-  app's "token" button) still works. A missing or wrong token gets `401 {"ok":false,"error":"token"}`.
+- Every request carries `X-Link-Token: <token>`. The Link writes its main token to
+  `~/.catalyst-link/token` on first start. The tablet gets a token by **pairing** (below): the PC shows a
+  six-digit code, the code typed on the tablet brings back a token of the tablet's own. Typing the main
+  token by hand (the link app's "token" button) still works. A missing or wrong token gets `401 {"ok":false,"error":"token"}`.
   `GET /link/status` and the two pairing routes answer without a token; without one `/link/status`
   reports only `{"ok":true,"name","version","auth":false,"pairing":true|false}`.
 - Bodies are JSON (`Content-Type: application/json`), UTF-8, sent with a `Content-Length` (chunked
@@ -30,9 +30,10 @@ browses mDNS for `_catalyst-link._tcp`, the owner picks a PC (or types its addre
 1. `POST /link/pair` `{"device":"catalyst tab"}` (no token) →
    `{"ok":true,"pairing":"<id>","digits":6,"expires_in":120,"name":"<pc>"}`. The Link makes a six-digit
    code and shows it **on the PC only**: in the console `catalyst-link serve` runs in, and as a Windows
-   notification (`serve --no-pair-toast` turns that off). The code never travels over the network.
+   notification (`serve --no-pair-toast` turns that off); under the desktop app (`serve --gui`), in the
+   app's pairing panel instead of the console. The code never travels over the network.
 2. The owner types the code on the tablet: `POST /link/pair/confirm` `{"pairing":"<id>","code":"482913"}`
-   (spaces are ignored) → `{"ok":true,"token":"<the Link's token>","name":"<pc>"}`. The tablet saves the
+   (spaces are ignored) → `{"ok":true,"token":"<a token for this tablet>","name":"<pc>"}`. The tablet saves the
    address and token (`link_url`, `link_token`) exactly as if they had been typed, and every later request
    carries the token — the assistant, the inbox and patches, and home mode's media remote
    (`/media/now`, `/media/art`, `/media/control` go through this same paired connection).
@@ -45,9 +46,36 @@ The guard rails: one pairing waits at a time (a new request replaces it, and its
 minutes and takes five wrong tries, and at most one new pairing every 3 s and ten per 10 minutes. Six
 digits and five tries is a 1-in-200,000 chance per code. Whoever reads the PC's screen is the one
 pairing; a device elsewhere on the LAN can ask for a code but can't see it. The pairing routes are in
-`log.jsonl` (`"pairing":"started"|"paired"`), never with the code or the token. The token is the Link's
-one token (`catalyst-link token --rotate` makes a new one, and every paired tablet pairs again). The LAN
-carries it in plain HTTP, as it always has.
+`log.jsonl` (`"pairing":"started"|"paired"`), never with the code or the token.
+
+Each pairing hands out a **token of the tablet's own** (same format as the main token). The Link keeps
+only its SHA-256, with the name the tablet gave, the address it paired from and when it was last seen, in
+`~/.catalyst-link/devices.json`. Forgetting a tablet (the desktop app's pairing panel,
+`POST /admin/devices/<id>/forget`) deletes that entry, and its token gets 401 from the next request on;
+other tablets are untouched. The main token keeps working everywhere; `catalyst-link token --rotate`
+makes a new one **and forgets every paired tablet**, so rotating still means "every tablet pairs again".
+The LAN carries tokens in plain HTTP, as it always has.
+
+## The desktop app's routes (`/admin/*`)
+
+The Catalyst Link desktop app (`link/desktop/`) reads and acts through these. They answer only a
+**loopback** client (`127.0.0.1`/`::1`) carrying the Link's **main** token, and never a request with an
+`Origin` header (so no web page, even one on this PC, can reach them): a tablet, even a paired one,
+gets 403 or 401. The app's Rust side makes the requests; the token never reaches its window.
+
+| route | |
+|---|---|
+| `GET /admin/overview` | name, version, port, bind, addresses, repo (`repo_repo`, `repo_branch`, `repo_dirty`), state folder, pairing (`enabled`, `toast`, `pending` without the code), `devices`, `by_hand` (other machines using the main token, by address), `media`, `mdns` (`advertising` / `off` / `failed`, with `why`), `claude`, inbox counts, Claude Code sessions by state |
+| `GET /admin/pairing` | `{"enabled","pending":{"id","device","ip","code","expires_in","ttl","tries_left"} or null,"last":{"device","ip","at"} or null}` — the only place a code is ever served |
+| `POST /admin/pairing/cancel` | drop the waiting pairing |
+| `GET /admin/devices` | the paired tablets: `id`, `name`, `ip`, `paired_at`, `last_seen` (never a token or digest) |
+| `POST /admin/devices/<id>/forget` | revoke one tablet's token |
+| `POST /admin/inbox/<id>/status` | `{"status","note"}` (status `open`, `claimed`, `done` or `rejected`): as the tablet's route, plus putting a claimed item back (`open`), which is the CLI's `release` |
+| `GET /admin/claude-hooks` | whether Claude Code's user settings carry the Link's hooks: `installed`, `partial`, `outdated` (another Python, checkout or port), `path`, `command` |
+| `POST /admin/claude-hooks` | `{"install":true}` or `{"install":false}`: add or remove only the Link's hook entries (backup kept as `settings.json.catalyst-link.bak`); 409 for a settings file that isn't valid JSON, which is left alone |
+
+Requests from the app (its `User-Agent`, from this PC) and every `/admin` request are left out of the
+console's per-request log lines, as Claude Code's hook traffic already is.
 
 ## Status
 
