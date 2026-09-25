@@ -201,14 +201,28 @@ static void run(char *line)
                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
         say(buf);
+        /* and each task's state and its share of the CPU since the last "mem" */
         static TaskStatus_t st[48];
-        int n = (int)uxTaskGetSystemState(st, 48, NULL);
+        static struct { TaskHandle_t h; uint32_t run; } prev[48];
+        static uint32_t prev_total;
+        uint32_t total = 0;
+        int n = (int)uxTaskGetSystemState(st, 48, &total);
+        uint32_t dt = total - prev_total;
+        static const char STATE[] = "RrBSDI";
         for (int i = 0; i < n; i++) {
-            snprintf(buf, sizeof buf, "TASK %-16s core %d prio %u headroom %u\n", st[i].pcTaskName,
+            uint32_t was = 0;
+            for (int k = 0; k < 48; k++)
+                if (prev[k].h == st[i].xHandle) was = prev[k].run;
+            unsigned pct = dt ? (unsigned)((uint64_t)(st[i].ulRunTimeCounter - was) * 1000 / dt) : 0;
+            snprintf(buf, sizeof buf, "TASK %-16s core %d prio %u headroom %u state %c cpu %u.%u%%\n", st[i].pcTaskName,
                      (int)xTaskGetCoreID(st[i].xHandle), (unsigned)st[i].uxCurrentPriority,
-                     (unsigned)st[i].usStackHighWaterMark);
+                     (unsigned)st[i].usStackHighWaterMark, STATE[st[i].eCurrentState < 6 ? st[i].eCurrentState : 5],
+                     pct / 10, pct % 10);
             say(buf);
         }
+        for (int i = 0; i < 48; i++) prev[i].h = NULL;
+        for (int i = 0; i < n && i < 48; i++) prev[i] = (typeof(prev[0])){ st[i].xHandle, st[i].ulRunTimeCounter };
+        prev_total = total;
         say("OK\n");
     } else if (!strcmp(line, "scan")) {
         /* a Wi-Fi scan, one "AP rssi ssid" line per network heard */

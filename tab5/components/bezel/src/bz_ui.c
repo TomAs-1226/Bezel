@@ -69,7 +69,7 @@ static struct {
     int cur_buf;
     uint16_t *nb;            /* the neighbouring page, drawn offscreen during the slide */
     int nb_side;
-    bz_area_t chrome[8];     /* the top layer's visible pieces (dock, island…): they stay put while pages slide */
+    bz_area_t chrome[BZ_SLIDE_CHROME]; /* the top layer's visible pieces (dock, orb…): they stay put while pages slide */
     int nchrome;
     uint32_t ground_color;
     bool sliding;
@@ -1045,7 +1045,7 @@ void bz_ui_slide_begin(void)
     U.nchrome = 0;
     lv_obj_t *top = lv_display_get_layer_top(U.disp_content);
     uint32_t nc = lv_obj_get_child_count(top);
-    for (uint32_t i = 0; i < nc && U.nchrome < 8; i++) {
+    for (uint32_t i = 0; i < nc && U.nchrome < BZ_SLIDE_CHROME; i++) {
         lv_obj_t *c = lv_obj_get_child(top, (int32_t)i);
         if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
         lv_area_t a;
@@ -1057,6 +1057,13 @@ void bz_ui_slide_begin(void)
         if (a.x2 < a.x1 || a.y2 < a.y1) continue;
         U.chrome[U.nchrome++] = (bz_area_t){ (int16_t)a.x1, (int16_t)a.y1, (int16_t)a.x2, (int16_t)a.y2 };
     }
+#ifdef ESP_PLATFORM
+    static uint32_t said_nc;
+    if (nc != said_nc) {
+        said_nc = nc;
+        ESP_LOGI("bz_ui", "slide: %u top-layer pieces, %d held still", (unsigned)nc, U.nchrome);
+    }
+#endif
     /* the snapshot is the page alone: under each piece of chrome, the page is drawn again without it (small
      * areas, a few ms), so the page slides clean under the chrome that stays put */
     /* the platform captures the glass (the page and its chrome) now that it knows where the chrome is */

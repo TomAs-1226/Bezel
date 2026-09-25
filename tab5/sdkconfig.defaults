@@ -58,7 +58,9 @@ CONFIG_ESP_WIFI_REMOTE_LIBRARY_HOSTED=y
 CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
 CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
-CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=40000
+# 20 MHz, not 40: at 40 the C6 went on reporting "connected" while nothing got through, a few minutes into
+# any real traffic (DNS, TLS), and stopped answering RPCs; a UI doesn't need the speed
+CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=20000
 CONFIG_ESP_HOSTED_SDIO_PIN_CLK=12
 CONFIG_ESP_HOSTED_SDIO_PIN_CMD=13
 CONFIG_ESP_HOSTED_SDIO_PIN_D0=11
@@ -73,6 +75,10 @@ CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_MAX_SIZE=y
 # robot.local (Systemcore) and roborio-TEAM-frc.local resolve through mDNS
 CONFIG_LWIP_DNS_SUPPORT_MDNS_QUERIES=y
 CONFIG_LWIP_MAX_SOCKETS=16
+# Two segments in flight toward the tablet, not four: a download's burst (The Blue Alliance's match lists)
+# jammed the SDIO receive path between the C6 (esp-hosted 1.4.1) and the P4 for good, DNS and the C6's
+# own RPC replies with it. Throughput hardly matters for an API client.
+CONFIG_LWIP_TCP_WND_DEFAULT=2880
 # Two interfaces (Wi-Fi and the USB tether) both run DHCP clients, and lwIP keeps one global DNS server
 # list: without this, a lease from Systemcore's dnsmasq would replace the Wi-Fi network's DNS and the
 # assistant could no longer resolve api.anthropic.com. With it, DNS follows the default netif (Wi-Fi).

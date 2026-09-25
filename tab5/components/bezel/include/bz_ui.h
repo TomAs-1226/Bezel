@@ -118,6 +118,9 @@ void bz_ui_perf(bz_ui_perf_t *out);
 void bz_ui_prof_take(float out[8]);
 /* Lean page slide: a snapshot of the screen taken at begin is shown shifted by dx (the gap filled with
  * ground) until end, straight to the panel with no LVGL drawing; end redraws the whole screen. */
+/* the most top-layer pieces a slide holds still: past it, the rest slid with the page and left bits of the old
+ * one behind (8 was too few once the orb, its capsule and dot joined the status band and the dock) */
+#define BZ_SLIDE_CHROME 24
 void bz_ui_slide_begin(void);
 void bz_ui_slide(int dx);
 void bz_ui_slide_end(void);

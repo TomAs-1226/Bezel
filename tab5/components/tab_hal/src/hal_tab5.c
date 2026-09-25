@@ -1248,7 +1248,7 @@ static void slide_frame_do(int dx, int side, const bz_area_t *chrome, int nchrom
 static struct {
     int dx, side, n, h, sh;
     bool swapped, bottom;
-    bz_area_t chrome[8];
+    bz_area_t chrome[BZ_SLIDE_CHROME];
 } SJ;
 
 static void slide_job(void) { slide_frame_do(SJ.dx, SJ.side, SJ.chrome, SJ.n); }
@@ -1272,7 +1272,7 @@ static void slide_frame(int dx, int side, const bz_area_t *chrome, int nchrome)
     present_sync();
     SJ.dx = dx;
     SJ.side = side;
-    SJ.n = nchrome < 8 ? nchrome : 8;
+    SJ.n = nchrome < BZ_SLIDE_CHROME ? nchrome : BZ_SLIDE_CHROME;
     for (int i = 0; i < SJ.n; i++) SJ.chrome[i] = chrome[i];
     job_run(slide_job);
 }

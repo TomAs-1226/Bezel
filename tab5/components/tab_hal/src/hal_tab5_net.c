@@ -32,6 +32,7 @@
 #include "esp_netif_net_stack.h"
 #include "esp_timer.h"
 #include "esp_wifi.h"
+#include "esp_hosted.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
 #include "freertos/task.h"
@@ -147,6 +148,11 @@ static void wifi_init(void)
     esp_err_t s = esp_wifi_start();
     wifi_country_t cc = { 0 };
     esp_err_t c = esp_wifi_get_country(&cc);
+    esp_hosted_coprocessor_fwver_t fw = { 0 };
+    if (esp_hosted_get_coprocessor_fwversion(&fw) == ESP_OK)
+        ESP_LOGI(TAG, "wi-fi: the C6 runs esp-hosted %u.%u.%u", (unsigned)fw.major1, (unsigned)fw.minor1, (unsigned)fw.patch1);
+    else
+        ESP_LOGW(TAG, "wi-fi: the C6 doesn't report its esp-hosted version (older than 1.x)");
     ESP_LOGI(TAG, "wi-fi: mode %s, start %s, country %s %.2s ch %d+%d", esp_err_to_name(m), esp_err_to_name(s),
              esp_err_to_name(c), cc.cc, cc.schan, cc.nchan);
 }
