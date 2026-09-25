@@ -101,6 +101,17 @@ def main():
             reply(s)
             print("saved", parts[1] if len(parts) > 1 else "shot.png", "(turned: flip)" if r[4] else "")
             continue
+        if parts[0] == "keys":
+            # your key file (dotenv, or "name: value" lines) to the tablet's card; it restarts and imports it.
+            # The contents go over the USB cable only, hex-coded, and are never printed.
+            path = " ".join(parts[1:])
+            with open(path, "rb") as f:
+                data = f.read()
+            for c in ("keybegin",) + tuple("keyhex " + data[i:i + 40].hex() for i in range(0, len(data), 40)) + ("keyend",):
+                s.write((c + "\n").encode())
+                reply(s)
+            print("sent %d bytes of keys: the tablet restarts and imports them" % len(data))
+            continue
         if parts[0] == "settime":
             # the PC's clock and zone (POSIX TZ; default Pacific, the team's)
             tz = parts[1] if len(parts) > 1 else "PST8PDT,M3.2.0,M11.1.0"

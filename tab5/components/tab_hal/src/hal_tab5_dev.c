@@ -10,6 +10,7 @@
  *
  * Every reply ends in "OK\n" or "ERR ...\n". Logging is silenced while a picture goes out so no log line
  * lands in the middle of it. */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -21,6 +22,7 @@
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "bz_ui.h"
@@ -110,6 +112,10 @@ static void shot(bool panel)
     esp_log_level_set("*", was);
     free(rle);
 }
+
+#define KEYS_MAX 8192
+static char *s_keys; /* a key file on its way in (keybegin..keyend) */
+static size_t s_nkeys;
 
 static bool (*s_handler)(const char *line);
 void hal_dev_set_handler(bool (*fn)(const char *line)) { s_handler = fn; }
@@ -204,6 +210,50 @@ static void run(char *line)
             say(l);
         }
         say("OK\n");
+    } else if (!strcmp(line, "keybegin")) {
+        /* A key file sent from the PC (tools/tab5_dev.py keys FILE): hex chunks into PSRAM, written to the
+         * card as CATOS/KEYS.ENV at keyend, then a restart, whose start-up imports it and burns the file
+         * (assist_import_card). Never echoed, never logged. */
+        free(s_keys);
+        s_keys = heap_caps_calloc(1, KEYS_MAX, MALLOC_CAP_SPIRAM);
+        s_nkeys = 0;
+        say(s_keys ? "OK\n" : "ERR no memory\n");
+    } else if (!strncmp(line, "keyhex ", 7)) {
+        for (const char *h = line + 7; s_keys && h[0] && h[1] && s_nkeys < KEYS_MAX - 1; h += 2) {
+            unsigned v;
+            if (sscanf(h, "%2x", &v) != 1) break;
+            s_keys[s_nkeys++] = (char)v;
+        }
+        say("OK\n");
+    } else if (!strcmp(line, "keyend")) {
+        const char *sd = hal_sd_root();
+        bool ok = false;
+        if (s_keys && sd) {
+            char path[64];
+            snprintf(path, sizeof path, "%s/CATOS/KEYS.ENV", sd);
+            /* the card has answered a first write with EIO now and then: tried a few times */
+            for (int t = 0; t < 4 && !ok; t++) {
+                if (t) vTaskDelay(pdMS_TO_TICKS(150));
+                FILE *f = fopen(path, "wb");
+                if (!f) continue;
+                ok = fwrite(s_keys, 1, s_nkeys, f) == s_nkeys;
+                ok = fclose(f) == 0 && ok;
+            }
+        }
+        if (s_keys) memset(s_keys, 0, KEYS_MAX);
+        free(s_keys);
+        s_keys = NULL;
+        s_nkeys = 0;
+        if (!ok) {
+            char e[64];
+            snprintf(e, sizeof e, sd ? "ERR couldn't write the card (errno %d)\n" : "ERR no microSD card\n", errno);
+            say(e);
+        } else {
+            say("OK\n");
+            usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(500));
+            vTaskDelay(pdMS_TO_TICKS(300));
+            esp_restart(); /* the start-up imports it */
+        }
     } else if (sscanf(line, "ant %d", &a) == 1) {
         void hal_antenna(bool external);
         hal_antenna(a != 0);
