@@ -425,7 +425,9 @@ static void pg_begin(lv_obj_t *o, lv_point_t p, void *u)
 {
     (void)o; (void)p; (void)u;
 #if BZ_LEAN
-    if (SL.settling || ui_home_mode_active()) return; /* a catch mid-settle: let it land (a moment) */
+    /* a catch mid-settle lets it land (a moment); a sheet still moving (an app closing) owns the glass:
+     * a slide begun under it took its chrome from a half-drawn picture and lost it */
+    if (SL.settling || ui_home_mode_active() || bz_ui_sheeting()) return;
     bz_ui_slide_begin();
     SL.active = true;
     SL.side = 0;

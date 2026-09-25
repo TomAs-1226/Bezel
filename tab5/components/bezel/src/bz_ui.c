@@ -996,6 +996,7 @@ static void chrome_hide(bool before, void *u)
 void bz_ui_slide_begin(void)
 {
 #if BZ_LEAN
+    if (U.sheeting) return; /* the sheet owns the glass until it ends */
     double tb = wall();
     size_t px = (size_t)U.cfg.w * U.cfg.h;
     if (!U.cfg.slide) {
