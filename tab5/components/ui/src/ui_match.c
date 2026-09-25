@@ -187,9 +187,9 @@ static void screen_build(void)
     lv_obj_remove_flag(r, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(r, LV_OBJ_FLAG_HIDDEN);
     MA.root = r;
-    /* the alliance's colour down the left edge: amber red, ice blue (the tba app's, not status colours) */
+    /* the alliance's colour: a bar down the left edge, the ground tinted with it (set per alarm) */
     MA.bar = bz_box(r);
-    lv_obj_set_size(MA.bar, 16, H);
+    lv_obj_set_size(MA.bar, 24, H);
     lv_obj_set_pos(MA.bar, 0, 0);
     lv_obj_set_style_bg_opa(MA.bar, LV_OPA_COVER, 0);
     int x = 80, tw = W - x - 60;
@@ -229,10 +229,22 @@ static void screen_show(void)
     hhmm(MA.al.when, at, sizeof at);
     ui_text(MA.with_l, "%s", with);
     ui_text(MA.vs_l, "%s \xc2\xb7 %s %s", vs, m->predicted ? "predicted" : "scheduled", at);
-    lv_obj_remove_style_all(MA.bar);
-    lv_obj_add_style(MA.bar, bz_style_fill(m->ours == 2 ? BZ_C_ICE : BZ_C_AMBER), 0);
+    /* The alliance the team plays on, unmistakably: FRC's own red and blue down the edge, on the line that
+     * names the partners and on the checklist button, and the whole screen tinted with it. An alarm across
+     * the pit is read by its colour before its words. (Neither alliance known: the plain ground.) */
+    bool red = m->ours == 1, blue = m->ours == 2;
+    lv_color_t hue = red ? lv_color_hex(0xED1C24) : blue ? lv_color_hex(0x2F6BFF) : bz_lv(BZ_C_SIGNAL);
+    lv_color_t tint = red ? lv_color_hex(0x2A0B0D) : blue ? lv_color_hex(0x0B1430) : bz_lv(BZ_C_GROUND);
+    lv_obj_set_style_bg_color(MA.root, tint, 0);
+    lv_obj_set_style_bg_color(MA.bar, hue, 0);
     lv_obj_set_style_bg_opa(MA.bar, LV_OPA_COVER, 0);
-    lv_obj_set_size(MA.bar, 16, H);
+    lv_obj_set_style_text_color(MA.with_l, hue, 0);
+    lv_obj_set_style_text_color(MA.kind_l, (red || blue) ? lv_color_white() : bz_lv(BZ_C_SIGNAL), 0);
+    lv_obj_set_style_bg_color(MA.check_btn, hue, 0);
+    /* its icon and words white on the alliance's colour, dark on the plain signal colour */
+    lv_color_t on = (red || blue) ? lv_color_white() : bz_lv(BZ_C_ON_SIGNAL);
+    for (uint32_t i = 0; i < lv_obj_get_child_count(MA.check_btn); i++)
+        lv_obj_set_style_text_color(lv_obj_get_child(MA.check_btn, (int32_t)i), on, 0);
     if (MA.kind == K_MATCH) lv_obj_add_flag(MA.check_btn, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_remove_flag(MA.check_btn, LV_OBJ_FLAG_HIDDEN);
     MA.shown_min = -1;
