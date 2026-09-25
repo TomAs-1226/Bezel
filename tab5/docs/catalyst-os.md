@@ -88,6 +88,7 @@ Two paths, chosen per motion:
 | assistant | `components/assist`, Catalyst Link | Claude via the PC or a key; GPT with a key (branch tab5-companion) |
 | audio | `hal_tab5_audio.c` | one speaker task mixing tones and streamed speech (48 kHz); microphones at 16 kHz, on only while the companion is on screen; ESP-SR WakeNet "Hi, ESP" from the `model` partition |
 | voice | `components/assist/src/voice.c` | the companion's own conversation: wake word or tap, energy VAD, OpenAI transcription, a JSON reply with a feeling, OpenAI speech streamed to the speaker |
+| home mode | `ui_home_mode.c`, `components/home` | the desk surface (time, weather, the PC's music, Home Assistant, the companion) and its launcher: music, smart home, weather, calendar, timer, alarms, photos (and a photos screensaver); comes up by hand, at boot, on the stand, or from an NFC tag on a Unit RFID 2 in Port A |
 
 ### 4. The shell
 

@@ -73,8 +73,11 @@ catalyst-link serve --repo ~/robot \
 With no `ANTHROPIC_API_KEY` set, Claude goes through Claude Code and your Claude subscription (see
 [below](#claude-with-your-claude-subscription-no-api-key)); set the key to use the API instead.
 
-It prints its address and the **pairing token**. On the tablet, open settings → Link and type the
-token once (leave the address empty to find the Link by mDNS, or type `http://<pc>:8765`).
+It prints its address and its token. **Pair the tablet** (settings → home → pair the pc, or the "pair
+pc" app): the tablet lists the Links it finds on the network (mDNS: `pip install zeroconf`), you tap
+this PC, and the Link prints a six-digit code here (and shows it as a Windows notification); type it
+on the tablet and they're paired. Typing the token by hand in the link app still works
+(`serve --no-pair` turns pairing off; `--no-pair-toast` keeps the code in this console).
 
 | flag | |
 |---|---|
@@ -88,6 +91,8 @@ token once (leave the address empty to find the Link by mDNS, or type `http://<p
 | `--claude-model MODEL` | `claude-code` only: the model (default: Claude Code's own default) |
 | `--claude-cli PATH` | `claude-code` only: the Claude Code CLI to run (also `$CATALYST_LINK_CLAUDE_CLI`) |
 | `--no-media` | no media remote: the tablet's home mode then can't see or control what this PC plays |
+| `--no-pair` | no pairing by code: the tablet needs the token typed in by hand |
+| `--no-pair-toast` | show the pairing code only in this console, not as a Windows notification |
 | `--no-mdns`, `--quiet` | |
 
 State lives in `~/.catalyst-link/` (override with `CATALYST_LINK_HOME`): `token`, `inbox/`,

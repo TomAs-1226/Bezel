@@ -8,6 +8,7 @@
 #include "home_priv.h"
 
 #include <ctype.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,7 +18,14 @@
 #define RETRY_S 15.0
 #define RESP_MAX 16384
 #define LIST_CAP (3u << 20)     /* the whole /api/states, at most */
-#define TAPS 6
+#define TAPS 8
+
+/* a queued service call: the natural action ("" svc) or a light's level / a thermostat's set point */
+typedef struct {
+    char id[64];
+    char svc[20];              /* "" the entity's natural action, "brightness", "temperature" */
+    float value;
+} ha_cmd_t;
 
 typedef struct {
     char url[128], token[320];
@@ -26,7 +34,7 @@ typedef struct {
     unsigned cfg_gen, done_gen;
     home_ha_status_t st;
     home_ha_entity_t tiles[HOME_HA_PICKS];
-    char taps[TAPS][64];
+    ha_cmd_t taps[TAPS];
     int ntaps;
     int template_ok;            /* 1 yes, 0 no (403), -1 not tried */
     double next_poll;
@@ -95,6 +103,15 @@ static const char *tap_service(const char *id, char *domain, size_t dn)
     }
 }
 
+static void unknown_attrs(home_ha_entity_t *e)
+{
+    e->area[0] = 0;
+    e->dimmable = false;
+    e->brightness = -1;
+    e->target = e->current = NAN;
+    e->step = 0.5f;
+}
+
 static void fill(home_ha_entity_t *e)
 {
     e->kind = home_ha_kind(e->id);
@@ -104,6 +121,7 @@ static void fill(home_ha_entity_t *e)
             !strcmp(e->state, "playing") || !strcmp(e->state, "home") || !strcmp(e->state, "unlocked") ||
             (e->kind == HA_CLIMATE && strcmp(e->state, "off") != 0 && strcmp(e->state, "unavailable") != 0);
     if (!e->name[0]) snprintf(e->name, sizeof e->name, "%s", strchr(e->id, '.') ? strchr(e->id, '.') + 1 : e->id);
+    if (e->kind == HA_LIGHT && strcmp(e->state, "on") != 0) e->brightness = e->dimmable ? 0 : -1;
 }
 
 /* ---- the UI's side ---- */
@@ -138,6 +156,7 @@ void home_ha_config(const char *url, const char *token, const char *picks)
             snprintf(id, sizeof id, "%.*s", (int)(e - p), p);
             home_ha_entity_t *t = &A->tiles[A->npicks];
             memset(t, 0, sizeof *t);
+            unknown_attrs(t);
             snprintf(t->id, sizeof t->id, "%s", id);
             for (int i = 0; i < nold; i++)
                 if (same_server && !strcmp(old[i].id, id)) *t = old[i];
@@ -173,11 +192,68 @@ int home_ha_tiles(home_ha_entity_t *out, int max)
     return n;
 }
 
+/* Queues a call; a level or set point replaces one of its kind still waiting for the same entity. UI thread,
+ * under g_lock. */
+static bool enqueue(const char *id, const char *svc, float value)
+{
+    if (!ha()) return false;
+    for (int i = 0; svc[0] && i < A->ntaps; i++)
+        if (!strcmp(A->taps[i].id, id) && !strcmp(A->taps[i].svc, svc)) {
+            A->taps[i].value = value;
+            return true;
+        }
+    if (A->ntaps >= TAPS) return false;
+    ha_cmd_t *t = &A->taps[A->ntaps++];
+    snprintf(t->id, sizeof t->id, "%s", id);
+    snprintf(t->svc, sizeof t->svc, "%s", svc);
+    t->value = value;
+    return true;
+}
+
+static home_ha_entity_t *tile_of(const char *id)
+{
+    for (int i = 0; i < A->npicks; i++)
+        if (!strcmp(A->tiles[i].id, id)) return &A->tiles[i];
+    return NULL;
+}
+
+void home_ha_brightness(const char *id, int pct)
+{
+    pct = pct < 0 ? 0 : pct > 100 ? 100 : pct;
+    pthread_mutex_lock(&g_lock);
+    if (enqueue(id, "brightness", (float)pct)) {
+        home_ha_entity_t *t = tile_of(id);
+        if (t) { /* shows at once; the next read confirms it */
+            t->brightness = pct;
+            t->on = pct > 0;
+            snprintf(t->state, sizeof t->state, "%s", pct > 0 ? "on" : "off");
+            t->pending = true;
+        }
+        A->st.gen++;
+    }
+    pthread_mutex_unlock(&g_lock);
+    home_kick();
+}
+
+void home_ha_set_temp(const char *id, float target)
+{
+    pthread_mutex_lock(&g_lock);
+    if (enqueue(id, "temperature", target)) {
+        home_ha_entity_t *t = tile_of(id);
+        if (t) {
+            t->target = target;
+            t->pending = true;
+        }
+        A->st.gen++;
+    }
+    pthread_mutex_unlock(&g_lock);
+    home_kick();
+}
+
 void home_ha_tap(const char *id)
 {
     pthread_mutex_lock(&g_lock);
-    if (ha() && A->ntaps < TAPS) {
-        snprintf(A->taps[A->ntaps++], sizeof A->taps[0], "%s", id);
+    if (ha() && enqueue(id, "", 0)) {
         for (int i = 0; i < A->npicks; i++) {
             home_ha_entity_t *t = &A->tiles[i];
             if (strcmp(t->id, id) != 0 || !t->actionable) continue;
@@ -269,26 +345,47 @@ static void say_status(int status, char *err, size_t n)
     else snprintf(err, n, "Home Assistant answered %d", status);
 }
 
-/* one line of the template's output: id|state|name|unit (a name may itself hold a |) */
+/* a template field: "None" (or empty) is no value */
+static bool none(const char *f) { return !f[0] || !strcmp(f, "None"); }
+
+static float num_or_nan(const char *f)
+{
+    if (none(f)) return NAN;
+    char *e;
+    float v = strtof(f, &e);
+    return e == f ? NAN : v;
+}
+
+/* one line of the template's output: id|state|unit|area|bri|dim|target|current|step|name (the name last: it
+ * may itself hold a |) */
+#define TFIELDS 10
 static void apply_line(char *line, home_ha_entity_t *tiles, int n)
 {
-    char *f1 = strchr(line, '|');
-    if (!f1) return;
-    *f1++ = 0;
-    char *f2 = strchr(f1, '|');
-    if (!f2) return;
-    *f2++ = 0;
-    char *f3 = strrchr(f2, '|');
-    if (!f3) return;
-    *f3++ = 0;
+    char *f[TFIELDS];
+    f[0] = line;
+    for (int k = 1; k < TFIELDS; k++) {
+        char *bar = strchr(f[k - 1], '|');
+        if (!bar) return;
+        *bar = 0;
+        f[k] = bar + 1;
+    }
     for (int i = 0; i < n; i++) {
         home_ha_entity_t *t = &tiles[i];
-        if (strcmp(t->id, line) != 0) continue;
-        snprintf(t->state, sizeof t->state, "%s", f1);
-        if (strcmp(f2, "None") != 0) snprintf(t->name, sizeof t->name, "%s", f2);
-        snprintf(t->unit, sizeof t->unit, "%s", strcmp(f3, "None") ? f3 : "");
+        if (strcmp(t->id, f[0]) != 0) continue;
+        snprintf(t->state, sizeof t->state, "%s", f[1]);
+        snprintf(t->unit, sizeof t->unit, "%s", none(f[2]) ? "" : f[2]);
+        snprintf(t->area, sizeof t->area, "%s", none(f[3]) ? "" : f[3]);
+        float bri = num_or_nan(f[4]);
+        t->dimmable = !strcmp(f[5], "True");
+        t->brightness = isnan(bri) ? -1 : (int)lroundf(bri * 100.0f / 255.0f);
+        t->target = num_or_nan(f[6]);
+        t->current = num_or_nan(f[7]);
+        float step = num_or_nan(f[8]);
+        t->step = isnan(step) || step <= 0 ? 0.5f : step;
+        if (!none(f[9])) snprintf(t->name, sizeof t->name, "%s", f[9]);
         home_fold_text(t->name);
         home_fold_text(t->unit);
+        home_fold_text(t->area);
         t->pending = false;
         fill(t);
     }
@@ -297,13 +394,17 @@ static void apply_line(char *line, home_ha_entity_t *tiles, int n)
 static int poll_template(const creds_t *c, home_ha_entity_t *tiles, int n, char *buf)
 {
     /* the entity ids are [a-z0-9_.]: safe inside single quotes, and nothing in it needs JSON escaping */
-    char *body = malloc(1400);
+    size_t cap = 900 + (size_t)n * 68;
+    char *body = malloc(cap);
     if (!body) return -1;
-    int o = snprintf(body, 1400, "{\"template\":\"{%% for e in [");
-    for (int i = 0; i < n; i++) o += snprintf(body + o, 1400 - (size_t)o, "%s'%s'", i ? "," : "", tiles[i].id);
-    snprintf(body + o, 1400 - (size_t)o,
-             "] %%}{{ e }}|{{ states(e) }}|{{ state_attr(e, 'friendly_name') }}|{{ state_attr(e, "
-             "'unit_of_measurement') }}\\n{%% endfor %%}\"}");
+    int o = snprintf(body, cap, "{\"template\":\"{%% for e in [");
+    for (int i = 0; i < n; i++) o += snprintf(body + o, cap - (size_t)o, "%s'%s'", i ? "," : "", tiles[i].id);
+    snprintf(body + o, cap - (size_t)o,
+             "] %%}{{ e }}|{{ states(e) }}|{{ state_attr(e, 'unit_of_measurement') }}|{{ area_name(e) }}|"
+             "{{ state_attr(e, 'brightness') }}|"
+             "{{ (state_attr(e, 'supported_color_modes') or []) | reject('eq', 'onoff') | list | count > 0 }}|"
+             "{{ state_attr(e, 'temperature') }}|{{ state_attr(e, 'current_temperature') }}|"
+             "{{ state_attr(e, 'target_temp_step') }}|{{ state_attr(e, 'friendly_name') }}\\n{%% endfor %%}\"}");
     int status = request(c, "POST", "/api/template", body, buf, RESP_MAX);
     free(body);
     if (status != 200) return status;
@@ -322,6 +423,26 @@ static void entity_from_json(const home_json_t *j, int obj, home_ha_entity_t *e)
     int at = jl_get(&j->d, obj, "attributes");
     home_json_str(j, at, "friendly_name", e->name, sizeof e->name);
     home_json_str(j, at, "unit_of_measurement", e->unit, sizeof e->unit);
+    /* the room needs the template API (an admin's token): one by one, it stays unknown */
+    char area[32];
+    snprintf(area, sizeof area, "%s", e->area);
+    unknown_attrs(e);
+    snprintf(e->area, sizeof e->area, "%s", area);
+    double bri = home_json_num(j, at, "brightness", -1);
+    if (bri >= 0) e->brightness = (int)lround(bri * 100.0 / 255.0);
+    int modes = at < 0 ? -1 : jl_get(&j->d, at, "supported_color_modes");
+    for (int k = 0; modes >= 0 && j->d.t[modes].type == JL_ARR; k++) {
+        int m = jl_at(&j->d, modes, k);
+        if (m < 0) break;
+        char mode[24];
+        jl_str(&j->d, m, mode, sizeof mode);
+        if (strcmp(mode, "onoff") != 0) e->dimmable = true;
+    }
+    double tg = home_json_num(j, at, "temperature", NAN), cu = home_json_num(j, at, "current_temperature", NAN);
+    e->target = (float)tg;
+    e->current = (float)cu;
+    double st = home_json_num(j, at, "target_temp_step", 0.5);
+    e->step = st > 0 ? (float)st : 0.5f;
     e->pending = false;
     fill(e);
 }
@@ -400,14 +521,24 @@ static void poll(const creds_t *c, char *buf)
     free(tiles);
 }
 
-static void call(const creds_t *c, const char *id, char *buf)
+static void call(const creds_t *c, const ha_cmd_t *cmd, char *buf)
 {
-    char domain[32];
-    const char *svc = tap_service(id, domain, sizeof domain);
-    if (!svc) return;
-    char path[96], body[112];
-    snprintf(path, sizeof path, "/api/services/%s/%s", domain, svc);
-    snprintf(body, sizeof body, "{\"entity_id\":\"%s\"}", id);
+    char domain[32], path[96], body[144];
+    const char *id = cmd->id;
+    if (!strcmp(cmd->svc, "brightness")) {
+        int pct = (int)lroundf(cmd->value);
+        snprintf(path, sizeof path, "/api/services/light/%s", pct > 0 ? "turn_on" : "turn_off");
+        if (pct > 0) snprintf(body, sizeof body, "{\"entity_id\":\"%s\",\"brightness_pct\":%d}", id, pct);
+        else snprintf(body, sizeof body, "{\"entity_id\":\"%s\"}", id);
+    } else if (!strcmp(cmd->svc, "temperature")) {
+        snprintf(path, sizeof path, "/api/services/climate/set_temperature");
+        snprintf(body, sizeof body, "{\"entity_id\":\"%s\",\"temperature\":%.1f}", id, cmd->value);
+    } else {
+        const char *svc = tap_service(id, domain, sizeof domain);
+        if (!svc) return;
+        snprintf(path, sizeof path, "/api/services/%s/%s", domain, svc);
+        snprintf(body, sizeof body, "{\"entity_id\":\"%s\"}", id);
+    }
     int status = request(c, "POST", path, body, buf, RESP_MAX);
     if (status != 200) {
         pthread_mutex_lock(&g_lock);
@@ -503,6 +634,7 @@ static void fetch_list(const creds_t *c)
         if (!home_json_parse(&j, body + s0, s1 - s0)) continue;
         home_ha_entity_t e = { 0 };
         entity_from_json(&j, 0, &e);
+        e.area[0] = 0;
         home_json_free(&j);
         if (!e.id[0] || e.kind == HA_OTHER) continue;
         if (n == cap) {
@@ -559,10 +691,10 @@ void home_ha_work(double now, bool want)
     snprintf(c->url, sizeof c->url, "%s", A->url);
     snprintf(c->token, sizeof c->token, "%s", A->token);
     bool configured = A->st.configured;
-    char tap[64] = "";
+    ha_cmd_t tap = { 0 };
     if (A->ntaps) {
-        snprintf(tap, sizeof tap, "%s", A->taps[0]);
-        memmove(A->taps[0], A->taps[1], sizeof A->taps[0] * (size_t)(A->ntaps - 1));
+        tap = A->taps[0];
+        memmove(&A->taps[0], &A->taps[1], sizeof A->taps[0] * (size_t)(A->ntaps - 1));
         A->ntaps--;
     }
     bool list = A->list_req, disc = A->disc_req;
@@ -573,8 +705,8 @@ void home_ha_work(double now, bool want)
     if (!buf) buf = malloc(RESP_MAX);
     if (disc) discover();
     if (buf && configured) {
-        if (tap[0]) {
-            call(c, tap, buf);
+        if (tap.id[0]) {
+            call(c, &tap, buf);
             pthread_mutex_lock(&g_lock);
             A->next_poll = 0; /* read it back straight away */
             pthread_mutex_unlock(&g_lock);

@@ -996,8 +996,17 @@ static void link_refresh(void)
     lk_list(LK.patches, pa, np, true);
 }
 
+static void lk_pair(lv_obj_t *o, void *u)
+{
+    (void)u;
+    ui_app_open(&APP_PAIR, o);
+}
+
 static void link_open(void)
 {
+    /* the pair app may have paired it since this was built */
+    hal_kv_get("link_url", LK.url, sizeof LK.url);
+    hal_kv_get("link_token", LK.token, sizeof LK.token);
     as_route_t r = current_route();
     for (int i = 0; i < 3; i++) ui_chip_set(LK.route_chips[i], (int)r == i);
     LK.sig = 0xFFFFFFFFu; /* no signature matches: the lists draw, empty ones included */
@@ -1027,6 +1036,7 @@ static void link_build(lv_obj_t *b)
     lv_obj_t *br = bz_row(t, 8);
     lv_obj_set_flex_flow(br, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_width(br, c1 - 2 * BZ_PAD_TILE);
+    ui_button(br, BZ_I_LINK, "pair", lk_pair, NULL);
     ui_button(br, BZ_I_RADAR, "find", lk_find, NULL);
     ui_button(br, BZ_I_LINK, "address", lk_edit, (void *)0);
     ui_button(br, BZ_I_KEYBOARD, "token", lk_edit, (void *)1);

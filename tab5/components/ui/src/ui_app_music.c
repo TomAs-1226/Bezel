@@ -53,6 +53,12 @@ static void pc_cmd(lv_obj_t *o, void *u)
     home_pc_cmd((const char *)u);
 }
 
+static void pair_tap(lv_obj_t *o, void *u)
+{
+    (void)u;
+    ui_app_open(&APP_PAIR, o);
+}
+
 static lv_obj_t *icon_button(lv_obj_t *parent, const char *icon, bz_tap_fn fn, void *u)
 {
     lv_obj_t *b = ui_button(parent, icon, NULL, fn, u);
@@ -130,6 +136,9 @@ static void music_build(lv_obj_t *b)
     icon_button(c, BZ_I_VOLUME_OFF, pc_cmd, (void *)"mute");
     icon_button(c, BZ_I_REMOVE, pc_cmd, (void *)"volume_down");
     icon_button(c, BZ_I_ADD, pc_cmd, (void *)"volume_up");
+    lv_obj_t *gap2 = bz_box(c);
+    lv_obj_set_size(gap2, 18, 1);
+    icon_button(c, BZ_I_LINK, pair_tap, NULL); /* pair (or pair again) with the pc */
 }
 
 static void rebuild_list(void)
@@ -218,7 +227,7 @@ static void music_refresh(void)
         } else {
             ui_text(MU.pc_src, "%s", "the pc");
             ui_text(MU.pc_title, "%s", "Nothing playing");
-            ui_text(MU.pc_artist, "%s", pc.reason[0] ? pc.reason : pc.link ? "play something on the pc" : "no pc paired: settings, pc link");
+            ui_text(MU.pc_artist, "%s", pc.reason[0] ? pc.reason : pc.link ? "play something on the pc" : "no pc paired: tap the link button to pair it");
         }
         set_play_icon(MU.pc_play, pc.have && pc.playing, &MU.pc_playing);
     }

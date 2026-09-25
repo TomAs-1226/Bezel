@@ -61,7 +61,7 @@ void home_pc_cmd(const char *action);
 void home_pc_volume(float level01);            /* needs pycaw on the PC */
 
 /* ---- Home Assistant (REST: /api/states, /api/template, /api/services) ---- */
-#define HOME_HA_PICKS 6
+#define HOME_HA_PICKS 24          /* entities picked for the smart home app; the first few show on home mode */
 #define HOME_HA_LIST 200
 typedef enum {
     HA_LIGHT, HA_SWITCH, HA_FAN, HA_SCENE, HA_SCRIPT, HA_BUTTON, HA_SENSOR, HA_BINARY, HA_MEDIA, HA_COVER,
@@ -72,10 +72,15 @@ typedef struct {
     char name[48];            /* friendly_name, or the id */
     char state[24];           /* "on", "off", "21.5", "playing", "unavailable" */
     char unit[12];            /* sensors: "°C", "%" */
+    char area[32];            /* its room in Home Assistant ("" when it has none, or the token can't say) */
     home_ha_kind_t kind;
     bool on;                  /* shown lit: on, open, playing, home */
     bool actionable;          /* a tap does something (toggle, turn on, play/pause) */
     bool pending;             /* a tap sent, not yet confirmed */
+    bool dimmable;            /* a light with a brightness */
+    int brightness;           /* 0..100 while on (0 off); -1 unknown */
+    float target, current;    /* climate: the set point and the room's temperature; NAN unknown */
+    float step;               /* climate: the set point's step (0.5 by default) */
 } home_ha_entity_t;
 typedef struct {
     bool configured;          /* a URL and a token */
@@ -90,6 +95,8 @@ void home_ha_config(const char *url, const char *token, const char *picks);
 void home_ha_status(home_ha_status_t *out);
 int home_ha_tiles(home_ha_entity_t *out, int max);  /* the picks, in order */
 void home_ha_tap(const char *entity_id);            /* the natural action for its kind; queued */
+void home_ha_brightness(const char *entity_id, int pct);   /* a light: 0 turns it off; queued (the latest wins) */
+void home_ha_set_temp(const char *entity_id, float target); /* a thermostat's set point; queued (the latest wins) */
 home_ha_kind_t home_ha_kind(const char *entity_id);
 /* The entity picker: fetches every entity once (GET /api/states). Poll home_ha_list() for the result. */
 void home_ha_list_request(void);
@@ -112,9 +119,26 @@ typedef struct {
     char err[64];
     unsigned gen;
 } home_weather_t;
+/* The forecast, from the same request: the next 24 hours and 7 days, for the weather app. */
+#define HOME_WX_HOURS 24
+#define HOME_WX_DAYS 7
+typedef struct {
+    bool ok;
+    float feels;              /* apparent temperature now */
+    int humidity;             /* %, -1 unknown */
+    float wind;               /* km/h (mph with fahrenheit) */
+    char sunrise[8], sunset[8]; /* "7:02", "" unknown */
+    int nhours;
+    struct { int hour; float temp; int code; int pop; bool day; } hour[HOME_WX_HOURS]; /* pop: rain chance % */
+    int ndays;
+    struct { int wday; int mday; float hi, lo; int code; int pop; } day[HOME_WX_DAYS]; /* wday 0 = sunday */
+    unsigned gen;             /* the same generation as home_weather_t's */
+} home_forecast_t;
 /* `where`: "47.61,-122.33" or a place name ("Seattle"), resolved once through Open-Meteo's geocoder. */
 void home_weather_config(const char *where, bool fahrenheit);
 void home_weather_get(home_weather_t *out);
+void home_weather_forecast(home_forecast_t *out);
+void home_weather_refresh(void);                    /* read it again now (the weather app's "refresh") */
 const char *home_weather_text(int code);            /* "clear", "rain", ... */
 
 /* ---- the music player: MP3 and WAV from <sd>/CATOS/AUDIO, out through hal_play.h ---- */

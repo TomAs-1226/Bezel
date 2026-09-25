@@ -203,6 +203,8 @@ static void ext5v(bool on)
     if (T.e1) esp_io_expander_set_level(T.e1, E1_EXT5V, on);
 }
 
+void hal_tab5_ext5v(bool on) { ext5v(on); }
+
 void hal_power_off(void)
 {
     /* the power MCU turns the tablet off on three pulses */
@@ -2083,6 +2085,7 @@ static struct {
 bool hal_can_start(int bitrate)
 {
     if (K.on) return true;
+    hal_nfc_release(); /* the same two pins: an NFC reader there gives them up */
     ext5v(true); /* the Grove port's 5 V powers the CAN transceiver unit: on only while tapping */
     vTaskDelay(pdMS_TO_TICKS(20));
     /* listen-only: the controller never acknowledges or sends, so a tap can't disturb the robot */
@@ -2374,5 +2377,6 @@ void hal_settle(void)
     e2_set(E2_USB5V, 1); /* the USB-A port's 5 V, for a Systemcore cable or a dongle */
     vTaskDelay(pdMS_TO_TICKS(50));
     hal_net_tether_init();
+    hal_nfc_init(); /* probes Port A for an NFC unit a few seconds from now, on its own task */
     hal_boot_stage("settling");
 }

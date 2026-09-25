@@ -148,6 +148,8 @@ class LinkCase(unittest.TestCase):
     claude: str = "api"
     agent_factory: Any = None
     media_platform: Any = None  # a fake media.Platform; None: whatever this PC has
+    pair_notify: Any = None     # pairing notifiers (list); None: a silent one, so tests print nothing
+    pair: bool = True
 
     def setUp(self) -> None:
         self.tmp = Path(tempfile.mkdtemp(prefix="link-test-")).resolve()
@@ -156,9 +158,10 @@ class LinkCase(unittest.TestCase):
         self.token = self.state.token()
         cfg = Config(repo=self.repo, port=0, bind="127.0.0.1", check=self.check,
                      check_timeout=self.check_timeout, on_work_order=self.on_work_order, name="test-pc",
-                     claude=self.claude)
+                     claude=self.claude, pair=self.pair)
         self.app = LinkApp(cfg, self.state, claude_client=self.claude_client, agent_factory=self.agent_factory,
-                           media_platform=self.media_platform)
+                           media_platform=self.media_platform,
+                           pair_notify=self.pair_notify if self.pair_notify is not None else [])
         self.server = make_server(self.app, quiet=True)
         self.port = self.server.server_address[1]
         self.thread = threading.Thread(target=self.server.serve_forever, args=(0.05,), daemon=True)

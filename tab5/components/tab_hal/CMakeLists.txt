@@ -1,5 +1,5 @@
 idf_component_register(SRCS "src/hal_tab5.c" "src/hal_tab5_net.c" "src/hal_tab5_dev.c" "src/hal_tab5_os.c"
-                            "src/hal_tab5_audio.c"
+                            "src/hal_tab5_audio.c" "src/hal_tab5_nfc.c"
                        INCLUDE_DIRS "include"
                        REQUIRES bezel
                        PRIV_REQUIRES esp_lcd esp_mm esp_driver_ppa esp_driver_jpeg esp_driver_i2c esp_driver_i2s

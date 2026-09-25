@@ -1,11 +1,13 @@
-/* Settings > home: how the tablet starts, the desk stand, the weather's place, Home Assistant (its address,
- * a long-lived token, and which entities show on home mode), and the PC's media through Catalyst Link.
+/* Settings > home: how the tablet starts, the desk stand and the NFC tag, the photos screensaver, the weather's
+ * place, Home Assistant (its address, a long-lived token, and which entities the smart home app shows — the first
+ * four also on home mode), and the PC's media through Catalyst Link (with pairing).
  *
  * The token is typed on the keyboard sheet in password mode, kept with hal_kv, never logged and never shown
  * again: the pane says only whether one is set. */
 #include "ui_home_priv.h"
 
 #include "ui_companion.h"
+#include "link.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -16,8 +18,14 @@ enum { ED_PLACE, ED_URL, ED_TOKEN };
 static const char *const KINDS[] = { "lights", "switches", "scenes", "sensors", "media", "other" };
 #define NKINDS 6
 
+static const int SAVER_MIN[] = { 0, 5, 15, 30 };
+#define NSAVER 4
+
 static struct {
     lv_obj_t *start_catalyst, *start_home, *stand, *far, *cel, *pc;
+    lv_obj_t *saver[NSAVER], *tag_state, *tag_btn, *tag_forget, *pc_state;
+    int tag_shown;             /* what tag_state says: -2 not yet, else hm_tag_pair_state()'s idea */
+    bool tag_waiting;
     lv_obj_t *place, *url, *token, *ha_state, *list_state, *list, *kind[NKINDS];
     lv_obj_t *find_btn;
     ui_kb_t *kb;
@@ -38,6 +46,7 @@ static void show(void)
     ui_chip_set(HS.cel, !c->fahrenheit);
     ui_chip_set(HS.far, c->fahrenheit);
     ui_chip_set(HS.pc, c->pc);
+    for (int i = 0; i < NSAVER; i++) ui_chip_set(HS.saver[i], c->saver_min == SAVER_MIN[i]);
     ui_text(lv_obj_get_child(HS.place, 1), "%s", c->place[0] ? c->place : "set the place");
     ui_text(lv_obj_get_child(HS.url, 1), "%s", c->ha_url[0] ? c->ha_url : "home assistant's address");
     ui_text(lv_obj_get_child(HS.token, 1), "%s", c->ha_token[0] ? "token set \xc2\xb7 change it" : "add a token");
@@ -72,6 +81,63 @@ static void toggle(lv_obj_t *o, void *u)
     }
     hm_cfg_save();
     show();
+}
+
+static void pick_saver(lv_obj_t *o, void *u)
+{
+    (void)o;
+    hm_cfg()->saver_min = SAVER_MIN[(intptr_t)u];
+    hm_cfg_save();
+    show();
+}
+
+static void tag_pair(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    if (!hal_nfc_present()) return;
+    if (HS.tag_waiting) {
+        hm_tag_pair_cancel();
+        HS.tag_waiting = false;
+        HS.tag_shown = -2;
+        return;
+    }
+    hm_tag_pair_begin();
+    HS.tag_waiting = true;
+    HS.tag_shown = -2;
+}
+
+static void tag_forget(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    hm_cfg()->tag[0] = 0;
+    hm_cfg_save();
+    HS.tag_shown = -2;
+}
+
+static void pair_pc(lv_obj_t *o, void *u)
+{
+    (void)u;
+    ui_app_open(&APP_PAIR, o);
+}
+
+/* the tag's line, and its button's words */
+static void tag_show(void)
+{
+    int st = hm_tag_pair_state();
+    if (st == 2 || (HS.tag_waiting && st == 0)) HS.tag_waiting = false; /* paired, or it gave up waiting */
+    int shown = st == -1 ? -1 : HS.tag_waiting ? 1 : hm_cfg()->tag[0] ? 3 : 0;
+    if (shown == HS.tag_shown) return;
+    HS.tag_shown = shown;
+    if (shown == -1)
+        ui_text(HS.tag_state, "%s", "No NFC reader: plug M5Stack's Unit RFID 2 into port A (the tablet has none of its own).");
+    else if (shown == 1) ui_text(HS.tag_state, "%s", "Hold the tag to the reader...");
+    else if (shown == 3) ui_text(HS.tag_state, "Tag %s brings home mode, and leaves it when taken away.", hm_cfg()->tag);
+    else ui_text(HS.tag_state, "%s", "No tag yet: pair one, then put it where the tablet stands.");
+    ui_text(lv_obj_get_child(HS.tag_btn, 1), "%s", shown == 1 ? "stop" : shown == 3 ? "pair another" : "pair a tag");
+    if (shown == 3) lv_obj_remove_flag(HS.tag_forget, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(HS.tag_forget, LV_OBJ_FLAG_HIDDEN);
+    if (shown == -1) lv_obj_add_flag(HS.tag_btn, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(HS.tag_btn, LV_OBJ_FLAG_HIDDEN);
 }
 
 static void enter_now(lv_obj_t *o, void *u)
@@ -148,7 +214,8 @@ static int npicked(void)
 
 static void unpick(const char *id)
 {
-    char out[sizeof hm_cfg()->picks] = "";
+    static char out[sizeof hm_cfg()->picks]; /* ~1.5 KB: PSRAM (this component's statics), not the UI stack */
+    out[0] = 0;
     char *copy = strdup(hm_cfg()->picks);
     if (!copy) return;
     for (char *t = strtok(copy, ","); t; t = strtok(NULL, ","))
@@ -181,7 +248,9 @@ static void chip_tap(lv_obj_t *o, void *u)
         unpick(id);
         ui_chip_set(o, false);
     } else if (npicked() >= HOME_HA_PICKS) {
-        ui_island_say(BZ_I_INFO, "six at most: unpick one first");
+        char m[48];
+        snprintf(m, sizeof m, "%d at most: unpick one first", HOME_HA_PICKS);
+        ui_island_say(BZ_I_INFO, m);
         return;
     } else {
         size_t l = strlen(c->picks);
@@ -189,7 +258,8 @@ static void chip_tap(lv_obj_t *o, void *u)
         ui_chip_set(o, true);
     }
     hm_cfg_save();
-    ui_text(HS.list_state, "%d of %d picked \xc2\xb7 tap to add or remove", npicked(), HOME_HA_PICKS);
+    ui_text(HS.list_state, "%d of %d picked \xc2\xb7 the first %d show on home mode", npicked(), HOME_HA_PICKS,
+            HM_HOME_TILES);
 }
 
 static void list_show(void)
@@ -240,6 +310,13 @@ static void hs_tick(void *u)
     (void)u;
     if (!HS.list || !ui_app_is_open(&APP_SETTINGS)) return;
     home_want(HOME_WANT_HA);
+    tag_show();
+    link_status_t ls;
+    link_status(&ls);
+    ui_text(HS.pc_state, "%s", !ls.configured ? "No PC paired yet."
+                               : ls.reachable && ls.auth ? "Paired with the PC, and it's answering."
+                               : ls.reachable ? "The PC refused the tablet's token: pair again."
+                               : "Paired, but the PC isn't answering right now.");
     if (HS.finding) {
         char url[128];
         int r = home_ha_found(url, sizeof url);
@@ -312,6 +389,23 @@ void ui_home_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     caption(col, "Upright, still and charging for a minute: home mode comes up by itself, and goes when the tablet is "
                  "lifted or unplugged. It replaces the companion's own desk mode.", w);
 
+    bz_label(col, "nfc tag", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    HS.tag_btn = ui_button(r, BZ_I_RADAR, "pair a tag", tag_pair, NULL);
+    HS.tag_forget = ui_button(r, BZ_I_CLOSE, "forget it", tag_forget, NULL);
+    HS.tag_state = caption(col, "", w);
+    HS.tag_shown = -2;
+
+    bz_label(col, "photos when idle", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    for (int i = 0; i < NSAVER; i++) {
+        char t[16];
+        if (SAVER_MIN[i]) snprintf(t, sizeof t, "after %d min", SAVER_MIN[i]);
+        else snprintf(t, sizeof t, "off");
+        HS.saver[i] = ui_chip(r, t, pick_saver, (void *)(intptr_t)i);
+    }
+    caption(col, "On home mode, untouched: the card's photos (CATOS/PHOTOS) one after another. A tap ends it.", w);
+
     bz_label(col, "weather", BZ_F_LABEL, BZ_C_DIM);
     r = wrap(col, w);
     HS.place = ui_button(r, BZ_I_PIN_DROP, "set the place", edit, (void *)(intptr_t)ED_PLACE);
@@ -335,9 +429,12 @@ void ui_home_settings(lv_obj_t *pane, lv_obj_t *body, int w)
 
     bz_label(col, "music", BZ_F_LABEL, BZ_C_DIM);
     r = wrap(col, w);
-    HS.pc = ui_chip(r, "what the pc plays, through catalyst link", toggle, (void *)(intptr_t)3);
+    HS.pc = ui_chip(r, "the pc's music", toggle, (void *)(intptr_t)3);
+    ui_button(r, BZ_I_LINK, "pair the pc", pair_pc, NULL);
+    HS.pc_state = bz_label_line(col, "", BZ_F_BODY_S, BZ_C_INK, w);
     caption(col, "The PC runs Catalyst Link with the media extras (pip install catalyst-link[media]): Spotify, YouTube "
-                 "Music, anything Windows shows in its media controls. Songs on the card go in CATOS/AUDIO.", w);
+                 "Music, anything Windows shows in its media controls. Pairing shows a code on the PC to type here. "
+                 "Songs on the card go in CATOS/AUDIO.", w);
     lv_obj_t *sp = bz_box(col);
     lv_obj_set_height(sp, 40);
 
@@ -350,6 +447,7 @@ void ui_home_settings_open(void)
     if (!HS.list) return;
     ui_kb_hide(HS.kb);
     HS.ha_gen = 0;
+    HS.tag_shown = -2;
     show();
     ui_text(HS.list_state, "%d of %d picked", npicked(), HOME_HA_PICKS);
 }
