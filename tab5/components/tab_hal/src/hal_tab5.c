@@ -2568,6 +2568,9 @@ static void boot_record_init(void)
                  s_prev.detail[0] ? ", " : "", s_prev.detail);
 }
 
+bool hal_boot_settled(void) { return B.settled != 0; }
+void hal_restart_mark_planned(void) { B.planned = BOOT_MAGIC; }
+
 void hal_restart_planned(const char *why)
 {
     ESP_LOGW(TAG, "restart: %s", why);

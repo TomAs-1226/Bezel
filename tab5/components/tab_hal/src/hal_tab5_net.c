@@ -124,6 +124,17 @@ static void (*s_restart_hook)(void);
 
 void hal_restart_hook(void (*fn)(void)) { s_restart_hook = fn; }
 
+/* esp-hosted restarting the host (esp_hosted's os_wrapper.c, a weak hook there): the C6 reset itself, most
+ * likely its own watchdog after a hang. Once the start has settled that's a recovery like the one above:
+ * noted and planned. Before it has, it stays a failed start, so a C6 that never comes up still ends in safe
+ * mode rather than restarting forever. */
+void esp_hosted_host_restarting(void)
+{
+    if (!hal_boot_settled()) return;
+    if (s_restart_hook) s_restart_hook();
+    hal_restart_mark_planned();
+}
+
 /* the watchdog's restart, on demand (dev console "wdtest"): checks the resume path without a hung C6 */
 void hal_c6_restart_test(void)
 {

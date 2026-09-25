@@ -1,5 +1,8 @@
 /* What hal_tab5.c and hal_tab5_net.c share. Not part of the HAL contract (that is hal.h). */
 #pragma once
+
+bool hal_boot_settled(void);        /* this start reached hal_boot_ok() */
+void hal_restart_mark_planned(void); /* the coming restart is asked for (see hal_restart_planned) */
 #include <stdbool.h>
 
 /* Wi-Fi through the C6, and mDNS. Called once from hal_start(), after NVS and the expanders (the C6's

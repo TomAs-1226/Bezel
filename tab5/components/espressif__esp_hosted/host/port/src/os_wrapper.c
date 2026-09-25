@@ -768,9 +768,14 @@ void hosted_log_write(int  level,
 	va_end(list);
 }
 
+/* Catalyst Tab: told before esp-hosted restarts the host (the C6 reset itself, or the link was lost), so the
+ * application can note where it is and not count the restart as a failed start */
+__attribute__((weak)) void esp_hosted_host_restarting(void) {}
+
 int hosted_restart_host(void)
 {
 	ESP_LOGI(TAG, "Restarting host");
+	esp_hosted_host_restarting();
 	esp_unregister_shutdown_handler((shutdown_handler_t)esp_wifi_stop);
 	esp_restart();
 	return 0;
