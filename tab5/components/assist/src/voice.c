@@ -378,7 +378,7 @@ static int record(int16_t *rec, int16_t *chunk, double wait_s, int skip_ms)
     set_state(VO_LISTEN);
     int n = 0, pre = 0, run = 0, quiet_ms = 0, voiced = 0;
     bool started = false;
-    double t0 = hal_seconds();
+    double t0 = hal_seconds(), heard_at = t0;
     for (;;) {
         if (stopped()) return -1;
         int r = hal_mic_read(chunk, CHUNK);
@@ -387,9 +387,15 @@ static int record(int16_t *rec, int16_t *chunk, double wait_s, int skip_ms)
             return -1;
         }
         if (r == 0) {
+            /* nothing from the microphones at all: they've stalled, and "listening..." would never end */
+            if (hal_seconds() - heard_at > 2.0) {
+                set_err("the microphones went quiet: tap me to try again");
+                return -1;
+            }
             usleep(10000);
             continue;
         }
+        heard_at = hal_seconds();
         if (skip_ms > 0) {
             skip_ms -= r * 1000 / SR;
             continue;
@@ -911,8 +917,11 @@ static bool speak(const vo_reply_t *rep)
             return false;
         }
         hal_play_end();
-        while (hal_play_busy() && !stopped()) usleep(20000);
-        if (stopped()) hal_play_stop();
+        /* what's still queued plays out (writes wait on the speaker, so a few seconds at most); a speaker that
+         * never says it's done can't hold the face "speaking" for good */
+        double until = hal_seconds() + 8.0;
+        while (hal_play_busy() && !stopped() && hal_seconds() < until) usleep(20000);
+        if (stopped() || hal_play_busy()) hal_play_stop();
         if (rd < 0) {
             set_err(net_down() ? "the Wi-Fi dropped while I was talking" : "my voice broke off: the network dropped");
             return false; /* the rest of it goes on screen */
