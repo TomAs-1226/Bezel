@@ -1182,6 +1182,15 @@ void bz_ui_slide_end(void)
 #endif
 }
 
+bool bz_ui_can_sheet(void)
+{
+#if BZ_LEAN
+    return U.cfg.slide && U.cfg.slide->sheet;
+#else
+    return false;
+#endif
+}
+
 bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool before, void *u), void *u)
 {
 #if BZ_LEAN

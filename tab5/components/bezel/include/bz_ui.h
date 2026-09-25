@@ -145,6 +145,7 @@ bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool 
 void bz_ui_sheet(int h);
 int bz_ui_sheet_shown(void); /* the height on the panel now (-1: none yet) */
 bool bz_ui_sheeting(void);
+bool bz_ui_can_sheet(void); /* the platform composes sheets (bz_ui_sheet_begin can succeed at all) */
 void bz_ui_sheet_end(void);
 double bz_ui_clock(void);    /* monotonic seconds, for timing */
 void bz_ui_hooks_report(void);

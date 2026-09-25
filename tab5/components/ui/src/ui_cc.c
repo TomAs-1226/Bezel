@@ -410,6 +410,10 @@ void ui_cc_open(void)
 void ui_cc_init(void)
 {
     lv_obj_t *g = bz_ui_glass();
+    /* known from the platform, not learned from the first sheet that worked: a first open refused (an orb tap
+     * while an app was still sliding in) fell back to the old cascade for good, the app showing through it and
+     * its buttons drawn over the modules */
+    C.sheet_mode = bz_ui_can_sheet();
     C.scrim = lv_obj_create(g);
     lv_obj_remove_style_all(C.scrim);
     lv_obj_set_size(C.scrim, W, H);
