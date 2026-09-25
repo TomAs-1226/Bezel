@@ -190,8 +190,10 @@ static bool c6_restart(const char *why, bool (*ok)(void))
      * without the new-packet bit frees it. Tried first when the count says they're there; if the C6 answers
      * again within 3 s, no restart. (A read with nothing queued can wedge the bus instead: the restart below
      * still comes, as it would have.) */
-    if (!s_c6_hold && esp_hosted_sdio_kick_queued(8)) {
-        ESP_LOGW(TAG, "wi-fi: %s: reading what the C6 queued", why);
+    /* in stress it freed the C6 about half the time on the first try: a second, longer one before giving up */
+    for (int attempt = 0; attempt < 2 && !s_c6_hold; attempt++) {
+        if (!esp_hosted_sdio_kick_queued(attempt ? 24 : 8)) break;
+        ESP_LOGW(TAG, "wi-fi: %s: reading what the C6 queued (try %d)", why, attempt + 1);
         vTaskDelay(pdMS_TO_TICKS(3000));
         if (ok()) {
             ESP_LOGW(TAG, "wi-fi: the C6 answers again: no restart");
