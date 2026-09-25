@@ -993,8 +993,10 @@ hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, siz
     size_t blen = req->body ? req->body_len : 0;
     /* The C6 now and then stops answering for a few seconds (its RPCs time out alongside): a request caught in
      * that fails to connect, to send, or to get headers. Nothing has been answered yet at any of those
-     * points, so one more try a moment later is safe for any method. */
+     * points, so one more try a moment later is safe for any method. Only after a quick failure, though: one
+     * that already took most of the timeout would double the wait of whoever asked. */
     for (int attempt = 0;; attempt++) {
+        int64_t t0 = esp_timer_get_time();
         const char *what = NULL;
         esp_err_t why = ESP_FAIL;
         int tls = 0;
@@ -1018,7 +1020,7 @@ hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, siz
             s_http_fails = 0;
             break;
         }
-        if (attempt == 0 && N.up) {
+        if (attempt == 0 && N.up && esp_timer_get_time() - t0 < (int64_t)timeout * 1000 / 3) {
             esp_http_client_close(h->c);
             vTaskDelay(pdMS_TO_TICKS(1200));
             continue;

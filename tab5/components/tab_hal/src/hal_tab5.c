@@ -1079,12 +1079,7 @@ static struct {
     ppa_client_handle_t fill;
 } SLD;
 
-/* a whole frame composed by DMA (a slide, a sheet): a free buffer, then handed over as the full screen */
-static int present_begin(void)
-{
-    present_sync();
-    return fb_pick();
-}
+/* a whole frame composed by DMA (a slide, a sheet), handed over as the full screen */
 static void present_end(int b) { fb_handover(b, NULL, 0, true, 0, 0); }
 
 /* Block copies between portrait buffers on the DMA2D, the P4's 2D copy engine (esp_lcd's frame-buffer
