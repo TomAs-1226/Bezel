@@ -231,9 +231,10 @@ static void run(char *line)
         if (s_keys && sd) {
             char path[64];
             snprintf(path, sizeof path, "%s/CATOS/KEYS.ENV", sd);
-            /* the card has answered a first write with EIO now and then: tried a few times */
-            for (int t = 0; t < 4 && !ok; t++) {
-                if (t) vTaskDelay(pdMS_TO_TICKS(150));
+            /* in its first ~20 s after start-up the card answers writes with EIO (start-up is still reading it): tried
+             * for a few seconds */
+            for (int t = 0; t < 20 && !ok; t++) {
+                if (t) vTaskDelay(pdMS_TO_TICKS(250));
                 FILE *f = fopen(path, "wb");
                 if (!f) continue;
                 ok = fwrite(s_keys, 1, s_nkeys, f) == s_nkeys;
