@@ -69,10 +69,19 @@ static void shot(bool panel)
     hal_display_t d;
     hal_display(&d);
     /* LVGL's landscape picture, or the portrait frame buffer the panel is scanning out */
-    const uint16_t *px = panel ? hal_front_fb() : bz_ui_content_buf(); /* LVGL's current buffer (they swap) */
+    const uint16_t *px = bz_ui_content_buf(); /* LVGL's current buffer (they swap) */
     int w = panel ? HAL_H : HAL_W, h = panel ? HAL_W : HAL_H;
     size_t n = (size_t)HAL_W * HAL_H;
-    if (panel) esp_cache_msync((void *)px, n * 2, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    uint16_t *copy = NULL; /* the panel's picture, copied out before the frames after it can overwrite it */
+    if (panel) {
+        copy = heap_caps_malloc(n * 2, MALLOC_CAP_SPIRAM);
+        if (!copy) {
+            say("ERR no memory\n");
+            return;
+        }
+        hal_front_fb_copy(copy);
+        px = copy;
+    }
     /* run-length coded in two passes, so nothing the size of the picture is allocated: the first counts
      * the runs (the header carries the length), the second sends them 32 KB at a time */
     size_t k = 0;
@@ -85,6 +94,7 @@ static void shot(bool panel)
     }
     uint16_t *rle = heap_caps_malloc(32768, MALLOC_CAP_SPIRAM);
     if (!rle) {
+        free(copy);
         say("ERR no memory\n");
         return;
     }
@@ -112,6 +122,7 @@ static void shot(bool panel)
     usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(2000));
     esp_log_level_set("*", was);
     free(rle);
+    free(copy);
 }
 
 #define KEYS_MAX 8192

@@ -993,6 +993,14 @@ static struct {
     void (*fn)(void); /* a composed frame (a slide's, a sheet's) instead of areas */
 } J;
 
+/* A panel shot holds the presents while it copies the picture (hal_front_fb_copy): the UI waits here rather
+ * than taking the lock back, which it would every frame ahead of the shot's low-priority task */
+static volatile bool s_hold;
+static void hold_wait(void)
+{
+    while (s_hold) vTaskDelay(1);
+}
+
 static void present_sync(void)
 {
     if (!J.task) return;
@@ -1021,6 +1029,7 @@ void hal_present(const bz_present_t *areas, int n, void *user)
         if (areas[i].src)
             px += (uint32_t)(areas[i].a.x2 - areas[i].a.x1 + 1) * (uint32_t)(areas[i].a.y2 - areas[i].a.y1 + 1);
     rot_wait(); /* the PPA's queue is the present's again */
+    hold_wait();
     if (J.task) xSemaphoreTake(J.idle, portMAX_DELAY);
     s_job_frame = false;
     /* this frame's scrolls go with it */
@@ -1254,6 +1263,7 @@ static void job_run(void (*fn)(void))
         fn();
         return;
     }
+    hold_wait();
     xSemaphoreTake(J.idle, portMAX_DELAY);
     s_job_frame = true;
     J.fn = fn;
@@ -1458,10 +1468,23 @@ bool hal_touch(int *x, int *y, void *user)
 }
 
 /* The buffer on the glass now (the one handed over last), portrait 720x1280: what the panel shows. */
-/* For the dev console's panel shot, on its own low-priority task: it never waits for the present (the
- * UI's core takes that lock back every frame, and a waiter on the other core starved behind it). A shot
- * taken mid-present may show that frame half-made. */
 const uint16_t *hal_front_fb(void) { return T.fb[fb_latest()]; }
+
+/* The same picture copied out whole, for the dev console's panel shot. Read in place over USB (a second or
+ * more) it was overwritten by the frames after it whenever something moved: stripes of a later frame down
+ * the right of the shot. The presents wait (s_hold) while the copy is made, a few tens of ms. */
+bool hal_front_fb_copy(uint16_t *dst)
+{
+    s_hold = true;
+    if (J.task) xSemaphoreTake(J.idle, portMAX_DELAY);
+    const uint16_t *src = T.fb[fb_latest()];
+    size_t n = (size_t)PANEL_W * PANEL_H * 2;
+    esp_cache_msync((void *)src, n, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    memcpy(dst, src, n);
+    if (J.task) xSemaphoreGive(J.idle);
+    s_hold = false;
+    return true;
+}
 
 void hal_set_flip(bool flip)
 {

@@ -52,6 +52,7 @@ bool hal_flip(void);
 /* The development console on the USB-C port (tools/tab5_dev.py): screenshots and injected touches. */
 void hal_dev_init(void);
 const uint16_t *hal_front_fb(void); /* the panel's current picture, portrait 720x1280 */
+bool hal_front_fb_copy(uint16_t *dst); /* that picture copied whole, the presents held meanwhile */
 bool hal_dev_touch(int *x, int *y); /* an injected finger, if one is down */
 /* Commands the console doesn't know go to the UI ("open <app>", "page <n>", "close"): true if handled.
  * Called from the console's task; the handler must hand the work to the UI's own loop. */
