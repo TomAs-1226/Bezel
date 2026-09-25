@@ -23,7 +23,9 @@
 #include <strings.h>
 
 #include "esp_crt_bundle.h"
+#include "esp_attr.h"
 #include "esp_event.h"
+#include "esp_system.h"
 #include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
@@ -108,23 +110,49 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+/* restarts the C6 watchdog made, and when the first of the last three was: kept across the restart */
+static RTC_NOINIT_ATTR uint32_t s_c6_restarts[4];
+
 static void rssi_task(void *arg)
 {
     (void)arg;
-    /* The C6 answers this in a few ms, except when it stalls for a few seconds now and then (every RPC and
-     * the data with it): then the call waits out a 5 s timeout. Asked from here, never from the UI; slower
-     * after a miss, so a stalling C6 isn't asked more. */
-    int wait_ms = 3000;
+    /* The signal, every 3 s, and a watchdog on the C6 with it. The C6 now and then stops answering
+     * altogether (under traffic; esp-hosted 1.4.7 on both ends, SDIO at 20 MHz, the host polling its
+     * interrupt register: seen all the same), and nothing short of resetting it brings Wi-Fi back: two
+     * unanswered asks in a row while "connected" restart the tablet, whose start-up resets the C6 through
+     * its reset line. At most 3 in 30 min: past that it only says so. */
+    if (s_c6_restarts[3] != 0xC6C6C6C6u) memset(s_c6_restarts, 0, sizeof s_c6_restarts);
+    s_c6_restarts[3] = 0xC6C6C6C6u;
+    int misses = 0;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(wait_ms));
+        vTaskDelay(pdMS_TO_TICKS(3000));
         wifi_ap_record_t ap;
-        if (!N.up || s_scanning) continue;
+        if (!N.up || s_scanning) {
+            misses = 0;
+            continue;
+        }
         if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
             N.rssi = ap.rssi;
-            wait_ms = 3000;
-        } else {
-            wait_ms = 30000;
+            misses = 0;
+            continue;
         }
+        if (++misses < 2) continue;
+        uint32_t now = (uint32_t)(esp_timer_get_time() / 1000000);
+        /* the uptime counter starts over at each restart: the three stamps are this boot's ages at the
+         * moment of each restart, summed across boots, kept in s_c6_restarts[0..2] as a sliding window */
+        uint32_t total = s_c6_restarts[0] + s_c6_restarts[1] + s_c6_restarts[2] + now;
+        bool too_many = s_c6_restarts[0] && s_c6_restarts[1] && s_c6_restarts[2] && total < 30 * 60;
+        if (too_many) {
+            ESP_LOGE(TAG, "wi-fi: the C6 stopped answering again (3 restarts in 30 min): not restarting");
+            misses = -1000; /* quiet from here */
+            continue;
+        }
+        s_c6_restarts[0] = s_c6_restarts[1];
+        s_c6_restarts[1] = s_c6_restarts[2];
+        s_c6_restarts[2] = now ? now : 1;
+        ESP_LOGE(TAG, "wi-fi: the C6 stopped answering: restarting to reset it");
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
     }
 }
 
@@ -688,6 +716,68 @@ void hal_net_report(char *out, size_t n, const char *host)
              tcp[0], tcp[1], N.up,
              IP2STR(&ip.ip), IP2STR(&ip.gw), IP2STR(&d0.ip.u_addr.ip4), IP2STR(&d1.ip.u_addr.ip4),
              def ? esp_netif_get_desc(def) : "none", host ? host : "", resolved, r);
+}
+
+/* esp-hosted's OTA steps (rpc_wrap.c; not in its public header): the image goes over the SDIO link in
+ * chunks and the C6 writes it to its other OTA slot, switching to it only when the whole image checks out */
+int rpc_ota_begin(void);
+int rpc_ota_write(uint8_t *ota_data, uint32_t ota_data_len);
+int rpc_ota_end(void);
+
+/* The C6's firmware updated from a file on the card (the dev console's "c6ota"). progress(done, total) is
+ * called every ~64 KB. The P4 must restart after a success: the C6 restarts into the new firmware. */
+bool hal_c6_ota(const char *path, void (*progress)(size_t done, size_t total), char *err, size_t errn)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f) {
+        snprintf(err, errn, "can't open %s", path);
+        return false;
+    }
+    fseek(f, 0, SEEK_END);
+    long total = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *chunk = heap_caps_malloc(1400, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (total < 100 * 1024 || !chunk) {
+        fclose(f);
+        free(chunk);
+        snprintf(err, errn, total < 100 * 1024 ? "image too small (%ld bytes)" : "no memory", total);
+        return false;
+    }
+    if (rpc_ota_begin() != 0) {
+        fclose(f);
+        free(chunk);
+        snprintf(err, errn, "the C6 refused to begin");
+        return false;
+    }
+    size_t done = 0, next = 0;
+    bool ok = true;
+    for (;;) {
+        size_t n = fread(chunk, 1, 1400, f);
+        if (n == 0) break;
+        if (rpc_ota_write(chunk, (uint32_t)n) != 0) {
+            snprintf(err, errn, "the C6 refused a write at %u of %ld", (unsigned)done, total);
+            ok = false;
+            break;
+        }
+        done += n;
+        if (progress && done >= next) {
+            progress(done, (size_t)total);
+            next = done + 64 * 1024;
+        }
+    }
+    fclose(f);
+    free(chunk);
+    /* ended either way: a failed image leaves the C6 on the firmware it runs now */
+    int e = rpc_ota_end();
+    if (ok && e != 0) {
+        snprintf(err, errn, "the C6 didn't accept the image (end %d)", e);
+        ok = false;
+    }
+    if (ok && done != (size_t)total) {
+        snprintf(err, errn, "read %u of %ld bytes", (unsigned)done, total);
+        ok = false;
+    }
+    return ok;
 }
 
 void hal_net(hal_net_t *o)

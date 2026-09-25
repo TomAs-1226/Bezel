@@ -167,6 +167,8 @@ void hal_net(hal_net_t *out);
 void hal_net_report(char *out, size_t n, const char *host); /* dev console: addresses, DNS, a lookup */
 void hal_wifi_join(const char *ssid, const char *pass);
 void hal_wifi_rejoin(void);
+/* the C6 co-processor's firmware from a file on the card; restart after a success */
+bool hal_c6_ota(const char *path, void (*progress)(size_t done, size_t total), char *err, size_t errn);
 typedef struct { char ssid[33]; int rssi; bool secure; } hal_ap_t;
 int hal_wifi_scan(hal_ap_t *out, int max);  /* blocking, a couple of seconds */
 

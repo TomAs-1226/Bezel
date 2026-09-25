@@ -101,6 +101,37 @@ def main():
             reply(s)
             print("saved", parts[1] if len(parts) > 1 else "shot.png", "(turned: flip)" if r[4] else "")
             continue
+        if parts[0] == "put":
+            # put LOCAL REMOTE: a file onto the tablet's card, 512 bytes a line, checked by CRC-32
+            import zlib
+            local, remote = parts[1], parts[2]
+            with open(local, "rb") as f:
+                data = f.read()
+            s.write(("putbegin %s %d\n" % (remote, len(data))).encode())
+            if reply(s)[0] != "ok":
+                raise SystemExit("putbegin refused")
+            for i in range(0, len(data), 512):
+                for attempt in range(6):
+                    s.write(("puthex %d %s\n" % (i, data[i:i + 512].hex())).encode())
+                    try:
+                        r = reply(s, timeout=5)
+                    except SystemExit:
+                        r = ("err",)  # a garbled line: sent again
+                    if r[0] == "ok":
+                        break
+                    time.sleep(0.3)
+                    s.reset_input_buffer()
+                else:
+                    raise SystemExit("puthex refused at %d" % i)
+                if i % (64 * 1024) == 0:
+                    print("sent %d of %d" % (i, len(data)), flush=True)
+            s.write(("putend %08x\n" % (zlib.crc32(data) & 0xffffffff)).encode())
+            print(reply(s))
+            continue
+        if parts[0] == "c6ota":
+            s.write((" ".join(parts) + "\n").encode())
+            print(reply(s, timeout=600))
+            continue
         if parts[0] == "keys":
             # your key file (dotenv, or "name: value" lines) to the tablet's card; it restarts and imports it.
             # The contents go over the USB cable only, hex-coded, and are never printed.

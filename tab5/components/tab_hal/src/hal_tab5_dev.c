@@ -22,6 +22,7 @@
 #include "esp_cache.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_rom_crc.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -117,6 +118,19 @@ static void shot(bool panel)
 static char *s_keys; /* a key file on its way in (keybegin..keyend) */
 static size_t s_nkeys;
 
+static FILE *s_put; /* a file on its way in (putbegin..putend) */
+static char s_put_path[96];
+static unsigned long s_put_size;
+static size_t s_put_n;
+static uint32_t s_put_crc;
+
+static void c6_progress(size_t done, size_t total)
+{
+    char m[64];
+    snprintf(m, sizeof m, "MEM c6 update: %u of %u\n", (unsigned)done, (unsigned)total);
+    say(m);
+}
+
 static bool (*s_handler)(const char *line);
 void hal_dev_set_handler(bool (*fn)(const char *line)) { s_handler = fn; }
 
@@ -187,6 +201,70 @@ static void run(char *line)
         say(buf);
         say("\n");
         say("OK\n");
+    } else if (!strncmp(line, "putbegin ", 9)) {
+        /* a file from the PC onto the card: putbegin <path> <size>, puthex <hex>..., putend <crc32 hex> */
+        if (s_put) fclose(s_put);
+        unsigned long size = 0;
+        char *sp = strrchr(line + 9, ' ');
+        if (sp) {
+            size = strtoul(sp + 1, NULL, 10);
+            *sp = 0;
+        }
+        snprintf(s_put_path, sizeof s_put_path, "%s", line + 9);
+        s_put = NULL;
+        for (int t = 0; t < 20 && !s_put; t++) {
+            if (t) vTaskDelay(pdMS_TO_TICKS(250));
+            s_put = fopen(s_put_path, "wb");
+        }
+        s_put_size = size;
+        s_put_n = 0;
+        s_put_crc = 0;
+        say(s_put ? "OK\n" : "ERR can't open\n");
+    } else if (!strncmp(line, "puthex ", 7)) {
+        /* puthex <offset> <hex>: a chunk the PC sends again after a lost reply is one already here: taken as
+         * done, not written twice */
+        char *hx = strchr(line + 7, ' ');
+        unsigned long off = strtoul(line + 7, NULL, 10);
+        if (!hx || off != s_put_n) {
+            say(hx && off < s_put_n ? "OK\n" : "ERR offset\n");
+            return;
+        }
+        uint8_t b[600];
+        size_t n = 0;
+        for (const char *h = hx + 1; h[0] && h[1] && n < sizeof b; h += 2) {
+            unsigned v;
+            if (sscanf(h, "%2x", &v) != 1) break;
+            b[n++] = (uint8_t)v;
+        }
+        bool ok = s_put && fwrite(b, 1, n, s_put) == n;
+        if (ok) {
+            s_put_crc = esp_rom_crc32_le(s_put_crc, b, n);
+            s_put_n += n;
+        }
+        say(ok ? "OK\n" : "ERR write\n");
+    } else if (!strncmp(line, "putend ", 7)) {
+        unsigned long want = strtoul(line + 7, NULL, 16);
+        bool ok = s_put && fclose(s_put) == 0;
+        s_put = NULL;
+        char m[120];
+        snprintf(m, sizeof m, "MEM put %s: %u of %lu bytes, crc %08lx (want %08lx)\n", s_put_path, (unsigned)s_put_n,
+                 s_put_size, (unsigned long)s_put_crc, want);
+        say(m);
+        say(ok && s_put_n == s_put_size && s_put_crc == want ? "OK\n" : "ERR mismatch\n");
+    } else if (!strncmp(line, "c6ota ", 6)) {
+        /* the C6's firmware from a file on the card, then a restart (the C6 restarts into the new image) */
+        char err[96] = "";
+        say("MEM c6 update: starting\n");
+        bool ok = hal_c6_ota(line + 6, c6_progress, err, sizeof err);
+        char m[140];
+        snprintf(m, sizeof m, "MEM c6 update: %s%s\n", ok ? "done, restarting" : "failed: ", ok ? "" : err);
+        say(m);
+        say(ok ? "OK\n" : "ERR c6 update\n");
+        if (ok) {
+            usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(500));
+            vTaskDelay(pdMS_TO_TICKS(5000)); /* the C6 finishing its switch */
+            esp_restart();
+        }
     } else if (!strcmp(line, "rejoin")) {
         hal_wifi_rejoin();
         say("OK\n");
@@ -297,7 +375,7 @@ static void run(char *line)
 static void dev_task(void *arg)
 {
     (void)arg;
-    char line[96];
+    static char line[1200]; /* puthex carries 512 bytes */
     size_t len = 0;
     for (;;) {
         char ch;
@@ -315,7 +393,8 @@ static void dev_task(void *arg)
 
 void hal_dev_init(void)
 {
-    usb_serial_jtag_driver_config_t cfg = { .tx_buffer_size = 16384, .rx_buffer_size = 256 };
+    /* 4 KB in: a puthex line is ~1 KB, and bytes past a full buffer are dropped, not waited for */
+    usb_serial_jtag_driver_config_t cfg = { .tx_buffer_size = 16384, .rx_buffer_size = 4096 };
     if (usb_serial_jtag_driver_install(&cfg) != ESP_OK) {
         ESP_LOGW(TAG, "no USB-Serial/JTAG driver: the dev console is off");
         return;
