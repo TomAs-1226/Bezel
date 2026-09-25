@@ -677,6 +677,27 @@ static void ma_tick(void *u)
  * The event as text for the assistant's get_matches tool, and one line for every question's context (the next
  * match and the battery for it): posted when TBA's data changes, and the line every 30 s as times come closer. */
 
+/* "today 14:05", "Thu 12:57", "Sep 20 12:57": a bare time read as the next one even when it was yesterday's */
+static void day_time(time_t t, time_t now, char *b, size_t n)
+{
+    struct tm tm, tn;
+    localtime_r(&t, &tm);
+    localtime_r(&now, &tn);
+    char hm[8];
+    snprintf(hm, sizeof hm, "%d:%02d", tm.tm_hour, tm.tm_min);
+    long days = (long)((t - now) / 86400);
+    if (tm.tm_year == tn.tm_year && tm.tm_yday == tn.tm_yday) snprintf(b, n, "today %s", hm);
+    else if (days > -6 && days < 6) {
+        char wd[8];
+        strftime(wd, sizeof wd, "%a", &tm);
+        snprintf(b, n, "%s %s", wd, hm);
+    } else {
+        char md[12];
+        strftime(md, sizeof md, "%b %d", &tm);
+        snprintf(b, n, "%s %s", md, hm);
+    }
+}
+
 static void desk_matches(void)
 {
     tba_state_t *s = calloc(1, sizeof *s); /* ~9 KB: PSRAM */
@@ -699,11 +720,15 @@ static void desk_matches(void)
     do { \
         if (o < cap) o += (size_t)snprintf(t + o, cap - o, __VA_ARGS__); \
     } while (0)
+    time_t now = time(NULL);
+    char nows[24];
+    day_time(now, now, nows, sizeof nows);
+    PUT("now: %s\n", nows);
     PUT("team %d at %s (%s)%s%s, %s to %s%s\n", s->team, s->event_name, s->event_key, s->event_where[0] ? ", " : "",
         s->event_where, s->start, s->end, s->live ? ", running today" : "");
     if (s->as_of) {
-        char at[16];
-        hhmm(s->as_of, at, sizeof at);
+        char at[24];
+        day_time(s->as_of, now, at, sizeof at);
         PUT("data as of %s%s%s\n", at, s->offline ? ", offline: " : "", s->offline ? s->err : "");
     }
     if (s->have_status) {
@@ -715,16 +740,17 @@ static void desk_matches(void)
     PUT("our matches (times are local; \"about\" = TBA's prediction):\n");
     for (int i = 0; i < s->nmatches; i++) {
         const tba_match_t *m = &s->matches[i];
-        char at[16] = "time unknown", with[64], vs[64];
+        char at[24] = "time unknown", with[64], vs[64];
         time_t w = when_of(m);
-        if (w) hhmm(w, at, sizeof at);
+        if (w) day_time(w, now, at, sizeof at);
         partners(m, s->team, with, sizeof with, vs, sizeof vs);
         PUT("%s %s%s: %s, %s", m->label, m->predicted ? "about " : "", at, with, vs);
         if (m->played) {
             int us = m->ours == 2 ? m->blue_score : m->red_score, them = m->ours == 2 ? m->red_score : m->blue_score;
             PUT(" - %s %d to %d", m->result > 0 ? "won" : m->result < 0 ? "lost" : "tied", us, them);
         } else {
-            PUT(" - not played yet");
+            /* a time gone by with no score: TBA hasn't the result yet, or the schedule ran late */
+            PUT(w && w < now - 15 * 60 ? " - its time has passed, no result on TBA yet" : " - not played yet");
         }
         PUT("\n");
     }
