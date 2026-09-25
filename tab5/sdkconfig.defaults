@@ -82,6 +82,10 @@ CONFIG_ESP_NETIF_SET_DNS_PER_DEFAULT_NETIF=y
 # a TLS session leaves internal RAM to Wi-Fi, USB and the task stacks; the full CA bundle in flash for
 # esp_crt_bundle_attach (~65 KB, and no guessing which root a CDN moves to)
 CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y
+# AES in software: the hardware AES works by DMA, and with every TLS buffer in PSRAM it asks for DMA-capable
+# PSRAM the heap doesn't hand out ("Failed to allocate memory for start alignment buffer", then
+# mbedtls_ctr_drbg_seed -0x0001): every HTTPS request failed before it began. SHA stays in hardware.
+CONFIG_MBEDTLS_HARDWARE_AES=n
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
 CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
@@ -96,6 +100,9 @@ CONFIG_USBH_CDC_CONTROL_TRANSFER_BUFFER_SIZE=1025
 # in IRAM) overflowed it. Heap functions and ISR-side event posting move to flash instead: nothing in this
 # firmware allocates memory or posts an event from an IRAM-safe interrupt while the cache is off.
 CONFIG_HEAP_PLACE_FUNCTION_INTO_FLASH=y
+# The LP core's RTC RAM stays out of the heap: handed out as internal memory, ESP-SR's wake word put its
+# buffers there and its PIE vector stores fault on it (a crash the moment the companion listened).
+CONFIG_ESP_SYSTEM_ALLOW_RTC_FAST_MEM_AS_HEAP=n
 CONFIG_ESP_EVENT_POST_FROM_IRAM_ISR=n
 
 # Camera: SC2356 driven as SC202CS, 1280x720 RAW8 through the ISP

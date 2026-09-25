@@ -1056,7 +1056,10 @@ void voice_init(void)
     V.reply = calloc(1, sizeof *V.reply);
     if (!V.reply) return;
     /* TLS, the tools' buffers and WakeNet: likely in PSRAM, which is fine: this thread never writes NVS */
-    hal_thread("voice", worker, NULL, 32 * 1024);
+    /* internal RAM, never PSRAM: the wake word's model is read from its flash partition on this thread, and
+     * with the cache off for that a PSRAM stack crashed the tablet whenever the companion opened. ~5 KB is
+     * used; 16 KB leaves room for TLS. */
+    if (!hal_thread_internal("voice", worker, NULL, 16 * 1024)) printf("voice: no internal RAM for its thread: no voice\n");
 }
 
 void voice_enable(bool on)

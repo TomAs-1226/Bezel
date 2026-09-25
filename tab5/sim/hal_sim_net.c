@@ -34,6 +34,11 @@ bool hal_thread(const char *name, void *(*fn)(void *), void *arg, int stack)
     return ok;
 }
 
+bool hal_thread_internal(const char *name, void *(*fn)(void *), void *arg, int stack)
+{
+    return hal_thread(name, fn, arg, stack);
+}
+
 /* ---- tether, mDNS ---- */
 void hal_tether(hal_tether_t *o)
 {

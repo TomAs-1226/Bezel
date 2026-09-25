@@ -54,6 +54,13 @@ static struct {
     bool up;
     char ip[16];
     esp_netif_t *sta;
+    /* The network's name and signal, kept here: asking the C6 is a round trip over SDIO that waits up to
+     * 5 s when the C6 is busy, and hal_net() is asked from the UI's frame (the status band, home mode's
+     * checks): the whole interface stood still for it. The name comes with the connect event, the signal
+     * from a small task every few seconds. */
+    char ssid[33];
+    volatile int rssi;
+    TaskHandle_t rssi_task;
 } N;
 
 static void tether_promote_all(void);
@@ -74,8 +81,12 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
         if (wifi_has_network()) esp_wifi_connect();
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
+        wifi_event_sta_connected_t *e = data;
+        snprintf(N.ssid, sizeof N.ssid, "%.32s", (const char *)e->ssid);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         N.up = false;
+        N.rssi = 0;
         wifi_event_sta_disconnected_t *e = data;
         static uint8_t last;
         if (e->reason != last) ESP_LOGW(TAG, "wi-fi: '%.32s' dropped, reason %d, rssi %d", e->ssid, e->reason, e->rssi);
@@ -92,6 +103,28 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+static void rssi_task(void *arg)
+{
+    (void)arg;
+    /* The C6's stock esp-hosted slave doesn't answer this one: every call waited out a 5 s RPC timeout, with
+     * the RPC channel (every other esp_wifi_* call) held up behind it. Two misses and it stops asking. */
+    int misses = 0;
+    while (misses < 2) {
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        wifi_ap_record_t ap;
+        if (!N.up || s_scanning) continue;
+        if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
+            N.rssi = ap.rssi;
+            misses = 0;
+        } else {
+            misses++;
+        }
+    }
+    ESP_LOGW(TAG, "wi-fi: the C6 doesn't report the signal; not asking again");
+    N.rssi_task = NULL;
+    vTaskDelete(NULL);
+}
+
 static void wifi_init(void)
 {
     /* esp_wifi_* calls are forwarded over SDIO to the C6 by esp_wifi_remote + esp_hosted */
@@ -103,6 +136,7 @@ static void wifi_init(void)
     }
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL);
+    xTaskCreatePinnedToCore(rssi_task, "rssi", 3072, NULL, 2, &N.rssi_task, 0);
     esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
     esp_wifi_set_ps(WIFI_PS_NONE); /* latency over battery: a dashboard wants its packets now */
     esp_err_t s = esp_wifi_start();
@@ -599,10 +633,9 @@ void hal_net(hal_net_t *o)
     o->link = usb ? HAL_LINK_USB : HAL_LINK_WIFI;
     o->up = N.up;
     snprintf(o->ip, sizeof o->ip, "%s", N.up ? N.ip : "");
-    wifi_ap_record_t ap;
-    if (N.up && esp_wifi_sta_get_ap_info(&ap) == ESP_OK) {
-        snprintf(o->ssid, sizeof o->ssid, "%s", (const char *)ap.ssid);
-        o->rssi = ap.rssi;
+    if (N.up) {
+        snprintf(o->ssid, sizeof o->ssid, "%s", N.ssid);
+        o->rssi = N.rssi;
     }
 }
 
@@ -816,6 +849,20 @@ static void thread_main(void *p)
     s.fn(s.arg);
     if (s.psram) vTaskDeleteWithCaps(NULL);
     else vTaskDelete(NULL);
+}
+
+/* A thread whose stack must be internal RAM: it touches flash (a model partition mapped in, NVS), and while
+ * flash is busy the cache is off and a PSRAM stack unreachable (a crash). false rather than PSRAM. */
+bool hal_thread_internal(const char *name, void *(*fn)(void *), void *arg, int stack)
+{
+    if (stack < 4096) stack = 4096;
+    thread_start_t *s = malloc(sizeof *s);
+    if (!s) return false;
+    *s = (thread_start_t){ fn, arg, false };
+    if (xTaskCreatePinnedToCore(thread_main, name, (uint32_t)stack, s, 4, NULL, 0) == pdPASS) return true;
+    free(s);
+    ESP_LOGE(TAG, "thread %s: no internal RAM for its %d-byte stack", name, stack);
+    return false;
 }
 
 bool hal_thread(const char *name, void *(*fn)(void *), void *arg, int stack)

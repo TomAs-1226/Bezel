@@ -438,7 +438,9 @@ bool hal_wake_ready(const char **word)
 void hal_wake_reset(void)
 {
     AU.wn_fill = 0;
-    if (AU.wd && AU.wn->clean) AU.wn->clean(AU.wd);
+    /* No clean(): WakeNet9's (ESP-SR 2.4.7) dereferences a queue it hasn't built, before the first detect and
+     * after it too (a crash each time the companion opened its microphones). What it would clear is a
+     * second of audio context, which the next second of listening replaces anyway. */
 }
 
 bool hal_wake_feed(const int16_t *pcm, int n)

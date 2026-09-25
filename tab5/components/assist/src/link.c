@@ -656,7 +656,7 @@ void link_init(void)
     if (!L.url[0]) normalize(url, L.url, sizeof L.url);
     if (!L.token[0]) snprintf(L.token, sizeof L.token, "%s", token);
     pthread_mutex_unlock(&L.lock);
-    if (start) hal_thread("link", poller, NULL, 16 * 1024);
+    if (start) hal_thread("link", poller, NULL, 10 * 1024); /* ~3.5 KB used at most, measured */
 }
 
 void link_configure(const char *url, const char *token)
