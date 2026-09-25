@@ -85,6 +85,7 @@ hm_cfg_t *hm_cfg(void)
     char v[8];
     CFG->saver_min = hal_kv_get("hm_saver", v, sizeof v) ? atoi(v) : 0;
     hal_kv_get("hm_tag", CFG->tag, sizeof CFG->tag);
+    hal_kv_get("hm_net", CFG->net, sizeof CFG->net);
     hal_kv_get("hm_place", CFG->place, sizeof CFG->place);
     hal_kv_get("ha_url", CFG->ha_url, sizeof CFG->ha_url);
     hal_kv_get("ha_token", CFG->ha_token, sizeof CFG->ha_token);
@@ -111,6 +112,7 @@ void hm_cfg_save(void)
     snprintf(v, sizeof v, "%d", c->saver_min);
     hal_kv_set("hm_saver", v);
     hal_kv_set("hm_tag", c->tag);
+    hal_kv_set("hm_net", c->net);
     hal_kv_set("hm_place", c->place);
     hal_kv_set("ha_url", c->ha_url);
     hal_kv_set("ha_token", c->ha_token);
@@ -156,7 +158,7 @@ typedef struct {
 
 static const hm_app_t LAUNCH[] = {
     { &APP_MUSIC, BZ_I_GRAPHIC_EQ, "music", 0 },
-    { &APP_SMARTHOME, BZ_I_LIGHTBULB, "smart home", 0 },
+    { &APP_SMARTHOME, BZ_I_LIGHTBULB, "house", 0 },
     { &APP_WEATHER, BZ_I_LIGHT_MODE, "weather", 0 },
     { &APP_CALENDAR, BZ_I_GRID_VIEW, "calendar", 0 },
     { &APP_TIMER, BZ_I_TIMER, "timer", 0 },
@@ -192,6 +194,15 @@ static struct {
     bz_motion_t k;
     double blink_at;
     bool blinking;
+    /* the living parts, each a small area redrawn only while it moves */
+    bz_motion_t lid, gx, gy;       /* the eyes: open 0..1, where they look (px) */
+    double gaze_at;
+    int eye_h[2], eye_x[2], eye_y[2];
+    bz_motion_t roll;              /* the time rolling up to a new minute, 1 → 0 */
+    int roll_px, roll_opa;
+    bz_motion_t press[12];         /* the launcher's tiles sinking under a finger */
+    int press_scale[12];
+    lv_obj_t *tile[12];
     ui_home_mode_fn on_change;
     bool power;
     /* the photos screensaver */
@@ -408,6 +419,8 @@ static void build_home(lv_obj_t *r)
     lv_obj_set_pos(HM.ha_hint_text, 0, 98);
 }
 
+static void press_cb(lv_event_t *e);
+
 static void build_launcher(lv_obj_t *r)
 {
     for (int i = 0; i < NLAUNCH; i++) {
@@ -419,6 +432,17 @@ static void build_launcher(lv_obj_t *r)
         if (a->action == 3) bz_tile_set_fill(t, BZ_C_SURFACE2); /* the way out, set apart by its tone */
         lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
         bz_on_tap(t, launch_tap, (void *)a);
+        if (i < 12) {
+            HM.tile[i] = t;
+            HM.press_scale[i] = 256;
+            bz_motion_init(&HM.press[i], 0, 0.004f);
+            HM.press[i].keep = true;
+            lv_obj_set_style_transform_pivot_x(t, LN_W / 2, 0);
+            lv_obj_set_style_transform_pivot_y(t, LN_H / 2, 0);
+            lv_obj_add_event_cb(t, press_cb, LV_EVENT_PRESSED, (void *)(intptr_t)i);
+            lv_obj_add_event_cb(t, press_cb, LV_EVENT_RELEASED, (void *)(intptr_t)i);
+            lv_obj_add_event_cb(t, press_cb, LV_EVENT_PRESS_LOST, (void *)(intptr_t)i);
+        }
         lv_obj_t *ic = bz_icon(t, a->icon, 32, BZ_C_INK);
         lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 18);
         lv_obj_t *lb = bz_label_line(t, a->label, BZ_F_CAPTION, BZ_C_DIM, LN_W - 6);
@@ -442,6 +466,18 @@ static void build(void)
     build_top(r);
     build_playing(r);
     build_companion(r);
+    /* the living parts' springs: kept (they move even though the lean renderer's motion is instant) */
+    bz_motion_init(&HM.lid, 1, 0.01f);
+    bz_motion_init(&HM.gx, 0, 0.3f);
+    bz_motion_init(&HM.gy, 0, 0.3f);
+    bz_motion_init(&HM.roll, 0, 0.01f);
+    HM.lid.keep = HM.gx.keep = HM.gy.keep = HM.roll.keep = true;
+    HM.roll_opa = 255;
+    for (int i = 0; i < 2; i++) {
+        HM.eye_h[i] = EYE_H;
+        HM.eye_x[i] = (i ? 1 : -1) * EYE_DX;
+        HM.eye_y[i] = EYE_Y;
+    }
     build_home(r);
     build_launcher(r);
 
@@ -686,6 +722,12 @@ static void refresh_clock(void)
     if (tm.tm_min == HM.last_min) return;
     HM.last_min = tm.tm_min;
     if (tm.tm_year > 120) {
+        /* rolls up into place, unless this is the first time it's set */
+        if (HM.clock && lv_label_get_text(HM.clock)[0] != '-' && HM.active && HM.roll.keep) {
+            bz_motion_init(&HM.roll, 1, 0.01f);
+            HM.roll.keep = true;
+            bz_motion_to(&HM.roll, 0, BZ_SMOOTH);
+        }
         ui_text(HM.clock, "%d:%02d", tm.tm_hour, tm.tm_min);
         char d[40];
         strftime(d, sizeof d, "%A, %B %e", &tm);
@@ -804,6 +846,15 @@ void ui_home_mode_tap(lv_obj_t *o, void *u)
 /* The stand: upright (landscape), still and on external power for a minute, and nobody touching it; not
  * left by hand in the last five minutes. Brought by the stand, it leaves when lifted or unplugged. The same
  * test as the companion's desk mode (ui_app_companion.c), which home mode turns off when it takes over. */
+bool hm_at_home(void)
+{
+    const char *net = hm_cfg()->net;
+    if (!net[0]) return true;
+    hal_net_t n;
+    hal_net(&n);
+    return n.up && !strcmp(n.ssid, net);
+}
+
 static void stand_tick(double now)
 {
     static double next, still_since, gone_since;
@@ -831,7 +882,8 @@ static void stand_tick(double now)
         return;
     }
     gone_since = 0;
-    if (!hm_cfg()->stand || ui_app_any_open() || !HM.power || !still) {
+    /* at the shop (another network) the stand never brings it: only at home */
+    if (!hm_cfg()->stand || ui_app_any_open() || !HM.power || !still || !hm_at_home()) {
         still_since = 0;
         return;
     }
@@ -877,7 +929,7 @@ static void tag_tick(double now)
         HM.tag_seen_at = now;
         if (!HM.tag_here) {
             HM.tag_here = true;
-            ui_home_mode_trigger(UI_HOME_BY_TAG, true);
+            if (hm_at_home()) ui_home_mode_trigger(UI_HOME_BY_TAG, true);
         }
     } else if (HM.tag_here && now - HM.tag_seen_at > TAG_DEBOUNCE_S) {
         HM.tag_here = false;
@@ -916,23 +968,91 @@ static void saver_tick(void)
     ui_photos_slideshow(NULL);
 }
 
-static void blink_tick(double now)
+/* The eyes: blinks on a spring (now and then a double), a gaze that wanders and settles, and on power a
+ * slow breath. Each frame sets only what moved, so a still face costs nothing. */
+static void eyes_tick(double now)
 {
-    if (!HM.active || HM.sheet || ui_app_any_open() || ui_asleep()) return;
-    if (!HM.blinking && now >= HM.blink_at) {
+    if (!HM.active || HM.sheet || ui_app_any_open() || ui_asleep() || !HM.eye[0]) return;
+    if (now >= HM.blink_at && HM.lid.target > 0.5f) {
+        bz_motion_to(&HM.lid, 0, BZ_TICK);
         HM.blinking = true;
-        for (int i = 0; i < 2; i++) {
-            lv_obj_set_height(HM.eye[i], 8);
-            lv_obj_align(HM.eye[i], LV_ALIGN_TOP_MID, (i ? 1 : -1) * EYE_DX, EYE_Y + (EYE_H - 8) / 2);
-        }
-        HM.blink_at = now + 0.13;
-    } else if (HM.blinking && now >= HM.blink_at) {
+    }
+    if (HM.blinking && HM.lid.value < 0.08f) {
         HM.blinking = false;
-        for (int i = 0; i < 2; i++) {
-            lv_obj_set_height(HM.eye[i], EYE_H);
-            lv_obj_align(HM.eye[i], LV_ALIGN_TOP_MID, (i ? 1 : -1) * EYE_DX, EYE_Y);
+        bz_motion_to(&HM.lid, 1, BZ_SMOOTH);
+        bool twice = rand() % 6 == 0;
+        HM.blink_at = now + (twice ? 0.28 : 3.5 + (rand() % 5500) / 1000.0);
+    }
+    if (now >= HM.gaze_at) {
+        /* mostly ahead, sometimes a look to a side or up at whoever is there */
+        int r = rand() % 10;
+        float x = r < 5 ? 0 : (float)((rand() % 21) - 10), y = r < 5 ? 0 : (float)((rand() % 11) - 6);
+        bz_motion_to(&HM.gx, x, BZ_SMOOTH);
+        bz_motion_to(&HM.gy, y, BZ_SMOOTH);
+        HM.gaze_at = now + 2.5 + (rand() % 4000) / 1000.0;
+    }
+    bool moving = bz_motion_tick(&HM.lid);
+    moving |= bz_motion_tick(&HM.gx);
+    moving |= bz_motion_tick(&HM.gy);
+    float breath = HM.power ? 1.0f + 0.035f * sinf((float)(now * 2 * M_PI / 4.2)) : 1.0f;
+    /* the breath needs no frame of its own: the loop's idle pace (~30 Hz) is plenty for a 4 s swell */
+    float lid = HM.lid.value < 0 ? 0 : HM.lid.value > 1 ? 1 : HM.lid.value;
+    for (int i = 0; i < 2; i++) {
+        int h = (int)lroundf(EYE_H * breath * (0.1f + 0.9f * lid));
+        if (h < 6) h = 6;
+        int x = (i ? 1 : -1) * EYE_DX + (int)lroundf(HM.gx.value);
+        int y = EYE_Y + (EYE_H - h) / 2 + (int)lroundf(HM.gy.value);
+        if (h != HM.eye_h[i]) {
+            HM.eye_h[i] = h;
+            lv_obj_set_height(HM.eye[i], h);
         }
-        HM.blink_at = now + 4 + (rand() % 5000) / 1000.0; /* 4-9 s */
+        if (x != HM.eye_x[i] || y != HM.eye_y[i]) {
+            HM.eye_x[i] = x;
+            HM.eye_y[i] = y;
+            lv_obj_align(HM.eye[i], LV_ALIGN_TOP_MID, x, y);
+        }
+    }
+    if (moving) bz_ui_keep_alive();
+}
+
+/* A new minute rolls up into place */
+static void roll_tick(void)
+{
+    if (!bz_motion_tick(&HM.roll) && HM.roll_px == 0 && HM.roll_opa == 255) return;
+    float k = HM.roll.value < 0 ? 0 : HM.roll.value;
+    int px = (int)lroundf(22 * k), opa = (int)lroundf(255 * (1 - k));
+    if (px != HM.roll_px) {
+        HM.roll_px = px;
+        lv_obj_set_style_translate_y(HM.clock, px, 0);
+    }
+    if (opa != HM.roll_opa) {
+        HM.roll_opa = opa;
+        lv_obj_set_style_opa(HM.clock, (lv_opa_t)opa, 0);
+    }
+    bz_ui_keep_alive();
+}
+
+/* The launcher's tiles sink a little under a finger and spring back */
+static void press_cb(lv_event_t *e)
+{
+    int i = (int)(intptr_t)lv_event_get_user_data(e);
+    lv_event_code_t c = lv_event_get_code(e);
+    if (c == LV_EVENT_PRESSED) bz_motion_to(&HM.press[i], 1, BZ_HOLD);
+    else if (c == LV_EVENT_RELEASED || c == LV_EVENT_PRESS_LOST) bz_motion_to(&HM.press[i], 0, BZ_RELEASE);
+    bz_ui_keep_alive();
+}
+
+static void press_tick(void)
+{
+    for (int i = 0; i < NLAUNCH && i < 12; i++) {
+        if (!HM.tile[i]) continue;
+        bool moving = bz_motion_tick(&HM.press[i]);
+        int sc = 256 - (int)lroundf(18 * HM.press[i].value);
+        if (sc != HM.press_scale[i]) {
+            HM.press_scale[i] = sc;
+            lv_obj_set_style_transform_scale(HM.tile[i], sc, 0);
+        }
+        if (moving) bz_ui_keep_alive();
     }
 }
 
@@ -967,7 +1087,9 @@ static void hm_frame(double now, double dt, void *user)
         else if (w < 0 && HM.active) go(false);
     }
     saver_tick();
-    blink_tick(now);
+    eyes_tick(now);
+    roll_tick();
+    press_tick();
 }
 
 void ui_home_mode_init(ui_home_mode_fn on_change)

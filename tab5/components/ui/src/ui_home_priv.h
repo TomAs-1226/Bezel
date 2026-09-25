@@ -11,6 +11,7 @@ typedef struct {
     bool pc;               /* "hm_pc": the PC's media through Catalyst Link */
     int saver_min;         /* "hm_saver": the card's photos after this many minutes untouched; 0 off */
     char tag[24];          /* "hm_tag": the NFC tag's UID (hex) that brings home mode; "" none */
+    char net[33];          /* "hm_net": the home's Wi-Fi; set, home mode comes by itself only on it */
     char place[64];        /* "hm_place": "47.61,-122.33" or "Seattle" */
     char ha_url[128];      /* "ha_url" */
     char ha_token[320];    /* "ha_token": never logged, never shown */
@@ -39,3 +40,5 @@ void hm_tag_pair_begin(void);
 void hm_tag_pair_cancel(void);
 /* 0 nothing going on, 1 waiting for a tag, 2 a tag was just paired (once), -1 no reader */
 int hm_tag_pair_state(void);
+/* the tablet is at home: on the home Wi-Fi, or anywhere when none is set */
+bool hm_at_home(void);

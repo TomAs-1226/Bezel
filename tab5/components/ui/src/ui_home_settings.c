@@ -24,6 +24,7 @@ static const int SAVER_MIN[] = { 0, 5, 15, 30 };
 static struct {
     lv_obj_t *start_catalyst, *start_home, *stand, *far, *cel, *pc;
     lv_obj_t *saver[NSAVER], *tag_state, *tag_btn, *tag_forget, *pc_state;
+    lv_obj_t *net_state, *net_btn, *net_any;
     int tag_shown;             /* what tag_state says: -2 not yet, else hm_tag_pair_state()'s idea */
     bool tag_waiting;
     lv_obj_t *place, *url, *token, *ha_state, *list_state, *list, *kind[NKINDS];
@@ -81,6 +82,39 @@ static void toggle(lv_obj_t *o, void *u)
     }
     hm_cfg_save();
     show();
+}
+
+/* the home network: what the automatic triggers ask for, so the shop's Wi-Fi never brings home mode */
+static void net_show(void)
+{
+    hm_cfg_t *c = hm_cfg();
+    if (c->net[0]) ui_text(HS.net_state, "Only on %s: anywhere else (the shop) the stand and the tag leave it in catalyst mode.", c->net);
+    else ui_text(HS.net_state, "%s", "Not set: the stand and the tag bring home mode on any network. Tap \"this is home\" "
+                                   "on your home Wi-Fi.");
+    if (c->net[0]) lv_obj_remove_flag(HS.net_any, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(HS.net_any, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void net_here(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    hal_net_t n;
+    hal_net(&n);
+    if (!n.up || !n.ssid[0]) {
+        ui_island_say(BZ_I_WIFI_OFF, "join your home wi-fi first");
+        return;
+    }
+    snprintf(hm_cfg()->net, sizeof hm_cfg()->net, "%s", n.ssid);
+    hm_cfg_save();
+    net_show();
+}
+
+static void net_anywhere(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    hm_cfg()->net[0] = 0;
+    hm_cfg_save();
+    net_show();
 }
 
 static void pick_saver(lv_obj_t *o, void *u)
@@ -388,6 +422,13 @@ void ui_home_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     HS.stand = ui_chip(r, "home mode on the stand", toggle, (void *)(intptr_t)0);
     caption(col, "Upright, still and charging for a minute: home mode comes up by itself, and goes when the tablet is "
                  "lifted or unplugged. It replaces the companion's own desk mode.", w);
+
+    bz_label(col, "home network", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    HS.net_btn = ui_button(r, BZ_I_HOME, "this is home", net_here, NULL);
+    HS.net_any = ui_button(r, BZ_I_CLOSE, "any network", net_anywhere, NULL);
+    HS.net_state = caption(col, "", w);
+    net_show();
 
     bz_label(col, "nfc tag", BZ_F_LABEL, BZ_C_DIM);
     r = wrap(col, w);

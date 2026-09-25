@@ -270,7 +270,9 @@ bool hal_battery(hal_battery_t *o)
     o->volts = (uint16_t)(b[0] << 8 | b[1]) * 1.25e-3f;
     if (reg_read(T.ina, 0x04, b, 2)) o->amps = (int16_t)(b[0] << 8 | b[1]) * 250e-6f;
     o->charging = o->amps > 0.05f; /* positive current is charging (M5's demo) */
-    o->external = o->charging;
+    /* on its own pack the tablet draws a few hundred mA; on USB power with the pack full nothing flows
+     * either way: not discharging is external power */
+    o->external = o->amps > -0.05f;
     /* On USB power with the pack idle, the monitor reads ~4.28 V for seconds at a time between ~8.39 V
      * readings (the charger probing the pack, as far as can be told from here), and at power-on it reads
      * low until the rails settle. A pack's voltage can't jump: a reading more than 0.3 V from the last
