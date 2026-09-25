@@ -3,7 +3,8 @@
  * clock      the time large, three world clocks, and up to five alarms that ring with the app closed
  * calendar   a month at a glance; events in <sd>/CATOS/DATA/EVENTS.TXT, one "YYYY-MM-DD HH:MM text" a line
  * documents  .TXT and .MD files from <sd>/CATOS/DOCS, word-wrapped and scrolling
- * photos     the card's JPEGs (CATOS/PHOTOS and the lens app's snapshots) through the P4's JPEG decoder
+ * photos     the card's JPEGs (CATOS/PHOTOS and the lens app's snapshots) through the P4's JPEG decoder; also a
+ *            full-screen slideshow (ui_photos_slideshow: home mode's screensaver) that skips the thumbnails
  * storage    what the card holds, folder by folder
  *
  * Card I/O runs on hal_thread workers, each handing its result back through a volatile state that its
@@ -1385,7 +1386,12 @@ static OS_BSS struct {
     bool viewing;
     lv_obj_t *count, *viewer, *view_img, *view_cap, *view_msg;
     vs_t vs;
+    /* the slideshow: no grid, one picture after another; the one on screen stays until the next is decoded */
+    bool show_req, show;
+    double show_next;
 } PH;
+
+#define SHOW_S 12.0          /* a picture's time on screen */
 
 static void ph_add_dir(const char *dir, int *k)
 {
@@ -1454,7 +1460,7 @@ static void *ph_worker(void *u)
         PH.n = k;
         PUBLISH(PH.stage, 2);
     }
-    for (int i = 0; i < PH.n && !PH.quit; i++) {
+    for (int i = 0; i < PH.n && !PH.quit && !PH.show; i++) {
         ph_serve_full();
         if (PH.mem->tstate[i]) continue;
         char err[96];
@@ -1524,10 +1530,11 @@ static void ph_rescan(lv_obj_t *o, void *u)
 
 static void ph_view_close(lv_obj_t *o, void *u)
 {
-    (void)o; (void)u;
+    (void)u;
     PH.viewing = false;
     ph_drop_view();
     lv_obj_add_flag(PH.viewer, LV_OBJ_FLAG_HIDDEN);
+    if (PH.show && o) ui_app_close(); /* a tap ends the slideshow, back to whatever opened it */
 }
 
 static void ph_view(lv_obj_t *o, void *u)
@@ -1535,15 +1542,19 @@ static void ph_view(lv_obj_t *o, void *u)
     (void)o;
     int i = (int)(intptr_t)u;
     if (i < 0 || i >= PH.n || PH.full_state == 1) return;
-    ph_drop_view();
+    bool keep = PH.show && PH.shown.px; /* a slideshow keeps the last picture up while the next decodes */
+    if (!keep) ph_drop_view();
     PH.viewing = true;
     PH.full_idx = i;
     lv_obj_remove_flag(PH.viewer, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(PH.viewer);
-    lv_obj_add_flag(PH.view_img, LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(PH.view_msg, "decoding…");
-    lv_obj_remove_flag(PH.view_msg, LV_OBJ_FLAG_HIDDEN);
-    ui_text(PH.view_cap, "%s · tap to close", PH.mem->files[i].name);
+    if (!keep) {
+        lv_obj_add_flag(PH.view_img, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(PH.view_msg, "decoding…");
+        lv_obj_remove_flag(PH.view_msg, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (PH.show) ui_text(PH.view_cap, "%s", "");
+    else ui_text(PH.view_cap, "%s · tap to close", PH.mem->files[i].name);
     PH.full_state = 1;
     if (!PH.running && !ph_spawn()) {
         PH.full_state = 0;
@@ -1623,7 +1634,15 @@ static void photos_build(lv_obj_t *b)
 static void photos_open(void)
 {
     if (!PH.mem) return;
+    PH.show = PH.show_req;
+    PH.show_req = false;
     ph_scan();
+}
+
+void ui_photos_slideshow(lv_obj_t *from)
+{
+    PH.show_req = true;
+    ui_app_open(&APP_PHOTOS, from);
 }
 
 static void photos_close(void)
@@ -1632,6 +1651,7 @@ static void photos_close(void)
     PH.quit = true;
     PH.rescan = false;
     ph_view_close(NULL, NULL);
+    PH.show = false;
     ph_drop_grid();
     if (!PH.running) {
         ph_free_thumbs(); /* else the worker frees them as it stops */
@@ -1649,7 +1669,9 @@ static void ph_show_full(void)
             hal_picture_free(&p);
             return;
         }
+        ph_drop_view(); /* the slideshow's previous picture, now that the next is ready */
         PH.shown = p;
+        PH.show_next = hal_seconds() + SHOW_S;
         PH.full_dsc = (lv_image_dsc_t){ 0 };
         PH.full_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
         PH.full_dsc.header.cf = LV_COLOR_FORMAT_RGB565;
@@ -1663,10 +1685,15 @@ static void ph_show_full(void)
         lv_obj_center(PH.view_img);
         lv_obj_remove_flag(PH.view_img, LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(PH.view_msg, LV_OBJ_FLAG_HIDDEN);
-        ui_text(PH.view_cap, "%s · %d \xc3\x97 %d · tap to close", PH.mem->files[PH.full_idx].name, p.src_w, p.src_h);
+        if (!PH.show)
+            ui_text(PH.view_cap, "%s · %d \xc3\x97 %d · tap to close", PH.mem->files[PH.full_idx].name, p.src_w, p.src_h);
     } else if (PH.full_state == 3) {
         PH.full_state = 0;
         if (!PH.viewing) return;
+        if (PH.show) { /* a picture that won't decode: the next one soon */
+            PH.show_next = hal_seconds() + 1.0;
+            return;
+        }
         char msg[160];
         snprintf(msg, sizeof msg, "%s\ncouldn't be shown: %s", PH.mem->files[PH.full_idx].name, PH.full_err);
         lv_label_set_text(PH.view_msg, msg);
@@ -1676,9 +1703,20 @@ static void ph_show_full(void)
 static void photos_refresh(void)
 {
     if (!PH.mem) return;
-    if (PH.stage == 2) {
+    if (PH.stage == 2 && PH.show) {
+        PH.stage = 0;
+        if (PH.n) {
+            ph_view(NULL, (void *)(intptr_t)0);
+        } else {
+            ui_island_say(BZ_I_CAMERA, "no photos on the card for the slideshow");
+            ui_app_close();
+        }
+    } else if (PH.stage == 2) {
         PH.stage = 0;
         ph_build_grid();
+    } else if (PH.stage == 3 && PH.show) {
+        PH.stage = 0;
+        ui_app_close();
     } else if (PH.stage == 3) {
         PH.stage = 0;
         ph_drop_grid();
@@ -1689,6 +1727,11 @@ static void photos_refresh(void)
     /* a full-screen request made while the worker was finishing */
     if (PH.full_state == 1 && !PH.running && !ph_spawn()) PH.full_state = 3;
     ph_show_full();
+    /* the slideshow's next picture (not while the screen is off: nobody is watching) */
+    if (PH.show && PH.viewing && PH.full_state == 0 && PH.n && hal_seconds() >= PH.show_next && !ui_asleep()) {
+        PH.show_next = hal_seconds() + SHOW_S; /* whatever happens, not again straight away */
+        ph_view(NULL, (void *)(intptr_t)((PH.full_idx + 1) % PH.n));
+    }
     if (!PH.grid_built) return;
     ph_mem_t *m = PH.mem;
     int done = 0;

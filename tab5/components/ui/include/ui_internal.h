@@ -115,6 +115,8 @@ extern const ui_app_t APP_PREFLIGHT, APP_ALERTS, APP_TUNE, APP_AUTO, APP_FIELD, 
 extern const ui_app_t APP_SYSTEMCORE, APP_MOTORS, APP_STATES, APP_CONTROLS, APP_RECORDER;
 /* The assistant and the PC (ui_app_assist.c): the AI technician, and Catalyst Link's inbox and patches. */
 extern const ui_app_t APP_ASSIST, APP_LINK;
+/* Pairing with the PC's Catalyst Link by a code it shows (ui_app_pair.c). */
+extern const ui_app_t APP_PAIR;
 /* Desk mode (ui_app_companion.c): a face with two eyes, quick questions, and Claude Code on the PC. */
 extern const ui_app_t APP_COMPANION;
 /* Settings > assistant: the model and its keys, what the orb opens, desk mode, Claude Code reminders.
@@ -128,6 +130,9 @@ extern const ui_app_t APP_TIMER, APP_CALC, APP_NOTES, APP_CHECK, APP_LIGHT, APP_
 extern const ui_app_t APP_GEAR, APP_RULER, APP_REF; /* ui_apps_shop.c */
 /* Catalyst OS's everyday apps (ui_apps_os.c), on the card's CATOS layout (ui_storage.h). */
 extern const ui_app_t APP_CLOCK, APP_CALENDAR, APP_DOCS, APP_PHOTOS, APP_STORAGE;
+/* The photos app straight into a full-screen slideshow of the card's pictures (home mode's screensaver); a tap
+ * ends it. */
+void ui_photos_slideshow(lv_obj_t *from);
 /* Loads the alarms and starts the hook that rings them with the clock app closed. Once, at start-up, after
  * the settings (the clock app also calls it, for a shell that doesn't). */
 void ui_os_boot(void);

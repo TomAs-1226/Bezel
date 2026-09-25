@@ -392,6 +392,17 @@ int hal_can_read(hal_can_frame_t *out, int max)
 void hal_can_stats(hal_can_stats_t *o) { *o = g_can_stats; }
 void hal_can_stop(void) { g_can_on = false; g_can_stats.state = 0; }
 
+/* ---- NFC: no reader on a laptop. SIM_NFC_TAG=<hex uid> in the environment puts that tag on it. ---- */
+bool hal_nfc_present(void) { return getenv("SIM_NFC_TAG") != NULL; }
+
+bool hal_nfc_card(char *uid, size_t n)
+{
+    const char *t = getenv("SIM_NFC_TAG");
+    if (!t || !t[0]) return false;
+    snprintf(uid, n, "%s", t);
+    return true;
+}
+
 void hal_sys(hal_sys_t *o)
 {
     o->psram_free = 24u << 20;

@@ -1,46 +1,66 @@
 /* Home mode: the surface, its triggers and its settings store.
  *
- * The layout, 1280 × 720, top to bottom:
- *   the time, big, with the date under it          the weather, right-aligned
- *   what's playing (art, title, progress, controls) the companion's face
- *   a row of up to six Home Assistant tiles
- *   catalyst mode · music · settings                a line of status
+ * The layout, 1280 × 720 at the tablet's type size (BZ_LEAN), top to bottom:
+ *   a greeting, the time (large), the date                 the weather, right-aligned (a tap: the forecast)
+ *   what's playing (art, title, progress, controls) · the companion's face · four Home Assistant tiles
+ *   the launcher: music, smart home, weather, calendar, timer, alarms, photos, companion, settings, catalyst
+ *
+ * Every label has a width it was measured against at the tablet's type size (the lean faces: body 24, body_s
+ * 21, name 30, mono 19/16), and a line that can run long (a song, a reason, a hint) either ellipsizes on one
+ * line or has two lines of room.
  *
  * Cheap to keep on screen: nothing animates at rest. The clock changes once a minute; the progress bar and
- * its time once a second while something plays; a tile only when its entity changes; the art once a song;
- * the companion blinks every few seconds (two small eyes, a few thousand pixels). Nothing is restyled unless
- * its state changed.
+ * its time once a second while something plays (and are hidden when nothing does); a tile only when its
+ * entity changes; the art once a song; the companion blinks every few seconds (two small eyes). Nothing is
+ * restyled unless its state changed.
  *
  * Coming and going is a bottom sheet the platform slides (bz_ui_sheet_*, as an app opens), drawn a band at a
- * time; with no platform sheet (the simulator) it just switches. */
+ * time; with no platform sheet (the simulator) it just switches. Apps open over it and close back to it (the
+ * shell keeps its status band, orb and dock away while home mode is active). */
 #include "ui_home_priv.h"
 
 #include "ui_companion.h"
 
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
 
+#include <ctype.h>
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-#define M 48                        /* the surface's side margin */
-#define ROW2_Y 256
-#define ROW2_H 232
-#define NP_W 760                    /* now playing */
-#define CP_X (M + NP_W + BZ_GAP)
-#define CP_W (W - M - CP_X)
-#define ROW3_Y (ROW2_Y + ROW2_H + BZ_GAP)
-#define ROW3_H 128
-#define TILES HOME_HA_PICKS
-#define TILE_W ((W - 2 * M - (TILES - 1) * BZ_GAP) / TILES)
-#define FOOT_Y (H - 76)
-#define ART HOME_ART
-#define NP_IN (NP_W - 2 * BZ_PAD_TILE)
+#define M 56                        /* the surface's side margin */
+#define TOP_Y 50                    /* the greeting's top; the time under it, the date under that */
+#define WX_W 460                    /* the weather's column, right-aligned */
+#define CARD_Y 240
+#define CARD_H 268
+#define CARD_IN_H (CARD_H - 2 * BZ_PAD_TILE)
+#define NP_W 560                    /* now playing */
+#define CP_X (M + NP_W + BZ_GAP)    /* the companion */
+#define CP_W 232
+#define HA_X (CP_X + CP_W + BZ_GAP) /* the smart home tiles, two by two */
+#define HA_W (W - M - HA_X)
+#define HT_W ((HA_W - BZ_GAP) / 2)
+#define HT_H ((CARD_H - BZ_GAP) / 2)
+#define HT_PAD 16
+#define ART HOME_ART                /* 160 */
 #define NP_TX (ART + 24)            /* the text column, inside the card */
-#define NP_TW (NP_IN - NP_TX)
+#define NP_TW (NP_W - 2 * BZ_PAD_TILE - NP_TX) /* 328 */
+#define TIME_W 110
+#define CTL_W 56                    /* five transport buttons and a spacer fill NP_TW exactly */
+#define CTL_GAP 8
+#define CTL_SPACER (NP_TW - 5 * CTL_W - 5 * CTL_GAP)
 #define EYE_W 38
 #define EYE_H 62
+#define EYE_DX 36
+#define EYE_Y 34
+#define LN_Y (CARD_Y + CARD_H + 26) /* the launcher */
+#define LN_H 108
+#define LN_GAP 10
+#define LN_W ((W - 2 * M - 9 * LN_GAP) / 10)
+#define LN_X (M + (W - 2 * M - 10 * LN_W - 9 * LN_GAP) / 2)
+#define TAG_DEBOUNCE_S 1.5          /* the tag gone this long before home mode hears it left */
+#define TAG_PAIR_S 30.0             /* how long "pair a tag" waits for one */
 
 /* ================================================================== settings store */
 
@@ -56,12 +76,15 @@ static bool kv_bool(const char *k, bool def)
 hm_cfg_t *hm_cfg(void)
 {
     if (CFG) return CFG;
-    CFG = calloc(1, sizeof *CFG); /* ~900 bytes: PSRAM, not a static in internal RAM */
+    CFG = calloc(1, sizeof *CFG); /* ~2 KB: PSRAM, not a static in internal RAM */
     if (!CFG) abort();            /* at start-up, with 32 MB of PSRAM: never */
     CFG->start_home = kv_bool("hm_start", false);
     CFG->stand = kv_bool("hm_stand", false);
     CFG->fahrenheit = kv_bool("hm_fahr", false);
     CFG->pc = kv_bool("hm_pc", true);
+    char v[8];
+    CFG->saver_min = hal_kv_get("hm_saver", v, sizeof v) ? atoi(v) : 0;
+    hal_kv_get("hm_tag", CFG->tag, sizeof CFG->tag);
     hal_kv_get("hm_place", CFG->place, sizeof CFG->place);
     hal_kv_get("ha_url", CFG->ha_url, sizeof CFG->ha_url);
     hal_kv_get("ha_token", CFG->ha_token, sizeof CFG->ha_token);
@@ -84,6 +107,10 @@ void hm_cfg_save(void)
     hal_kv_set("hm_stand", c->stand ? "1" : "0");
     hal_kv_set("hm_fahr", c->fahrenheit ? "1" : "0");
     hal_kv_set("hm_pc", c->pc ? "1" : "0");
+    char v[8];
+    snprintf(v, sizeof v, "%d", c->saver_min);
+    hal_kv_set("hm_saver", v);
+    hal_kv_set("hm_tag", c->tag);
     hal_kv_set("hm_place", c->place);
     hal_kv_set("ha_url", c->ha_url);
     hal_kv_set("ha_token", c->ha_token);
@@ -116,27 +143,46 @@ void hm_fmt_time(double s, char *out, size_t n)
 typedef struct {
     lv_obj_t *tile, *icon, *name, *state;
     char id[64];
-    char shown_state[40];
     int kind;
-    bool on, used;
+    int lit;                       /* -1 not drawn yet, else whether it's drawn lit */
+    bool used;
 } ha_tile_t;
+
+typedef struct {
+    const ui_app_t *app;           /* NULL: one of the actions below */
+    const char *icon, *label;
+    int action;                    /* 1 companion, 2 settings, 3 catalyst mode */
+} hm_app_t;
+
+static const hm_app_t LAUNCH[] = {
+    { &APP_MUSIC, BZ_I_GRAPHIC_EQ, "music", 0 },
+    { &APP_SMARTHOME, BZ_I_LIGHTBULB, "smart home", 0 },
+    { &APP_WEATHER, BZ_I_LIGHT_MODE, "weather", 0 },
+    { &APP_CALENDAR, BZ_I_GRID_VIEW, "calendar", 0 },
+    { &APP_TIMER, BZ_I_TIMER, "timer", 0 },
+    { &APP_CLOCK, BZ_I_SCHEDULE, "alarms", 0 },
+    { &APP_PHOTOS, BZ_I_CAMERA, "photos", 0 },
+    { NULL, BZ_I_VISIBILITY, "companion", 1 },
+    { NULL, BZ_I_SETTINGS, "settings", 2 },
+    { NULL, BZ_I_SMART_TOY, "catalyst", 3 },
+};
+#define NLAUNCH ((int)(sizeof LAUNCH / sizeof LAUNCH[0]))
 
 static struct {
     lv_obj_t *root, *greet, *clock, *date;
-    lv_obj_t *wx_icon, *wx_temp, *wx_line, *wx_place;
-    lv_obj_t *np, *np_img, *np_ph, *np_src, *np_title, *np_artist, *np_meter, *np_time, *np_play, *np_prev, *np_next;
-    lv_obj_t *np_vdn, *np_vup;
+    lv_obj_t *wx, *wx_icon, *wx_temp, *wx_line, *wx_place;
+    lv_obj_t *np, *np_img, *np_ph, *np_src, *np_title, *np_artist, *np_meter, *np_time, *np_play;
     lv_obj_t *eye[2], *face;
     lv_obj_t *ha_hint, *ha_hint_text;
-    ha_tile_t *ha;                 /* TILES, on the heap */
-    lv_obj_t *status;
+    ha_tile_t ha[HM_HOME_TILES];
     lv_image_dsc_t art_dsc;
     uint16_t *art;                 /* ART² RGB565 */
     unsigned art_gen, pc_gen, wx_gen, ha_gen, pl_gen;
     int last_min, last_sec;
     bool art_shown;
     bool local;                    /* the card shows the tablet's own player (else the PC's) */
-    bool playing_shown;
+    bool playing_shown, progress_shown;
+    const char *wx_glyph;
     /* mode */
     bool built, active, sheet;
     int want;                      /* +1 enter, -1 leave, 0 nothing pending */
@@ -148,25 +194,34 @@ static struct {
     bool blinking;
     ui_home_mode_fn on_change;
     bool power;
+    /* the photos screensaver */
+    bool saver_on;
+    /* the NFC tag */
+    int tag_pairing;               /* 0 no, 1 waiting for a tag, 2 just paired */
+    double tag_pair_until;
+    bool tag_here;
+    double tag_seen_at;
 } HM = { .hid_page = -1 };
 
 bool ui_home_mode_active(void) { return HM.active; }
 bool ui_home_mode_keeps_awake(void) { return HM.active && HM.power; }
 
-static void open_app(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
-
-static void to_catalyst(lv_obj_t *o, void *u)
+void hm_open_settings(lv_obj_t *from)
 {
-    (void)o; (void)u;
-    ui_home_mode_exit();
-}
-
-static void to_settings(lv_obj_t *o, void *u)
-{
-    (void)u;
     hm_settings_request();
-    ui_app_open(&APP_SETTINGS, o);
+    ui_app_open(&APP_SETTINGS, from);
 }
+
+static void launch_tap(lv_obj_t *o, void *u)
+{
+    const hm_app_t *a = u;
+    if (a->app) ui_app_open(a->app, o);
+    else if (a->action == 1) ui_companion_open(false, o);
+    else if (a->action == 2) hm_open_settings(o);
+    else ui_home_mode_exit();
+}
+
+static void open_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
 
 static void face_tap(lv_obj_t *o, void *u)
 {
@@ -201,22 +256,175 @@ static void ha_tap(lv_obj_t *o, void *u)
 {
     (void)o;
     int i = (int)(intptr_t)u;
-    if (!HM.ha || !HM.ha[i].used) return;
+    if (!HM.ha[i].used) return;
     home_ha_tap(HM.ha[i].id);
-}
-
-static void ha_hint_tap(lv_obj_t *o, void *u)
-{
-    (void)u;
-    to_settings(o, NULL);
 }
 
 static lv_obj_t *round_button(lv_obj_t *parent, const char *icon, const char *action)
 {
     lv_obj_t *b = ui_button(parent, icon, NULL, np_cmd, (void *)action);
-    lv_obj_set_size(b, 64, 56);
+    lv_obj_set_size(b, CTL_W, 56);
     lv_obj_set_style_pad_hor(b, 0, 0);
     return b;
+}
+
+/* a card: surface1 with the tile's padding, placed on the surface */
+static lv_obj_t *card(lv_obj_t *r, int x, int w)
+{
+    lv_obj_t *c = bz_tile(r, w, CARD_H);
+    lv_obj_set_pos(c, x, CARD_Y);
+    return c;
+}
+
+static void build_top(lv_obj_t *r)
+{
+    /* the time, left */
+    HM.greet = bz_label_line(r, "", BZ_F_LABEL, BZ_C_DIM, 420);
+    lv_obj_set_pos(HM.greet, M + 2, TOP_Y);
+    HM.clock = bz_label(r, "--:--", BZ_F_CLOCK, BZ_C_INK);
+    lv_obj_set_pos(HM.clock, M - 6, TOP_Y + 20);
+    HM.date = bz_label_line(r, "", BZ_F_BODY, BZ_C_DIM, 560);
+    lv_obj_set_pos(HM.date, M + 2, TOP_Y + 134);
+
+    /* the weather, right-aligned: a tap opens the forecast */
+    lv_obj_t *wx = bz_col(r, 2);
+    HM.wx = wx;
+    lv_obj_set_width(wx, WX_W);
+    lv_obj_set_pos(wx, W - M - WX_W, TOP_Y);
+    lv_obj_set_flex_align(wx, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    lv_obj_add_flag(wx, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_set_ext_click_area(wx, 12);
+    bz_on_tap(wx, open_tap, (void *)&APP_WEATHER);
+    lv_obj_t *wr = bz_row(wx, 12);
+    lv_obj_set_flex_align(wr, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    HM.wx_icon = bz_icon(wr, BZ_I_THERMOMETER, 40, BZ_C_DIM);
+    lv_obj_add_flag(HM.wx_icon, LV_OBJ_FLAG_HIDDEN);
+    HM.wx_temp = bz_label(wr, "", BZ_F_DISPLAY, BZ_C_INK);
+    HM.wx_line = bz_label_line(wx, "", BZ_F_BODY, BZ_C_DIM, WX_W);
+    lv_obj_set_style_text_align(HM.wx_line, LV_TEXT_ALIGN_RIGHT, 0);
+    HM.wx_place = bz_label_line(wx, "", BZ_F_CAPTION, BZ_C_DIM, WX_W);
+    lv_obj_set_style_text_align(HM.wx_place, LV_TEXT_ALIGN_RIGHT, 0);
+}
+
+static void build_playing(lv_obj_t *r)
+{
+    lv_obj_t *np = card(r, M, NP_W);
+    HM.np = np;
+    lv_obj_t *artbox = bz_tile(np, ART, ART);
+    lv_obj_add_style(artbox, bz_style_fill(BZ_C_SURFACE3), 0);
+    lv_obj_set_style_radius(artbox, 20, 0);
+    lv_obj_set_style_pad_all(artbox, 0, 0);
+    lv_obj_set_style_clip_corner(artbox, true, 0);
+    lv_obj_set_pos(artbox, 0, (CARD_IN_H - ART) / 2);
+    lv_obj_add_flag(artbox, LV_OBJ_FLAG_CLICKABLE); /* the art opens the music app */
+    bz_on_tap(artbox, open_tap, (void *)&APP_MUSIC);
+    HM.np_ph = bz_icon(artbox, BZ_I_GRAPHIC_EQ, 40, BZ_C_DIM);
+    lv_obj_center(HM.np_ph);
+    HM.np_img = lv_image_create(artbox);
+    lv_obj_set_pos(HM.np_img, 0, 0);
+    lv_obj_add_flag(HM.np_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(HM.np_img, LV_OBJ_FLAG_EVENT_BUBBLE);
+    HM.np_src = bz_label_line(np, "", BZ_F_LABEL, BZ_C_DIM, NP_TW);
+    lv_obj_set_pos(HM.np_src, NP_TX, 0);
+    HM.np_title = bz_label_line(np, "", BZ_F_NAME, BZ_C_INK, NP_TW);
+    lv_obj_set_pos(HM.np_title, NP_TX, 28);
+    /* two lines: an artist and album, or a hint when nothing plays */
+    HM.np_artist = bz_label(np, "", BZ_F_BODY, BZ_C_DIM);
+    lv_label_set_long_mode(HM.np_artist, LV_LABEL_LONG_DOT);
+    lv_obj_set_size(HM.np_artist, NP_TW, 2 * lv_font_get_line_height(bz_font(BZ_F_BODY)));
+    lv_obj_set_pos(HM.np_artist, NP_TX, 66);
+    HM.np_meter = bz_meter(np, NP_TW - TIME_W - 12, 6);
+    lv_obj_set_pos(HM.np_meter, NP_TX, 134);
+    HM.np_time = bz_label_line(np, "", BZ_F_CAPTION, BZ_C_DIM, TIME_W);
+    lv_obj_set_style_text_align(HM.np_time, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_pos(HM.np_time, NP_TX + NP_TW - TIME_W, 126);
+    lv_obj_add_flag(HM.np_meter, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(HM.np_time, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *ctl = bz_row(np, CTL_GAP);
+    lv_obj_set_pos(ctl, NP_TX, CARD_IN_H - 56);
+    round_button(ctl, BZ_I_ARROW_BACK, "previous");
+    HM.np_play = round_button(ctl, BZ_I_PLAY_ARROW, "toggle");
+    ui_chip_set(HM.np_play, true);
+    round_button(ctl, BZ_I_ARROW_FORWARD, "next");
+    lv_obj_t *gap = bz_box(ctl);
+    lv_obj_set_size(gap, CTL_SPACER, 1);
+    round_button(ctl, BZ_I_REMOVE, "volume_down");
+    round_button(ctl, BZ_I_ADD, "volume_up");
+}
+
+static void build_companion(lv_obj_t *r)
+{
+    lv_obj_t *cp = card(r, CP_X, CP_W);
+    HM.face = cp;
+    lv_obj_add_flag(cp, LV_OBJ_FLAG_CLICKABLE);
+    bz_on_tap(cp, face_tap, NULL);
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *e = lv_obj_create(cp);
+        lv_obj_remove_style_all(e);
+        lv_obj_add_style(e, bz_style_fill(BZ_C_INK), 0);
+        lv_obj_set_style_radius(e, 18, 0);
+        lv_obj_set_size(e, EYE_W, EYE_H);
+        lv_obj_remove_flag(e, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_flag(e, LV_OBJ_FLAG_EVENT_BUBBLE);
+        lv_obj_align(e, LV_ALIGN_TOP_MID, (i ? 1 : -1) * EYE_DX, EYE_Y);
+        HM.eye[i] = e;
+    }
+    lv_obj_t *cl = bz_label_line(cp, "companion", BZ_F_NAME, BZ_C_INK, CP_W - 2 * BZ_PAD_TILE);
+    lv_obj_align(cl, LV_ALIGN_BOTTOM_LEFT, 0, -26);
+    lv_obj_t *cc = bz_label_line(cp, "tap to talk", BZ_F_CAPTION, BZ_C_DIM, CP_W - 2 * BZ_PAD_TILE);
+    lv_obj_align(cc, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+}
+
+static void build_home(lv_obj_t *r)
+{
+    /* up to four picked entities, two by two; the smart home app has them all */
+    for (int i = 0; i < HM_HOME_TILES; i++) {
+        ha_tile_t *t = &HM.ha[i];
+        t->tile = bz_tile(r, HT_W, HT_H);
+        lv_obj_set_pos(t->tile, HA_X + (i % 2) * (HT_W + BZ_GAP), CARD_Y + (i / 2) * (HT_H + BZ_GAP));
+        lv_obj_set_style_pad_all(t->tile, HT_PAD, 0);
+        lv_obj_add_flag(t->tile, LV_OBJ_FLAG_CLICKABLE);
+        bz_on_tap(t->tile, ha_tap, (void *)(intptr_t)i);
+        t->icon = bz_icon(t->tile, BZ_I_HOME, 32, BZ_C_INK);
+        t->state = bz_label_line(t->tile, "", BZ_F_LABEL, BZ_C_DIM, HT_W - 2 * HT_PAD - 50);
+        lv_obj_set_style_text_align(t->state, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_align(t->state, LV_ALIGN_TOP_RIGHT, 0, 8);
+        t->name = bz_label_line(t->tile, "", BZ_F_BODY_S, BZ_C_INK, HT_W - 2 * HT_PAD);
+        lv_obj_align(t->name, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+        t->kind = -1;
+        t->lit = -1;
+        lv_obj_add_flag(t->tile, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* before anything is picked (or reachable): what to do, and a tap into the app */
+    HM.ha_hint = card(r, HA_X, HA_W);
+    lv_obj_add_flag(HM.ha_hint, LV_OBJ_FLAG_CLICKABLE);
+    bz_on_tap(HM.ha_hint, open_tap, (void *)&APP_SMARTHOME);
+    bz_icon(HM.ha_hint, BZ_I_LIGHTBULB, 32, BZ_C_DIM);
+    lv_obj_t *hn = bz_label_line(HM.ha_hint, "smart home", BZ_F_NAME, BZ_C_INK, HA_W - 2 * BZ_PAD_TILE);
+    lv_obj_set_pos(hn, 0, 56);
+    HM.ha_hint_text = bz_label(HM.ha_hint, "", BZ_F_BODY_S, BZ_C_DIM);
+    lv_label_set_long_mode(HM.ha_hint_text, LV_LABEL_LONG_DOT);
+    lv_obj_set_size(HM.ha_hint_text, HA_W - 2 * BZ_PAD_TILE, 4 * lv_font_get_line_height(bz_font(BZ_F_BODY_S)));
+    lv_obj_set_pos(HM.ha_hint_text, 0, 98);
+}
+
+static void build_launcher(lv_obj_t *r)
+{
+    for (int i = 0; i < NLAUNCH; i++) {
+        const hm_app_t *a = &LAUNCH[i];
+        lv_obj_t *t = bz_tile(r, LN_W, LN_H);
+        lv_obj_set_pos(t, LN_X + i * (LN_W + LN_GAP), LN_Y);
+        lv_obj_set_style_pad_all(t, 0, 0);
+        lv_obj_set_style_radius(t, 28, 0);
+        if (a->action == 3) bz_tile_set_fill(t, BZ_C_SURFACE2); /* the way out, set apart by its tone */
+        lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
+        bz_on_tap(t, launch_tap, (void *)a);
+        lv_obj_t *ic = bz_icon(t, a->icon, 32, BZ_C_INK);
+        lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 18);
+        lv_obj_t *lb = bz_label_line(t, a->label, BZ_F_CAPTION, BZ_C_DIM, LN_W - 6);
+        lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_align(lb, LV_ALIGN_BOTTOM_MID, 0, -16);
+    }
 }
 
 static void build(void)
@@ -231,126 +439,11 @@ static void build(void)
     lv_obj_remove_flag(r, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_add_flag(r, LV_OBJ_FLAG_HIDDEN);
 
-    /* the time */
-    HM.greet = bz_label(r, "", BZ_F_LABEL, BZ_C_DIM);
-    lv_obj_set_pos(HM.greet, M + 4, 30);
-    HM.clock = bz_label(r, "--:--", BZ_F_CLOCK, BZ_C_INK);
-    lv_obj_set_pos(HM.clock, M - 4, 50);
-    HM.date = bz_label_line(r, "", BZ_F_NAME, BZ_C_DIM, 640);
-    lv_obj_set_pos(HM.date, M + 4, 204);
-
-    /* the weather, right-aligned */
-    lv_obj_t *wx = bz_col(r, 4);
-    lv_obj_set_width(wx, 480);
-    lv_obj_set_pos(wx, W - M - 480, 60);
-    lv_obj_set_flex_align(wx, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-    lv_obj_t *wr = bz_row(wx, 14);
-    lv_obj_set_flex_align(wr, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    HM.wx_icon = bz_icon(wr, BZ_I_THERMOMETER, 40, BZ_C_DIM);
-    HM.wx_temp = bz_label(wr, "", BZ_F_DISPLAY, BZ_C_INK);
-    HM.wx_line = bz_label_line(wx, "", BZ_F_BODY, BZ_C_DIM, 480);
-    lv_obj_set_style_text_align(HM.wx_line, LV_TEXT_ALIGN_RIGHT, 0);
-    HM.wx_place = bz_label_line(wx, "", BZ_F_CAPTION, BZ_C_DIM, 480);
-    lv_obj_set_style_text_align(HM.wx_place, LV_TEXT_ALIGN_RIGHT, 0);
-
-    /* now playing */
-    lv_obj_t *np = bz_tile(r, NP_W, ROW2_H);
-    HM.np = np;
-    lv_obj_set_pos(np, M, ROW2_Y);
-    lv_obj_t *artbox = bz_tile(np, ART, ART);
-    lv_obj_add_style(artbox, bz_style_fill(BZ_C_SURFACE3), 0);
-    lv_obj_set_style_radius(artbox, 20, 0);
-    lv_obj_set_style_pad_all(artbox, 0, 0);
-    lv_obj_set_style_clip_corner(artbox, true, 0);
-    lv_obj_set_pos(artbox, 0, (ROW2_H - 2 * BZ_PAD_TILE - ART) / 2);
-    lv_obj_remove_flag(artbox, LV_OBJ_FLAG_CLICKABLE);
-    HM.np_ph = bz_icon(artbox, BZ_I_GRAPHIC_EQ, 40, BZ_C_DIM);
-    lv_obj_center(HM.np_ph);
-    HM.np_img = lv_image_create(artbox);
-    lv_obj_set_pos(HM.np_img, 0, 0);
-    lv_obj_add_flag(HM.np_img, LV_OBJ_FLAG_HIDDEN);
-    HM.np_src = bz_label_line(np, "", BZ_F_LABEL, BZ_C_DIM, NP_TW);
-    lv_obj_set_pos(HM.np_src, NP_TX, 0);
-    HM.np_title = bz_label_line(np, "", BZ_F_NAME, BZ_C_INK, NP_TW);
-    lv_obj_set_pos(HM.np_title, NP_TX, 24);
-    HM.np_artist = bz_label_line(np, "", BZ_F_BODY, BZ_C_DIM, NP_TW);
-    lv_obj_set_pos(HM.np_artist, NP_TX, 60);
-    HM.np_meter = bz_meter(np, NP_TW - 110, 6);
-    lv_obj_set_pos(HM.np_meter, NP_TX, 104);
-    HM.np_time = bz_label_line(np, "", BZ_F_CAPTION, BZ_C_DIM, 100);
-    lv_obj_set_style_text_align(HM.np_time, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_pos(HM.np_time, NP_TX + NP_TW - 100, 96);
-    lv_obj_t *ctl = bz_row(np, 10);
-    lv_obj_set_pos(ctl, NP_TX, ROW2_H - 2 * BZ_PAD_TILE - 56);
-    HM.np_prev = round_button(ctl, BZ_I_ARROW_BACK, "previous");
-    HM.np_play = round_button(ctl, BZ_I_PLAY_ARROW, "toggle");
-    ui_chip_set(HM.np_play, true);
-    HM.np_next = round_button(ctl, BZ_I_ARROW_FORWARD, "next");
-    lv_obj_t *gap = bz_box(ctl);
-    lv_obj_set_size(gap, 18, 1);
-    HM.np_vdn = round_button(ctl, BZ_I_REMOVE, "volume_down");
-    HM.np_vup = round_button(ctl, BZ_I_ADD, "volume_up");
-
-    /* the companion: a face that opens it */
-    lv_obj_t *cp = bz_tile(r, CP_W, ROW2_H);
-    HM.face = cp;
-    lv_obj_set_pos(cp, CP_X, ROW2_Y);
-    lv_obj_add_flag(cp, LV_OBJ_FLAG_CLICKABLE);
-    bz_on_tap(cp, face_tap, NULL);
-    for (int i = 0; i < 2; i++) {
-        lv_obj_t *e = lv_obj_create(cp);
-        lv_obj_remove_style_all(e);
-        lv_obj_add_style(e, bz_style_fill(BZ_C_INK), 0);
-        lv_obj_set_style_radius(e, 18, 0);
-        lv_obj_set_size(e, EYE_W, EYE_H);
-        lv_obj_remove_flag(e, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(e, LV_ALIGN_TOP_MID, (i ? 1 : -1) * 48, 22);
-        HM.eye[i] = e;
-    }
-    lv_obj_t *cl = bz_label(cp, "companion", BZ_F_NAME, BZ_C_INK);
-    lv_obj_align(cl, LV_ALIGN_BOTTOM_LEFT, 0, -24);
-    lv_obj_t *cc = bz_label(cp, "tap to talk \xc2\xb7 claude code on the pc", BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_align(cc, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-
-    /* the smart home */
-    HM.ha = calloc(TILES, sizeof *HM.ha);
-    for (int i = 0; HM.ha && i < TILES; i++) {
-        ha_tile_t *t = &HM.ha[i];
-        t->tile = bz_tile(r, TILE_W, ROW3_H);
-        lv_obj_set_pos(t->tile, M + i * (TILE_W + BZ_GAP), ROW3_Y);
-        lv_obj_set_style_pad_all(t->tile, 18, 0);
-        lv_obj_add_flag(t->tile, LV_OBJ_FLAG_CLICKABLE);
-        bz_on_tap(t->tile, ha_tap, (void *)(intptr_t)i);
-        t->icon = bz_icon(t->tile, BZ_I_HOME, 32, BZ_C_INK);
-        t->state = bz_label_line(t->tile, "", BZ_F_LABEL, BZ_C_DIM, TILE_W - 36 - 44);
-        lv_obj_set_style_text_align(t->state, LV_TEXT_ALIGN_RIGHT, 0);
-        lv_obj_align(t->state, LV_ALIGN_TOP_RIGHT, 0, 6);
-        t->name = bz_label_line(t->tile, "", BZ_F_BODY_S, BZ_C_INK, TILE_W - 36);
-        lv_obj_align(t->name, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        t->kind = -1;
-        lv_obj_add_flag(t->tile, LV_OBJ_FLAG_HIDDEN);
-    }
-    HM.ha_hint = bz_tile(r, W - 2 * M, ROW3_H);
-    lv_obj_set_pos(HM.ha_hint, M, ROW3_Y);
-    lv_obj_add_flag(HM.ha_hint, LV_OBJ_FLAG_CLICKABLE);
-    bz_on_tap(HM.ha_hint, ha_hint_tap, NULL);
-    lv_obj_set_flex_flow(HM.ha_hint, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(HM.ha_hint, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_column(HM.ha_hint, 18, 0);
-    bz_icon(HM.ha_hint, BZ_I_LIGHTBULB, 32, BZ_C_DIM);
-    lv_obj_t *hc = bz_col(HM.ha_hint, 4);
-    bz_label(hc, "smart home", BZ_F_NAME, BZ_C_INK);
-    HM.ha_hint_text = bz_label_line(hc, "", BZ_F_BODY_S, BZ_C_DIM, W - 2 * M - 120);
-
-    /* the way back, music, settings, and a line of status */
-    lv_obj_t *foot = bz_row(r, 10);
-    lv_obj_set_pos(foot, M, FOOT_Y);
-    ui_button(foot, BZ_I_SMART_TOY, "catalyst mode", to_catalyst, NULL);
-    ui_button(foot, BZ_I_GRAPHIC_EQ, "music", open_app, (void *)&APP_MUSIC);
-    ui_button(foot, BZ_I_SETTINGS, "settings", to_settings, NULL);
-    HM.status = bz_label_line(r, "", BZ_F_LABEL, BZ_C_DIM, 520);
-    lv_obj_set_style_text_align(HM.status, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_pos(HM.status, W - M - 520, FOOT_Y + 18);
+    build_top(r);
+    build_playing(r);
+    build_companion(r);
+    build_home(r);
+    build_launcher(r);
 
     HM.art = malloc((size_t)ART * ART * 2);
     HM.art_dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -365,7 +458,7 @@ static void build(void)
 
 /* ---- what changes ---- */
 
-static const char *ha_icon(home_ha_kind_t k, const char *unit)
+const char *hm_ha_icon(home_ha_kind_t k, const char *unit)
 {
     switch (k) {
     case HA_LIGHT: return BZ_I_LIGHTBULB;
@@ -384,14 +477,31 @@ static const char *ha_icon(home_ha_kind_t k, const char *unit)
     }
 }
 
-static void ha_state_text(const home_ha_entity_t *e, char *out, size_t n)
+void hm_ha_state_text(const home_ha_entity_t *e, char *out, size_t n)
 {
     if (e->pending) snprintf(out, n, "...");
-    else if (e->kind == HA_SCENE || e->kind == HA_SCRIPT || e->kind == HA_BUTTON)
-        snprintf(out, n, "%s", !strcmp(e->state, "unavailable") ? "away" : "tap");
+    else if (!strcmp(e->state, "unavailable")) snprintf(out, n, "away");
+    else if (e->kind == HA_SCENE || e->kind == HA_SCRIPT || e->kind == HA_BUTTON) snprintf(out, n, "tap");
+    else if (e->kind == HA_LIGHT && e->on && e->brightness > 0) snprintf(out, n, "%d %%", e->brightness);
+    else if (e->kind == HA_CLIMATE && !isnan(e->current)) snprintf(out, n, "%.1f\xc2\xb0", e->current);
     else if (e->unit[0]) snprintf(out, n, "%s %s", e->state, e->unit);
     else if (!e->state[0]) snprintf(out, n, "\xe2\x80\x94");
     else snprintf(out, n, "%s", e->state);
+}
+
+const char *hm_wx_icon(int code, bool day)
+{
+    if (code >= 0 && code <= 1) return day ? BZ_I_LIGHT_MODE : BZ_I_DARK_MODE;
+    if (code >= 95) return BZ_I_ELECTRIC_BOLT;
+    return BZ_I_THERMOMETER;
+}
+
+static void show(lv_obj_t *o, bool on)
+{
+    if (on == lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) {
+        if (on) lv_obj_remove_flag(o, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 static void refresh_ha(void)
@@ -400,18 +510,19 @@ static void refresh_ha(void)
     home_ha_status(&st);
     if (st.gen == HM.ha_gen && HM.ha_gen) return;
     HM.ha_gen = st.gen;
-    home_ha_entity_t tiles[TILES];
-    int n = st.configured ? home_ha_tiles(tiles, TILES) : 0;
-    if (!st.configured || n == 0) {
-        ui_text(HM.ha_hint_text, "%s", !st.configured ? "Add Home Assistant in settings, home: its address and a long-lived token."
-                                                       : "Pick lights, switches and sensors to show here: settings, home.");
-        lv_obj_remove_flag(HM.ha_hint, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(HM.ha_hint, LV_OBJ_FLAG_HIDDEN);
+    static home_ha_entity_t tiles[HM_HOME_TILES]; /* the ui component's statics are in PSRAM, not on the stack */
+    int n = st.configured ? home_ha_tiles(tiles, HM_HOME_TILES) : 0;
+    bool never = st.configured && !st.ok && st.last_ok == 0 && st.err[0]; /* not reached yet: say why */
+    bool hint = !st.configured || n == 0 || never;
+    if (hint) {
+        ui_text(HM.ha_hint_text, "%s", !st.configured ? "Add Home Assistant in settings: its address and a token."
+                                       : never ? st.err
+                                       : "Pick lights, switches and sensors to show here.");
     }
-    for (int i = 0; HM.ha && i < TILES; i++) {
+    show(HM.ha_hint, hint);
+    for (int i = 0; i < HM_HOME_TILES; i++) {
         ha_tile_t *t = &HM.ha[i];
-        if (i >= n) {
+        if (hint || i >= n) {
             if (t->used) lv_obj_add_flag(t->tile, LV_OBJ_FLAG_HIDDEN);
             t->used = false;
             continue;
@@ -422,24 +533,21 @@ static void refresh_ha(void)
         snprintf(t->id, sizeof t->id, "%s", e->id);
         if (t->kind != (int)e->kind) {
             t->kind = (int)e->kind;
-            bz_icon_set(t->icon, ha_icon(e->kind, e->unit), 32, false);
+            bz_icon_set(t->icon, hm_ha_icon(e->kind, e->unit), 32, false);
         }
         ui_text(t->name, "%s", e->name);
         char s[40];
-        ha_state_text(e, s, sizeof s);
+        hm_ha_state_text(e, s, sizeof s);
         ui_text(t->state, "%s", s);
-        bool on = e->on && e->actionable;
-        if (on != t->on || !t->shown_state[0]) {
-            t->on = on;
-            snprintf(t->shown_state, sizeof t->shown_state, "set");
-            bz_tile_set_fill(t->tile, on ? BZ_C_ICE : BZ_C_SURFACE1);
-            bz_set_color(t->icon, on ? BZ_C_ON_ICE : BZ_C_INK);
-            bz_set_color(t->name, on ? BZ_C_ON_ICE : BZ_C_INK);
-            bz_set_color(t->state, on ? BZ_C_ON_ICE : BZ_C_DIM);
+        int lit = e->on && e->actionable;
+        if (lit != t->lit) {
+            t->lit = lit;
+            bz_tile_set_fill(t->tile, lit ? BZ_C_ICE : BZ_C_SURFACE1);
+            bz_set_color(t->icon, lit ? BZ_C_ON_ICE : BZ_C_INK);
+            bz_set_color(t->name, lit ? BZ_C_ON_ICE : BZ_C_INK);
+            bz_set_color(t->state, lit ? BZ_C_ON_ICE : BZ_C_DIM);
         }
     }
-    if (st.configured && !st.ok && st.err[0]) ui_text(HM.status, "home assistant: %s", st.err);
-    else ui_text(HM.status, "%s", "");
 }
 
 static void refresh_weather(void)
@@ -447,33 +555,29 @@ static void refresh_weather(void)
     home_weather_t w;
     home_weather_get(&w);
     if (w.gen == HM.wx_gen && HM.wx_gen) return;
-    HM.wx_gen = w.gen;
-    if (!w.configured) {
+    HM.wx_gen = w.gen ? w.gen : 1;
+    if (!w.configured || !w.ok) {
         ui_text(HM.wx_temp, "%s", "");
-        ui_text(HM.wx_line, "%s", "the weather: set a place in settings, home");
-        ui_text(HM.wx_place, "%s", "");
-        lv_obj_add_flag(HM.wx_icon, LV_OBJ_FLAG_HIDDEN);
+        ui_text(HM.wx_line, "%s", !w.configured ? "set a place for the weather" : w.err[0] ? w.err : "looking up the weather");
+        ui_text(HM.wx_place, "%s", w.configured ? w.place : "");
+        show(HM.wx_icon, false);
         return;
     }
-    if (!w.ok) {
-        ui_text(HM.wx_temp, "%s", "");
-        ui_text(HM.wx_line, "%s", w.err[0] ? w.err : "looking up the weather");
-        ui_text(HM.wx_place, "%s", w.place);
-        lv_obj_add_flag(HM.wx_icon, LV_OBJ_FLAG_HIDDEN);
-        return;
+    const char *g = hm_wx_icon(w.code, w.day);
+    if (g != HM.wx_glyph) {
+        HM.wx_glyph = g;
+        bz_icon_set(HM.wx_icon, g, 40, false);
     }
-    lv_obj_remove_flag(HM.wx_icon, LV_OBJ_FLAG_HIDDEN);
-    bz_icon_set(HM.wx_icon, w.code <= 1 ? (w.day ? BZ_I_LIGHT_MODE : BZ_I_DARK_MODE)
-                            : w.code >= 95 ? BZ_I_ELECTRIC_BOLT : BZ_I_THERMOMETER, 40, false);
+    show(HM.wx_icon, true);
     ui_text(HM.wx_temp, "%.0f\xc2\xb0", w.temp);
     ui_text(HM.wx_line, "%s \xc2\xb7 %.0f\xc2\xb0 / %.0f\xc2\xb0", home_weather_text(w.code), w.hi, w.lo);
     ui_text(HM.wx_place, "%s", w.place);
 }
 
-static void set_art(bool show)
+static void set_art(bool show_it)
 {
-    if (show == HM.art_shown && !show) return;
-    if (show) {
+    if (show_it == HM.art_shown && !show_it) return;
+    if (show_it) {
         lv_image_cache_drop(&HM.art_dsc);
         lv_image_set_src(HM.np_img, &HM.art_dsc);
         lv_obj_invalidate(HM.np_img);
@@ -483,7 +587,7 @@ static void set_art(bool show)
         lv_obj_add_flag(HM.np_img, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(HM.np_ph, LV_OBJ_FLAG_HIDDEN);
     }
-    HM.art_shown = show;
+    HM.art_shown = show_it;
 }
 
 static void show_playing(bool playing)
@@ -491,6 +595,15 @@ static void show_playing(bool playing)
     if (playing == HM.playing_shown) return;
     HM.playing_shown = playing;
     bz_icon_set(lv_obj_get_child(HM.np_play, 0), playing ? BZ_I_PAUSE : BZ_I_PLAY_ARROW, 24, false);
+}
+
+/* the progress bar and its time only while there's a song: without one the hint has the room */
+static void show_progress(bool on)
+{
+    if (on == HM.progress_shown) return;
+    HM.progress_shown = on;
+    show(HM.np_meter, on);
+    show(HM.np_time, on);
 }
 
 static void refresh_media(void)
@@ -509,13 +622,14 @@ static void refresh_media(void)
     }
     if (local) {
         if (pl.gen != HM.pl_gen || !HM.pl_gen) {
-            HM.pl_gen = pl.gen;
+            HM.pl_gen = pl.gen ? pl.gen : 1;
             ui_text(HM.np_src, "%s", "this tablet \xc2\xb7 microsd");
             ui_text(HM.np_title, "%s", pl.title);
             ui_text(HM.np_artist, "%s", pl.state == HP_LOADING ? "starting" : pl.state == HP_PAUSED ? "paused" : "playing");
             show_playing(pl.state != HP_PAUSED);
+            show_progress(true);
         }
-        if (tick || pl.gen != HM.pl_gen) {
+        if (tick) {
             char a[16], b[16];
             hm_fmt_time(pl.position, a, sizeof a);
             hm_fmt_time(pl.duration, b, sizeof b);
@@ -531,35 +645,36 @@ static void refresh_media(void)
         if (!hm_cfg()->pc) {
             ui_text(HM.np_src, "%s", "music");
             ui_text(HM.np_title, "%s", "Nothing playing");
-            ui_text(HM.np_artist, "%s", "tap music for the songs on the card");
+            ui_text(HM.np_artist, "%s", "tap the art for the songs on the card");
         } else if (pc.have) {
             ui_text(HM.np_src, "on the pc \xc2\xb7 %s", pc.app[0] ? pc.app : "media");
             ui_text(HM.np_title, "%s", pc.title[0] ? pc.title : "untitled");
-            ui_text(HM.np_artist, "%s", pc.artist[0] ? pc.artist : pc.album);
+            if (pc.artist[0] && pc.album[0]) ui_text(HM.np_artist, "%s\n%s", pc.artist, pc.album);
+            else ui_text(HM.np_artist, "%s", pc.artist[0] ? pc.artist : pc.album);
         } else {
             ui_text(HM.np_src, "%s", pc.link ? "the pc" : "music");
             ui_text(HM.np_title, "%s", "Nothing playing");
             ui_text(HM.np_artist, "%s", pc.link && !pc.available && pc.reason[0] ? pc.reason
-                                        : pc.link ? "play something on the pc, or tap music for the card"
-                                        : "pair the pc (settings, pc link) or tap music for the card");
+                                        : pc.link ? "play something on the pc, or tap the art"
+                                        : "pair the pc in settings, home, for its music");
         }
         show_playing(pc.have && pc.playing);
+        show_progress(pc.have && pc.duration > 0);
         if (pc.art_gen != HM.art_gen) {
             HM.art_gen = pc.art_gen;
             set_art(HM.art && pc.art && home_pc_art(HM.art));
         }
         if (!pc.have) set_art(false);
     }
-    if (tick) {
+    if (tick && HM.progress_shown) {
         double pos = pc.position;
         if (pc.have && pc.playing && pos >= 0) pos += now - pc.at;
         if (pc.duration > 0 && pos > pc.duration) pos = pc.duration;
         char a[16], b[16];
-        hm_fmt_time(pc.have ? pos : -1, a, sizeof a);
-        hm_fmt_time(pc.have ? pc.duration : -1, b, sizeof b);
-        if (pc.have && pc.duration > 0) ui_text(HM.np_time, "%s / %s", a, b);
-        else ui_text(HM.np_time, "%s", pc.have && pos >= 0 ? a : "");
-        bz_meter_set(HM.np_meter, pc.have && pc.duration > 0 ? (float)(pos / pc.duration) : 0, BZ_C_ICE);
+        hm_fmt_time(pos, a, sizeof a);
+        hm_fmt_time(pc.duration, b, sizeof b);
+        ui_text(HM.np_time, "%s / %s", a, b);
+        bz_meter_set(HM.np_meter, pc.duration > 0 ? (float)(pos / pc.duration) : 0, BZ_C_ICE);
     }
 }
 
@@ -574,6 +689,9 @@ static void refresh_clock(void)
         ui_text(HM.clock, "%d:%02d", tm.tm_hour, tm.tm_min);
         char d[40];
         strftime(d, sizeof d, "%A, %B %e", &tm);
+        for (char *c = d; *c; c++) *c = (char)tolower((unsigned char)*c); /* lowercase, like the rest */
+        char *dd = strstr(d, "  "); /* %e pads a single day with a space */
+        if (dd) memmove(dd, dd + 1, strlen(dd));
         ui_text(HM.date, "%s", d);
         ui_text(HM.greet, "%s", tm.tm_hour < 5 ? "late night" : tm.tm_hour < 12 ? "good morning"
                                 : tm.tm_hour < 18 ? "good afternoon" : "good evening");
@@ -588,7 +706,7 @@ static void hm_refresh(void *u)
 {
     (void)u;
     if (!HM.active || HM.sheet) return;
-    /* the network only for what's on screen: with an app over it, only the music card's source */
+    /* the network only for what's on screen: with an app over it, the app asks for its own */
     if (ui_app_any_open()) return;
     home_want(HOME_WANT_PC | HOME_WANT_HA | HOME_WANT_WEATHER);
     refresh_clock();
@@ -670,6 +788,8 @@ void ui_home_mode_trigger(ui_home_why_t why, bool present)
         if (HM.active || HM.want > 0) return;
         HM.why = why;
         HM.want = 1;
+        /* the tag is a deliberate act: whatever app was open gives way (the stand waits for it instead) */
+        if (why == UI_HOME_BY_TAG && ui_app_any_open()) ui_app_close();
     } else if (HM.active && HM.why == why && why != UI_HOME_BY_HAND) {
         HM.want = -1;
     }
@@ -722,6 +842,80 @@ static void stand_tick(double now)
     }
 }
 
+/* ---- the NFC tag ----
+ * The reader's task (hal_tab5_nfc.c) keeps the card in the field; this reads it ten times a second on the UI
+ * thread, so home mode is only ever touched from here. The tag arriving asks for home mode at once; it has to
+ * be gone TAG_DEBOUNCE_S before home mode hears it left (a tag at the edge of the field flickers). */
+static void tag_tick(double now)
+{
+    static double next;
+    if (now < next) return;
+    next = now + 0.1;
+    if (!hal_nfc_present()) {
+        if (HM.tag_pairing == 1) HM.tag_pairing = 0;
+        return;
+    }
+    char uid[24];
+    bool seen = hal_nfc_card(uid, sizeof uid);
+    hm_cfg_t *c = hm_cfg();
+    if (HM.tag_pairing == 1) {
+        if (seen) {
+            snprintf(c->tag, sizeof c->tag, "%s", uid); /* a UID, never a secret: fine in the log and on screen */
+            hm_cfg_save();
+            HM.tag_pairing = 2;
+            HM.tag_here = true; /* it's in the reader's field now: arriving doesn't count until it's left */
+            HM.tag_seen_at = now;
+            ui_island_say(BZ_I_HOME, "tag paired: it brings home mode");
+        } else if (now > HM.tag_pair_until) {
+            HM.tag_pairing = 0;
+        }
+        return;
+    }
+    if (!c->tag[0]) return;
+    bool mine = seen && !strcmp(uid, c->tag);
+    if (mine) {
+        HM.tag_seen_at = now;
+        if (!HM.tag_here) {
+            HM.tag_here = true;
+            ui_home_mode_trigger(UI_HOME_BY_TAG, true);
+        }
+    } else if (HM.tag_here && now - HM.tag_seen_at > TAG_DEBOUNCE_S) {
+        HM.tag_here = false;
+        ui_home_mode_trigger(UI_HOME_BY_TAG, false);
+    }
+}
+
+void hm_tag_pair_begin(void)
+{
+    HM.tag_pairing = 1;
+    HM.tag_pair_until = hal_seconds() + TAG_PAIR_S;
+}
+
+void hm_tag_pair_cancel(void)
+{
+    if (HM.tag_pairing == 1) HM.tag_pairing = 0;
+}
+
+int hm_tag_pair_state(void)
+{
+    if (!hal_nfc_present()) return -1;
+    int s = HM.tag_pairing;
+    if (s == 2) HM.tag_pairing = 0;
+    return s;
+}
+
+/* ---- the photos screensaver: the card's pictures after a while untouched, on home mode only ---- */
+static void saver_tick(void)
+{
+    int min = hm_cfg()->saver_min;
+    double idle = bz_ui_idle_s();
+    if (idle < 5) HM.saver_on = false; /* touched: the next idle spell may start it again */
+    if (!min || HM.saver_on || !HM.active || HM.sheet || HM.want || ui_app_any_open() || ui_asleep()) return;
+    if (idle < min * 60.0 || !hal_sd_root()) return;
+    HM.saver_on = true;
+    ui_photos_slideshow(NULL);
+}
+
 static void blink_tick(double now)
 {
     if (!HM.active || HM.sheet || ui_app_any_open() || ui_asleep()) return;
@@ -729,14 +923,14 @@ static void blink_tick(double now)
         HM.blinking = true;
         for (int i = 0; i < 2; i++) {
             lv_obj_set_height(HM.eye[i], 8);
-            lv_obj_align(HM.eye[i], LV_ALIGN_TOP_MID, (i ? 1 : -1) * 48, 22 + (EYE_H - 8) / 2);
+            lv_obj_align(HM.eye[i], LV_ALIGN_TOP_MID, (i ? 1 : -1) * EYE_DX, EYE_Y + (EYE_H - 8) / 2);
         }
         HM.blink_at = now + 0.13;
     } else if (HM.blinking && now >= HM.blink_at) {
         HM.blinking = false;
         for (int i = 0; i < 2; i++) {
             lv_obj_set_height(HM.eye[i], EYE_H);
-            lv_obj_align(HM.eye[i], LV_ALIGN_TOP_MID, (i ? 1 : -1) * 48, 22);
+            lv_obj_align(HM.eye[i], LV_ALIGN_TOP_MID, (i ? 1 : -1) * EYE_DX, EYE_Y);
         }
         HM.blink_at = now + 4 + (rand() % 5000) / 1000.0; /* 4-9 s */
     }
@@ -747,6 +941,7 @@ static void hm_frame(double now, double dt, void *user)
     (void)dt; (void)user;
     now = hal_seconds();
     stand_tick(now);
+    tag_tick(now);
     if (HM.sheet) {
         bool moving = bz_motion_tick(&HM.k);
         float k = HM.k.value < 0 ? 0 : HM.k.value > 1 ? 1 : HM.k.value;
@@ -771,6 +966,7 @@ static void hm_frame(double now, double dt, void *user)
         if (w > 0 && !HM.active) go(true);
         else if (w < 0 && HM.active) go(false);
     }
+    saver_tick();
     blink_tick(now);
 }
 

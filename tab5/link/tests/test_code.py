@@ -30,7 +30,7 @@ class AuthTest(LinkCase):
     def test_status_without_token_says_little(self) -> None:
         status, body = self.request("GET", "/link/status", token=None)
         self.assertEqual(status, 200)
-        self.assertEqual(set(body), {"ok", "name", "version", "auth"})
+        self.assertEqual(set(body), {"ok", "name", "version", "auth", "pairing"})
         self.assertFalse(body["auth"])
         self.assertEqual(body["name"], "test-pc")
 

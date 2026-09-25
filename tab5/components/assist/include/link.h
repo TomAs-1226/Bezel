@@ -61,6 +61,41 @@ bool link_post_queued(const char *path, const char *json);
 /* Upload a file from microSD (a recording, a clip, a log) to the Link's files/; queued if offline. */
 bool link_upload(const char *sd_path, const char *name);
 
+/* ---- pairing (docs/link-api.md, "Pairing") ----
+ * The tablet finds Links on the LAN (mDNS _catalyst-link._tcp), asks one to pair, and the Link shows a six-digit
+ * code on the PC; the code typed here gets the Link's token back. Each call only hands the work to the poller's
+ * thread and returns: poll link_pair_status() (and link_peers()) from the UI. */
+typedef struct {
+    char name[48];         /* the PC's name, as its mDNS record says */
+    char url[96];          /* "http://192.168.1.20:8765" */
+} link_peer_t;
+void link_discover(void);                           /* browse mDNS for Links (~2 s) */
+/* What the last browse found; *busy while it's still looking. */
+int link_peers(link_peer_t *out, int max, bool *busy);
+
+typedef enum {
+    LINK_PAIR_IDLE,
+    LINK_PAIR_ASKING,      /* asking the Link to show a code */
+    LINK_PAIR_CODE,        /* the code is on the PC: waiting for it here */
+    LINK_PAIR_CHECKING,    /* the code is on its way */
+    LINK_PAIR_DONE,        /* paired: link_pair_take() has the result */
+    LINK_PAIR_FAILED,      /* `msg` says why; start again */
+} link_pair_state_t;
+typedef struct {
+    link_pair_state_t state;
+    char msg[96];          /* what to say: "that code isn't it: 4 tries left" */
+    char name[48], url[96];
+    int tries_left;        /* after a wrong code; 0 unknown */
+    unsigned gen;          /* changes with anything above */
+} link_pair_t;
+void link_pair_start(const char *url, const char *device);
+void link_pair_code(const char *code);              /* the six digits typed */
+void link_pair_cancel(void);
+void link_pair_status(link_pair_t *out);
+/* Once LINK_PAIR_DONE: the address and token, handed over once (the UI saves them with hal_kv and calls
+ * link_configure). Never log the token. */
+bool link_pair_take(char *url, size_t un, char *token, size_t tn, char *name, size_t nn);
+
 /* The URL and headers for the Messages API through the Link: "http://…/v1/messages" and the token. */
 bool link_messages_endpoint(char *url, size_t n, char *headers, size_t hn);
 

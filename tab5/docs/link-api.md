@@ -7,17 +7,47 @@ the contract between `components/assist/src/link.c` (the tablet) and the `cataly
 
 ## Discovery and auth
 
-- Default port **8765**. The Link advertises `_catalyst-link._tcp` over mDNS with TXT `name=<pc>`.
-- Every request carries `X-Link-Token: <token>`. The Link prints its token (and writes it to
-  `~/.catalyst-link/token`) on first start; the technician types it into the tablet's settings once.
-  A missing or wrong token gets `401 {"ok":false,"error":"token"}`. `GET /link/status` answers
-  without a token (or with a wrong one) but then reports only `{"ok":true,"name","version","auth":false}`.
+- Default port **8765**. The Link advertises `_catalyst-link._tcp` over mDNS (with the optional
+  `zeroconf` package) with TXT `name=<pc>`, `version`, `path=/link/status` and `pair=1|0`.
+- Every request carries `X-Link-Token: <token>`. The Link writes its token to
+  `~/.catalyst-link/token` on first start. The tablet gets it by **pairing** (below): the PC shows a
+  six-digit code, the code typed on the tablet brings the token back. Typing the token by hand (the link
+  app's "token" button) still works. A missing or wrong token gets `401 {"ok":false,"error":"token"}`.
+  `GET /link/status` and the two pairing routes answer without a token; without one `/link/status`
+  reports only `{"ok":true,"name","version","auth":false,"pairing":true|false}`.
 - Bodies are JSON (`Content-Type: application/json`), UTF-8, sent with a `Content-Length` (chunked
   uploads get 411). Errors are `{"ok":false,"error":"…"}` with a 4xx/5xx status — except on
   `/v1/messages`, which answers in the Messages API's own error format (below). Bodies are capped:
   1 MB of JSON, 32 MB for `/v1/messages`, 64 MB for an upload (413 past that).
 - Every write request (and every refused token) is appended to `~/.catalyst-link/log.jsonl` with its
   outcome before the answer goes out.
+
+## Pairing
+
+The tablet's "pair pc" app (Settings › home › pair the pc, the link app's "pair", or the app library)
+browses mDNS for `_catalyst-link._tcp`, the owner picks a PC (or types its address), and:
+
+1. `POST /link/pair` `{"device":"catalyst tab"}` (no token) →
+   `{"ok":true,"pairing":"<id>","digits":6,"expires_in":120,"name":"<pc>"}`. The Link makes a six-digit
+   code and shows it **on the PC only**: in the console `catalyst-link serve` runs in, and as a Windows
+   notification (`serve --no-pair-toast` turns that off). The code never travels over the network.
+2. The owner types the code on the tablet: `POST /link/pair/confirm` `{"pairing":"<id>","code":"482913"}`
+   (spaces are ignored) → `{"ok":true,"token":"<the Link's token>","name":"<pc>"}`. The tablet saves the
+   address and token (`link_url`, `link_token`) exactly as if they had been typed, and every later request
+   carries the token — the assistant, the inbox and patches, and home mode's media remote
+   (`/media/now`, `/media/art`, `/media/control` go through this same paired connection).
+
+Errors: a wrong code is `403 {"ok":false,"error":"code","attempts_left":n}`; an unknown, used or expired
+pairing (or the fifth wrong code) is `410 {"ok":false,"error":"expired","why":"expired|tries"}` — start
+again for a new code; `429` when pairings come too fast; `403` with `serve --no-pair`.
+
+The guard rails: one pairing waits at a time (a new request replaces it, and its code), a code lives two
+minutes and takes five wrong tries, and at most one new pairing every 3 s and ten per 10 minutes. Six
+digits and five tries is a 1-in-200,000 chance per code. Whoever reads the PC's screen is the one
+pairing; a device elsewhere on the LAN can ask for a code but can't see it. The pairing routes are in
+`log.jsonl` (`"pairing":"started"|"paired"`), never with the code or the token. The token is the Link's
+one token (`catalyst-link token --rotate` makes a new one, and every paired tablet pairs again). The LAN
+carries it in plain HTTP, as it always has.
 
 ## Status
 

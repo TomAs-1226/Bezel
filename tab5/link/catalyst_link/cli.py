@@ -42,7 +42,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     cfg = Config(repo=Path(args.repo).expanduser(), port=args.port, bind=args.bind, check=args.check,
                  check_timeout=args.check_timeout, on_work_order=args.on_work_order,
                  claude=args.claude, claude_model=args.claude_model, claude_cli=args.claude_cli,
-                 media=not args.no_media)
+                 media=not args.no_media, pair=not args.no_pair, pair_toast=not args.no_pair_toast)
     if args.name:
         cfg.name = args.name
     state = _state()
@@ -55,7 +55,13 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  repo     {app.repo}  (branch {st['branch']}{', dirty' if st['dirty'] else ''}; never written to)")
     for a in addrs:
         print(f"  url      http://{a}:{port}")
-    print(f"  token    {state.token()}   (type this into the tablet's settings once)")
+    if cfg.pair:
+        print("  pairing  on: tap \"pair\" on the tablet; the code to type there shows up here"
+              + ("" if args.no_pair_toast else " (and as a notification)"))
+        print(f"  token    {state.token()}   (or type this into the tablet's pc link settings)")
+    else:
+        print(f"  pairing  off (--no-pair)")
+        print(f"  token    {state.token()}   (type this into the tablet's settings once)")
     print(f"  claude   {_claude_line(app)}")
     media_line = "on (the PC's now-playing, for the tablet's home mode)" if app.media.available else app.media.reason
     print(f"  media    {media_line}")
@@ -65,7 +71,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
     stop_mdns = None
     if not args.no_mdns:
         try:
-            stop_mdns = mdns.advertise(cfg.name, port, cfg.bind)
+            stop_mdns = mdns.advertise(cfg.name, port, cfg.bind, pair=cfg.pair)
         except Exception as exc:  # mDNS is a convenience; never fatal
             print(f"  mdns     failed: {exc}")
         print(f"  mdns     {'_catalyst-link._tcp' if stop_mdns else 'off (pip install zeroconf)'}")
@@ -318,6 +324,10 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-mdns", action="store_true", help="don't advertise over mDNS")
     s.add_argument("--no-media", action="store_true",
                    help="no media remote (the tablet's home mode then can't see or control what the PC plays)")
+    s.add_argument("--no-pair", action="store_true",
+                   help="no pairing by code: the tablet must be given the token by hand")
+    s.add_argument("--no-pair-toast", action="store_true",
+                   help="show the pairing code only in this console, not as a Windows notification")
     s.add_argument("--quiet", action="store_true", help="no per-request log lines")
     s.set_defaults(fn=cmd_serve)
 

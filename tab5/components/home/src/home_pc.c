@@ -118,11 +118,11 @@ static void read_now(char *buf)
     char want_art[24] = "";
     if (status == 404) {
         st.available = false;
-        snprintf(st.reason, sizeof st.reason, "the Link on the PC is older: update Catalyst Link for the media remote");
+        snprintf(st.reason, sizeof st.reason, "update catalyst link on the pc for its music");
         st.have = false;
     } else if (status == 401) {
         st.available = false;
-        snprintf(st.reason, sizeof st.reason, "the Link refused the token: pair it again in settings, pc link");
+        snprintf(st.reason, sizeof st.reason, "the pc refused the tablet: pair it again");
         st.have = false;
     } else if (status == 200) {
         home_json_t j;
@@ -243,7 +243,7 @@ void home_pc_work(double now, bool want)
             memset(&P->st.title, 0, sizeof P->st.title);
             P->st.link = P->st.have = P->st.playing = false;
             snprintf(P->st.reason, sizeof P->st.reason, "%s",
-                     ls.configured ? "the PC isn't answering" : "no PC paired: settings, pc link");
+                     ls.configured ? "the pc isn't answering" : "no pc paired: settings, home");
             P->st.gen++;
         }
         pthread_mutex_unlock(&g_lock);

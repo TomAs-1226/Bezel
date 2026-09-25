@@ -33,7 +33,7 @@ def local_addresses(bind: str) -> list[str]:
     return sorted(addrs)
 
 
-def advertise(name: str, port: int, bind: str) -> Callable[[], None] | None:
+def advertise(name: str, port: int, bind: str, pair: bool = True) -> Callable[[], None] | None:
     """Register the service; returns a function that unregisters it, or None without zeroconf."""
     try:
         from zeroconf import ServiceInfo, Zeroconf
@@ -48,7 +48,7 @@ def advertise(name: str, port: int, bind: str) -> Callable[[], None] | None:
         f"{label}.{SERVICE}",
         addresses=[socket.inet_aton(a) for a in addrs],
         port=port,
-        properties={"name": name, "version": __version__, "path": "/link/status"},
+        properties={"name": name, "version": __version__, "path": "/link/status", "pair": "1" if pair else "0"},
         server=f"{label}.local.",
     )
     zc = Zeroconf()

@@ -20,9 +20,9 @@
  *
  * Triggers: by hand (the app library's "home mode", Settings > home, the "catalyst" button to leave), at
  * boot (a setting), on the stand (upright, still and on external power for a minute, untouched; it leaves
- * again when lifted off or unplugged), and ui_home_mode_trigger() for anything added later — a Grove NFC
- * reader on Port A seeing the stand's tag would call ui_home_mode_trigger(UI_HOME_BY_TAG, true) on arrival
- * and (..., false) when the tag goes. */
+ * again when lifted off or unplugged), the NFC tag (an M5Stack Unit RFID 2 on Port A seeing the tag paired in
+ * Settings > home: ui_home_mode_trigger(UI_HOME_BY_TAG, true) on arrival, (..., false) 1.5 s after it goes),
+ * and ui_home_mode_trigger() for anything added later. */
 #pragma once
 #include "ui_internal.h"
 
@@ -54,5 +54,7 @@ bool ui_home_settings_wanted(void);
 /* The app library's "home mode" tile. */
 void ui_home_mode_tap(lv_obj_t *o, void *u);
 
-/* Music (ui_app_music.c): the microSD card's songs, and the PC's player. */
-extern const ui_app_t APP_MUSIC;
+/* Home mode's own apps. Music (ui_app_music.c): the microSD card's songs, and the PC's player. Smart home
+ * (ui_app_smarthome.c): every picked Home Assistant entity by room, with toggles, light levels and set points.
+ * Weather (ui_app_weather.c): now, the next 24 hours and the week, from Open-Meteo. */
+extern const ui_app_t APP_MUSIC, APP_SMARTHOME, APP_WEATHER;

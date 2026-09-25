@@ -247,6 +247,15 @@ int hal_can_read(hal_can_frame_t *out, int max);
 void hal_can_stats(hal_can_stats_t *out);
 void hal_can_stop(void);
 
+/* ---- NFC: M5Stack's Unit RFID 2 (WS1850S, MFRC522 registers, I2C 0x28) on Grove Port A ----
+ * The Tab5 has no NFC reader of its own. The unit is probed once, a few seconds after start-up; absent,
+ * nothing runs. Present, a low-priority task on core 0 looks for an ISO 14443A card every ~300 ms. Port A is
+ * also the CAN tap's: hal_can_start() takes the port from the reader until the next start-up. */
+bool hal_nfc_present(void);
+/* The card in the field now: its UID as upper-case hex ("04A1B2C3D4E5F6") into `uid`, true; false with none
+ * (or no reader). Any thread; no debouncing (a card at the edge of the field comes and goes). */
+bool hal_nfc_card(char *uid, size_t n);
+
 /* ---- system ---- */
 typedef struct {
     uint32_t psram_free, sram_free;

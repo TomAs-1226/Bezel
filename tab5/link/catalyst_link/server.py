@@ -21,6 +21,7 @@ from . import __version__, codeview
 from .files import Files
 from .inbox import Inbox
 from .media import Media
+from .pairing import Pairing, console_notify, toast_notify
 from .claude_code import ClaudeCodeBackend
 from .proxy import ClaudeProxy, api_error
 from .repo import Patches, repo_root, repo_status
@@ -47,6 +48,8 @@ class Config:
     claude_model: str | None = None   # claude-code only; None → Claude Code's own default
     claude_cli: str | None = None     # claude-code only; None → found (see claude_code.find_cli)
     media: bool = True                # the media remote (media.py): the PC's now-playing for the tablet
+    pair: bool = True                 # pairing by a code shown on the PC (pairing.py); off: type the token
+    pair_toast: bool = False          # also show the code as a Windows notification (the CLI turns it on)
 
 
 def pick_backend(cfg: Config, claude_client: Any | None) -> str:
@@ -57,7 +60,8 @@ def pick_backend(cfg: Config, claude_client: Any | None) -> str:
 
 class LinkApp:
     def __init__(self, cfg: Config, state: State, claude_client: Any | None = None,
-                 agent_factory: Any | None = None, media_platform: Any | None = None) -> None:
+                 agent_factory: Any | None = None, media_platform: Any | None = None,
+                 pair_notify: list[Any] | None = None) -> None:
         self.cfg = cfg
         self.state = state.ensure()
         self.repo = repo_root(cfg.repo)
@@ -69,6 +73,10 @@ class LinkApp:
         self.claude_backend = pick_backend(cfg, claude_client)
         # the PC's media session for the tablet's home mode; never fatal (media.py says why when it's absent)
         self.media = Media(media_platform, enabled=cfg.media)
+        # the tablet pairs by a code shown here; the console always shows it, a notification when asked
+        if pair_notify is None:
+            pair_notify = [console_notify] + ([toast_notify] if cfg.pair_toast else [])
+        self.pairing = Pairing(self.state.token, pair_notify, enabled=cfg.pair)
         self.proxy: ClaudeProxy | ClaudeCodeBackend | None
         if self.claude_backend == "api":
             self.proxy = ClaudeProxy(self.state, claude_client)
@@ -86,7 +94,8 @@ class LinkApp:
         return given is not None and hmac.compare_digest(given.strip().encode(), expected.encode())
 
     def status(self, authed: bool) -> dict[str, Any]:
-        base: dict[str, Any] = {"ok": True, "name": self.cfg.name, "version": __version__, "auth": authed}
+        base: dict[str, Any] = {"ok": True, "name": self.cfg.name, "version": __version__, "auth": authed,
+                                "pairing": self.cfg.pair}
         if not authed:
             return base
         counts = self.inbox.counts()
@@ -236,6 +245,10 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/link/status" and method == "GET":
                 return self._json(200, self.app.status(authed))
+            if path in self.PAIR_ROUTES:  # the way to get a token: no token needed
+                if method != "POST":
+                    raise LinkError(405, "method not allowed")
+                return self._pair(path)
             route = self._route(method, path)
             if route is None:
                 if self._known(path):
@@ -263,6 +276,18 @@ class Handler(BaseHTTPRequestHandler):
                 pass
         finally:
             self._write_audit()  # a request that ended without an answer (the tablet went away)
+
+    PAIR_ROUTES = ("/link/pair", "/link/pair/confirm")
+
+    def _pair(self, path: str) -> None:
+        body = self._body(4096)
+        if path == "/link/pair":
+            result = self.app.pairing.start(body, self.client_address[0], self.app.cfg.name)
+            self._audit.update(pairing="started", device=str(body.get("device") or "")[:48])
+        else:
+            result = self.app.pairing.confirm(body, self.app.cfg.name)
+            self._audit["pairing"] = "paired"  # the token is in the answer, never in the log
+        self._json(200, result)
 
     ROUTES: list[tuple[str, str, str]] = [
         ("GET", r"/code/tree", "code_tree"),

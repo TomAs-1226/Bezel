@@ -485,6 +485,7 @@ static const app_entry_t APPS_DIAG[] = {
 static const app_entry_t APPS_TABLET[] = {
     { &APP_ASSIST, BZ_I_AUTO_AWESOME, "assist", "ai technician" },
     { &APP_LINK, BZ_I_COMPUTER, "link", "pc, patches" },
+    { &APP_PAIR, BZ_I_LINK, "pair pc", "a code, once" },
     { &APP_COMPANION, BZ_I_VISIBILITY, "companion", "desk mode" },
     { &HOME_MODE_TILE, BZ_I_HOME, "home mode", "desk, music, lights" },
     { &APP_TIMER, BZ_I_TIMER, "timer", "match, stopwatch" },
@@ -503,6 +504,8 @@ static const app_entry_t APPS_EVERYDAY[] = {
     { &APP_PHOTOS, BZ_I_CAMERA, "photos", "pictures" },
     { &APP_STORAGE, BZ_I_SD_CARD, "storage", "card usage" },
     { &APP_MUSIC, BZ_I_GRAPHIC_EQ, "music", "card, the pc" },
+    { &APP_SMARTHOME, BZ_I_LIGHTBULB, "smart home", "lights, rooms" },
+    { &APP_WEATHER, BZ_I_LIGHT_MODE, "weather", "hours, the week" },
 };
 
 const ui_app_t *ui_app_find(const char *name)

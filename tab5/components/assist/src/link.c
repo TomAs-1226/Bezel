@@ -39,6 +39,19 @@ static struct {
 
 static pthread_mutex_t g_outbox = PTHREAD_MUTEX_INITIALIZER; /* one flusher / writer at a time */
 
+/* Pairing and discovery: asked for by the UI, done on the poller's thread (under L.lock). On the heap. */
+#define PEERS_MAX 6
+typedef struct {
+    link_pair_t st;
+    char id[40], code[8], device[48];
+    char token[80];        /* the result, until link_pair_take() */
+    bool want_start, want_code, taken;
+    bool disc_req, disc_busy;
+    link_peer_t peers[PEERS_MAX];
+    int npeers;
+} pair_t;
+static pair_t *P;
+
 /* "192.168.1.20" → "http://192.168.1.20:8765"; a trailing slash goes */
 static void normalize(const char *in, char *out, size_t n)
 {
@@ -79,6 +92,227 @@ static int request(const char *method, const char *path, const char *ctype, cons
 }
 
 int link_get(const char *path, char *out, int max) { return request("GET", path, NULL, NULL, 0, out, max, 15000); }
+
+/* ---- pairing (on the poller's thread) ---- */
+
+static void pair_say(link_pair_state_t state, const char *msg)
+{
+    P->st.state = state;
+    snprintf(P->st.msg, sizeof P->st.msg, "%s", msg);
+    P->st.gen++;
+}
+
+/* POST without a token, to the Link being paired (not necessarily the configured one) */
+static int pair_post(const char *base, const char *path, const char *json, char *out, int max)
+{
+    char url[160];
+    snprintf(url, sizeof url, "%s%s", base, path);
+    hal_http_req_t rq = { .method = "POST", .url = url,
+                          .headers = "Content-Type: application/json\r\nAccept: application/json\r\n",
+                          .body = json, .body_len = strlen(json), .timeout_ms = 6000 };
+    int len;
+    return hal_http_fetch(&rq, out, max, &len);
+}
+
+static void pair_discover(void)
+{
+    hal_service_t *sv = calloc(PEERS_MAX, sizeof *sv);
+    int n = sv ? hal_mdns_browse("_catalyst-link", "_tcp", sv, PEERS_MAX, 2000) : 0;
+    pthread_mutex_lock(&L.lock);
+    P->npeers = 0;
+    for (int i = 0; i < n; i++) {
+        link_peer_t pe;
+        snprintf(pe.url, sizeof pe.url, "http://%s:%d", sv[i].ip[0] ? sv[i].ip : sv[i].host, sv[i].port ? sv[i].port : 8765);
+        snprintf(pe.name, sizeof pe.name, "%s", sv[i].name[0] ? sv[i].name : sv[i].host);
+        bool dup = false;
+        for (int k = 0; k < P->npeers; k++) dup = dup || !strcmp(P->peers[k].url, pe.url);
+        if (!dup) P->peers[P->npeers++] = pe;
+    }
+    P->disc_busy = false;
+    pthread_mutex_unlock(&L.lock);
+    free(sv);
+}
+
+static void pair_begin(const char *base, const char *device)
+{
+    char body[128], dev[48];
+    /* the device's name goes into JSON: plain characters only */
+    size_t o = 0;
+    for (const char *c = device; *c && o + 1 < sizeof dev; c++)
+        if ((*c >= 'a' && *c <= 'z') || (*c >= 'A' && *c <= 'Z') || (*c >= '0' && *c <= '9') || *c == ' ' || *c == '-')
+            dev[o++] = *c;
+    dev[o] = 0;
+    snprintf(body, sizeof body, "{\"device\":\"%s\"}", dev);
+    char *buf = malloc(1024);
+    int st = buf ? pair_post(base, "/link/pair", body, buf, 1024) : -1;
+    aj_t *d = st == 200 ? aj_parse(buf, strlen(buf), NULL, 0) : NULL;
+    pthread_mutex_lock(&L.lock);
+    const char *id = d ? aj_gets(d, "pairing") : NULL;
+    if (id && id[0]) {
+        snprintf(P->id, sizeof P->id, "%s", id);
+        const char *nm = aj_gets(d, "name");
+        if (nm && nm[0]) snprintf(P->st.name, sizeof P->st.name, "%s", nm);
+        P->st.tries_left = 0;
+        pair_say(LINK_PAIR_CODE, "type the code the pc shows");
+    } else if (st == 403) {
+        pair_say(LINK_PAIR_FAILED, "pairing is off on that pc: type its token instead");
+    } else if (st == 429) {
+        pair_say(LINK_PAIR_FAILED, "the pc asks to wait a moment: try again");
+    } else if (st == 404 || st == 405) {
+        pair_say(LINK_PAIR_FAILED, "that catalyst link is older: update it, or type its token");
+    } else if (st < 0) {
+        pair_say(LINK_PAIR_FAILED, "the pc isn't answering");
+    } else {
+        char m[48];
+        snprintf(m, sizeof m, "the pc answered %d", st);
+        pair_say(LINK_PAIR_FAILED, m);
+    }
+    pthread_mutex_unlock(&L.lock);
+    aj_free(d);
+    free(buf);
+}
+
+static void pair_confirm(const char *base, const char *id, const char *code)
+{
+    char body[128];
+    snprintf(body, sizeof body, "{\"pairing\":\"%s\",\"code\":\"%s\"}", id, code);
+    char *buf = malloc(1024);
+    int st = buf ? pair_post(base, "/link/pair/confirm", body, buf, 1024) : -1;
+    aj_t *d = st > 0 ? aj_parse(buf, strlen(buf), NULL, 0) : NULL;
+    pthread_mutex_lock(&L.lock);
+    const char *tok = st == 200 && d ? aj_gets(d, "token") : NULL;
+    if (tok && tok[0] && strlen(tok) < sizeof P->token) {
+        snprintf(P->token, sizeof P->token, "%s", tok);
+        const char *nm = aj_gets(d, "name");
+        if (nm && nm[0]) snprintf(P->st.name, sizeof P->st.name, "%s", nm);
+        P->taken = false;
+        pair_say(LINK_PAIR_DONE, "paired");
+    } else if (st == 403) {
+        int left = d ? (int)aj_getn(d, "attempts_left", 0) : 0;
+        P->st.tries_left = left;
+        char m[64];
+        snprintf(m, sizeof m, "that isn't the code: %d %s left", left, left == 1 ? "try" : "tries");
+        pair_say(LINK_PAIR_CODE, m);
+    } else if (st == 410) {
+        pair_say(LINK_PAIR_FAILED, "that code has run out: start again for a new one");
+    } else {
+        pair_say(LINK_PAIR_FAILED, st < 0 ? "the pc isn't answering" : "the pc refused the code");
+    }
+    pthread_mutex_unlock(&L.lock);
+    aj_free(d); /* the token was in there, and in buf: neither outlives this */
+    if (buf) memset(buf, 0, 1024);
+    free(buf);
+}
+
+static void pair_work(void)
+{
+    if (!P) return;
+    char url[96], dev[48], id[40], code[8];
+    pthread_mutex_lock(&L.lock);
+    bool disc = P->disc_req, start = P->want_start, confirm = P->want_code;
+    P->disc_req = P->want_start = P->want_code = false;
+    snprintf(url, sizeof url, "%s", P->st.url);
+    snprintf(dev, sizeof dev, "%s", P->device);
+    snprintf(id, sizeof id, "%s", P->id);
+    snprintf(code, sizeof code, "%s", P->code);
+    pthread_mutex_unlock(&L.lock);
+    if (disc) pair_discover();
+    if (start) pair_begin(url, dev);
+    if (confirm) pair_confirm(url, id, code);
+}
+
+void link_discover(void)
+{
+    if (!P) return;
+    pthread_mutex_lock(&L.lock);
+    P->disc_req = true;
+    P->disc_busy = true;
+    pthread_mutex_unlock(&L.lock);
+    L.kick = true;
+}
+
+int link_peers(link_peer_t *out, int max, bool *busy)
+{
+    if (!P) {
+        if (busy) *busy = false;
+        return 0;
+    }
+    pthread_mutex_lock(&L.lock);
+    int n = P->npeers < max ? P->npeers : max;
+    memcpy(out, P->peers, (size_t)(n > 0 ? n : 0) * sizeof *out);
+    if (busy) *busy = P->disc_busy;
+    pthread_mutex_unlock(&L.lock);
+    return n;
+}
+
+void link_pair_start(const char *url, const char *device)
+{
+    if (!P) return;
+    pthread_mutex_lock(&L.lock);
+    normalize(url, P->st.url, sizeof P->st.url);
+    snprintf(P->device, sizeof P->device, "%s", device ? device : "catalyst tab");
+    P->st.name[0] = 0;
+    P->id[0] = 0;
+    P->want_start = true;
+    P->want_code = false;
+    pair_say(LINK_PAIR_ASKING, "asking the pc for a code");
+    pthread_mutex_unlock(&L.lock);
+    L.kick = true;
+}
+
+void link_pair_code(const char *code)
+{
+    if (!P) return;
+    pthread_mutex_lock(&L.lock);
+    if (P->st.state == LINK_PAIR_CODE && P->id[0]) {
+        size_t o = 0;
+        for (const char *c = code; *c && o + 1 < sizeof P->code; c++)
+            if (*c >= '0' && *c <= '9') P->code[o++] = *c;
+        P->code[o] = 0;
+        P->want_code = true;
+        pair_say(LINK_PAIR_CHECKING, "checking the code");
+    }
+    pthread_mutex_unlock(&L.lock);
+    L.kick = true;
+}
+
+void link_pair_cancel(void)
+{
+    if (!P) return;
+    pthread_mutex_lock(&L.lock);
+    P->want_start = P->want_code = false;
+    P->id[0] = 0;
+    memset(P->token, 0, sizeof P->token);
+    pair_say(LINK_PAIR_IDLE, "");
+    pthread_mutex_unlock(&L.lock);
+}
+
+void link_pair_status(link_pair_t *out)
+{
+    if (!P) {
+        memset(out, 0, sizeof *out);
+        return;
+    }
+    pthread_mutex_lock(&L.lock);
+    *out = P->st;
+    pthread_mutex_unlock(&L.lock);
+}
+
+bool link_pair_take(char *url, size_t un, char *token, size_t tn, char *name, size_t nn)
+{
+    if (!P) return false;
+    pthread_mutex_lock(&L.lock);
+    bool ok = P->st.state == LINK_PAIR_DONE && !P->taken && P->token[0];
+    if (ok) {
+        snprintf(url, un, "%s", P->st.url);
+        snprintf(token, tn, "%s", P->token);
+        snprintf(name, nn, "%s", P->st.name);
+        memset(P->token, 0, sizeof P->token);
+        P->taken = true;
+    }
+    pthread_mutex_unlock(&L.lock);
+    return ok;
+}
 
 int link_post(const char *path, const char *json, char *out, int max)
 {
@@ -288,7 +522,8 @@ static void poll_status(void)
 {
     char *buf = malloc(4096);
     if (!buf) return;
-    int st = link_get("/link/status", buf, 4096);
+    /* a short timeout: a dead address mustn't hold pairing up on this thread for long */
+    int st = request("GET", "/link/status", NULL, NULL, 0, buf, 4096, 5000);
     aj_t *d = st == 200 ? aj_parse(buf, strlen(buf), NULL, 0) : NULL;
     pthread_mutex_lock(&L.lock);
     L.st.reachable = d && aj_is(aj_get(d, "ok"), AJ_TRUE);
@@ -359,6 +594,7 @@ static void *poller(void *arg)
     (void)arg;
     double last_mdns = -1e9;
     for (;;) {
+        pair_work(); /* first: someone is waiting at the screen for it */
         pthread_mutex_lock(&L.lock);
         bool have = L.url[0] != 0;
         bool want_lists = hal_seconds() - L.lists_read < 30;
@@ -378,6 +614,7 @@ static void *poller(void *arg)
             }
         }
         if (have) {
+            pair_work();
             poll_status();
             if (reachable_now()) {
                 flush_outbox();
@@ -409,6 +646,7 @@ void link_init(void)
     hal_kv_get("link_url", url, sizeof url);
     hal_kv_get("link_token", token, sizeof token);
     pthread_mutex_lock(&L.lock);
+    if (!P) P = calloc(1, sizeof *P);
     if (!L.inbox) {
         L.inbox = calloc(LIST_MAX, sizeof *L.inbox);
         L.patches = calloc(LIST_MAX, sizeof *L.patches);
