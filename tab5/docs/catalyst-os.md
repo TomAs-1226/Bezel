@@ -88,7 +88,67 @@ Two paths, chosen per motion:
 | assistant | `components/assist`, Catalyst Link | Claude via the PC or a key; GPT with a key (branch tab5-companion) |
 | audio | `hal_tab5_audio.c` | one speaker task mixing tones and streamed speech (48 kHz); microphones at 16 kHz, on only while the companion is on screen; ESP-SR WakeNet "Hi, ESP" from the `model` partition |
 | voice | `components/assist/src/voice.c` | the companion's own conversation: wake word or tap, energy VAD, OpenAI transcription, a JSON reply with a feeling, OpenAI speech streamed to the speaker |
+| match alerts | `ui_match.c`, `components/home/src/home_tba.c` | alarms before the team's matches from The Blue Alliance; schedule changes as notifications (below) |
+| log analysis | `components/assist/src/analyze.c`, `components/catalyst/src/cat_logs.c` | a log's digest read by a GPT pit engineer (below) |
 | home mode | `ui_home_mode.c`, `components/home` | the desk surface (time, weather, the PC's music, Home Assistant, the companion) and its launcher: music, smart home, weather, calendar, timer, alarms, photos (and a photos screensaver); comes up by hand, at boot, on the stand, or from an NFC tag on a Unit RFID 2 in Port A |
+
+#### Match alerts
+
+An alarm before each of the team's matches at its current event (team from settings, key `TBA_API_KEY` in
+`CATOS/KEYS.ENV`), whatever is on screen.
+
+- **Data.** `tba.h` on the home worker, as the blue alliance app uses it; `ui_match.c` only calls `tba_want()`
+  once per background poll (every 2 min on an event day while a match of ours is to come, every 30 min otherwise,
+  every 2 min while there is no data or TBA is unreachable; never without a key and a team) and reads our
+  upcoming matches back with `tba_upcoming()` when `tba_gen()` moves. No thread of its own: the home worker
+  starts for the poll and ends itself ~15 s later. If-Modified-Since as always.
+- **Reminders.** At the queue lead (default 25 min: time for the checklist) and the match lead (default 5 min)
+  before a match's predicted time (else its scheduled time). A reminder learned of late still rings, never once
+  the match's time has passed; when both are due the match one rings alone.
+- **The alarm.** A full-screen screen on the glass layer's top, over the pages, apps, home mode and the lock
+  screen (kept on top while up; the lock's push and the control center's pull are ignored under it): the match
+  and "in N min", our alliance's colour down the edge, the partners and the opponents, the predicted or scheduled
+  time, a big **open checklist** (queue reminder: lifts the lock and opens `APP_CHECK`) and **dismiss**. It wakes
+  and lights the screen (`bz_ui_wake`; `bz_ui_swallow_cancel` so the first tap presses its buttons). The sound is
+  a burst every 2 s, two notes, then three, then four higher, from 55 % to full tone level over a minute, with the
+  speaker raised to at least 70 % while it rings (restored after); it stops after 2 min (a notification says so),
+  and the screen stays until dismissed or 10 min after the match's time. Sound can be turned off.
+- **Schedule changes.** A tracked match whose time moves by 3 min or more from the time last announced, or a new
+  match of ours (a playoff), is an island message and a notification with a chime ("Q34 moved to 14:52 (+8 min)");
+  its reminders ring again for the new time. One line per poll ("· 9 more of ours changed"); the first schedule
+  seen, or a whole schedule appearing, is not news.
+- **Lifetime.** Alarms outlive app switches; after a reboot they are derived again from the card cache, then the
+  network.
+- **Settings.** The blue alliance app's **alerts** chip: on/off, sound, queue lead (off, 15-40 min), match lead
+  (off, 3-10 min), the next alarm, and a test alarm. kv `matchalert` = `on,queue,match,sound`.
+- **Home mode** shows "next: Q34 · 14:52 · red with 1234, 5678" under the date.
+- **Testing.** `python tools/tab5_dev.py COM9 alarm test` rings a made-up Q34 queue alarm in 5 s
+  (`alarm test 30`: in 30 s, time to switch apps or let the screen sleep); the alerts view has the same button.
+
+#### Log analysis
+
+The logs app (the card's root, `logs/`, and the recorder's `runs/`) and the recorder's run list have an
+**analyze** action: a bounded digest of the log, never the file, goes to OpenAI with a pit engineer's brief.
+
+- **The digest** (`cat_log_digest`, `cat_csv_digest`, at most 14 KB): for a DS log or `.wpilog`, the length,
+  battery lowest and mean, brownouts (flag and dips under 6.8 V), trip time, packet loss, CAN and CPU peaks, each
+  series in 24 slices, and counters (loop overruns and the worst loop, CAN faults, mode changes, state changes,
+  health checks fired), then the kept events. The `.wpilog` reader now also reads Catalyst's own topics when
+  NetworkTables was logged: `/Catalyst/Alerts/{Errors,Warnings}` (each new alert an event),
+  `/Catalyst/Health/.../firing`, mechanisms' and state machines' `State`, `/Catalyst/Loop/...`, `CanDown`, and
+  WPILib's `DS:` mode flags; once the 64 event slots are full a warning or error replaces an info event. For a
+  recorder run: per column its samples, range with the times of the extremes, mean, last value and a 12-slice
+  trend, and the marks.
+- **The agent** (`analyze.c`): a Catalyst pit engineer. Its brief says what the digest is and isn't (an absence is
+  never a zero), what Catalyst publishes (mechanisms, health checks, alerts, power, CAN on Systemcore's paired
+  buses, the loop monitor, tunables, swerve), the usual causal chains, and a fixed plain-text answer: a verdict,
+  ranked causes with confidence and evidence, next checks, what to look at (tunables by path, limits, wiring), and
+  what the log can't tell. It says so plainly when the log doesn't support a conclusion.
+- **Where it runs.** On the assistant's worker (`assist_post_job`), after any conversation turn in flight: no new
+  thread. Key and model are the assistant's OpenAI settings (kv `oai_key`, `oai_model`; default gpt-4o-mini), not
+  streamed, no token cap.
+- **The answer** shows in the logs app (scrollable), goes to the island and the notifications ("analysis of
+  <file>: <verdict>"), and **save** writes `CATOS/DOCS/MMDDHHMM.MD` with the answer and the digest that was sent.
 
 ### 4. The shell
 

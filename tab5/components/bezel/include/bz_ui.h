@@ -58,6 +58,9 @@ bool bz_ui_press(int *x0, int *y0, int *x, int *y);
 /* A system gesture takes the press under way: the interface sees it end without a click. */
 void bz_ui_take_press(void);
 void bz_ui_wake(void);
+/* The next press is delivered after all: a screen woken by something other than a touch (an alarm) wants its
+ * first tap to press what it shows. */
+void bz_ui_swallow_cancel(void);
 
 /* Tone and calm. Applying a tone rebuilds styles (see bz_theme) and redraws everything. */
 void bz_ui_set_mode(bool dark, bool calm);

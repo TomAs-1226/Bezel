@@ -5,7 +5,10 @@
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
 #include "cat_can.h"
 #include "cat_logs.h"
+#include "analyze.h"
+#include "home.h"
 #include "link.h"
+#include "ui_storage.h"
 
 #include <dirent.h>
 #include <math.h>
@@ -604,6 +607,10 @@ const ui_app_t APP_CANTAP = { .name = "can tap", .icon = BZ_I_CABLE, .build = ca
 
 /* ================================================================== logs */
 
+/* The card's Driver Station and robot logs (the root, logs/) and the recorder's runs (runs/): a log opens on its
+ * numbers, charts and events; any of them can be analysed by GPT (analyze.h), the answer shown here, kept in the
+ * notifications and saved to documents on request. */
+
 #define LG_MAX_FILES 32
 
 static struct {
@@ -612,13 +619,19 @@ static struct {
     int nfiles;
     cat_log_t *log;
     int pending;
+    int cur;                 /* the log in the detail view, -1 none */
+    /* the analysis panel */
+    lv_obj_t *ai, *ai_title, *ai_state, *ai_text, *ai_go, *ai_save;
+    char ai_path[160];
+    bool ai_from_detail, ai_done;
+    unsigned an_gen;
 } LG;
 
 static bool log_ext(const char *n)
 {
     size_t l = strlen(n);
     return (l > 7 && !strcmp(n + l - 7, ".wpilog")) || (l > 6 && !strcmp(n + l - 6, ".dslog")) ||
-           (l > 9 && !strcmp(n + l - 9, ".dsevents"));
+           (l > 9 && !strcmp(n + l - 9, ".dsevents")) || (l > 4 && !strcmp(n + l - 4, ".csv"));
 }
 
 static void lg_pick(lv_obj_t *o, void *u)
@@ -648,8 +661,8 @@ static void lg_scan(void)
         lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
         return;
     }
-    const char *dirs[2] = { "", "/logs" };
-    for (int d = 0; d < 2; d++) {
+    const char *dirs[3] = { "", "/logs", "/runs" };
+    for (int d = 0; d < 3; d++) {
         char dir[128];
         snprintf(dir, sizeof dir, "%s%s", root, dirs[d]);
         DIR *dp = opendir(dir);
@@ -681,7 +694,8 @@ static void lg_scan(void)
     if (!LG.nfiles) {
         lv_obj_t *t = bz_tile(LG.files, W - 2 * PAD, 130);
         bz_label(t, "no logs on the card", BZ_F_NAME, BZ_C_INK);
-        lv_obj_t *l = bz_label(t, "Looked in the root and logs/ for .wpilog, .dslog and .dsevents.", BZ_F_CAPTION, BZ_C_DIM);
+        lv_obj_t *l = bz_label(t, "Looked in the root and logs/ for .wpilog, .dslog and .dsevents, and in runs/ for the recorder's .csv.",
+                               BZ_F_CAPTION, BZ_C_DIM);
         lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     }
 }
@@ -717,6 +731,216 @@ static void lg_show(void)
     if (!l->nevents) bz_label(LG.events, "no events in this log", BZ_F_CAPTION, BZ_C_DIM);
 }
 
+/* ---- the analysis: a log's digest to GPT (analyze.h), the answer here, in the notifications, and on the card ---- */
+
+static bool is_csv(const char *p)
+{
+    size_t l = strlen(p);
+    return l > 4 && !strcmp(p + l - 4, ".csv");
+}
+
+/* the answer's first line, "verdict: " dropped: what the notification says */
+static void verdict(const char *a, char *out, size_t n)
+{
+    while (*a == ' ' || *a == '\n') a++;
+    if (!strncmp(a, "verdict:", 8)) a += 8;
+    while (*a == ' ') a++;
+    size_t l = strcspn(a, "\n");
+    snprintf(out, n, "%.*s", (int)l, a);
+}
+
+/* the answer for the faces: each line folded (home_fold_text), the line breaks kept */
+static char *fold_lines(const char *s)
+{
+    char *o = malloc(strlen(s) + 1);
+    if (!o) return NULL;
+    size_t k = 0;
+    while (*s) {
+        size_t l = strcspn(s, "\n");
+        memcpy(o + k, s, l);
+        o[k + l] = 0;
+        home_fold_text(o + k); /* in place: never longer */
+        k += strlen(o + k);
+        s += l;
+        if (*s == '\n') {
+            o[k++] = '\n';
+            s++;
+        }
+    }
+    o[k] = 0;
+    return o;
+}
+
+/* Anywhere, not only with the app open: an analysis that finishes goes to the island and the notifications. */
+static void an_watch(void *u)
+{
+    (void)u;
+    static unsigned seen;
+    unsigned g = analyze_gen();
+    if (g == seen) return;
+    seen = g;
+    char *name = NULL, *answer = NULL;
+    an_phase_t ph = analyze_get(&name, &answer, NULL, NULL, 0);
+    if (ph == AN_DONE || ph == AN_FAILED) {
+        char v[80], msg[96];
+        verdict(answer ? answer : "", v, sizeof v);
+        home_fold_text(v);
+        snprintf(msg, sizeof msg, "%s %.24s: %s", ph == AN_DONE ? "analysis of" : "couldn't analyse", name ? name : "", v);
+        ui_island_say(ph == AN_DONE ? BZ_I_AUTO_AWESOME : BZ_I_WARNING, msg);
+    }
+    free(name);
+    free(answer);
+}
+
+static void ai_watch_start(void)
+{
+    static bool on;
+    if (on) return;
+    on = true;
+    ui_on_refresh(an_watch, NULL);
+}
+
+/* The panel's words and buttons for LG.ai_path, from the analysis when it is about that file. */
+static void ai_update(void)
+{
+    LG.an_gen = analyze_gen();
+    char *name = NULL, *answer = NULL, model[48] = "";
+    an_phase_t ph = analyze_get(&name, &answer, NULL, model, sizeof model);
+    const char *base = strrchr(LG.ai_path, '/');
+    base = base ? base + 1 : LG.ai_path;
+    bool ours = name && !strcmp(name, base);
+    if (!ours) ph = AN_IDLE;
+    LG.ai_done = ph == AN_DONE;
+    ui_text(LG.ai_title, "%s", base);
+    const char *text = "";
+    switch (ph) {
+    case AN_IDLE:
+        ui_text(LG.ai_state, "%s", is_csv(LG.ai_path) ? "a recorder run: analyze sends a summary of it to gpt"
+                                                      : "analyze sends a summary of this log to gpt, not the file");
+        break;
+    case AN_READING: ui_text(LG.ai_state, "reading the log and boiling it down..."); break;
+    case AN_ASKING: ui_text(LG.ai_state, "asking %s...", model[0] ? model : "gpt"); break;
+    case AN_DONE: ui_text(LG.ai_state, "answered by %s \xc2\xb7 save keeps it in documents", model); break;
+    case AN_FAILED: ui_text(LG.ai_state, "couldn't analyse it"); break;
+    }
+    if (ph == AN_DONE || ph == AN_FAILED) text = answer ? answer : "";
+    char *t = fold_lines(text);
+    const char *cur = lv_label_get_text(LG.ai_text);
+    if (t && (!cur || strcmp(cur, t))) lv_label_set_text(LG.ai_text, t);
+    free(t);
+    bool busy = analyze_busy();
+    lv_obj_set_style_opa(LG.ai_go, busy ? LV_OPA_40 : LV_OPA_COVER, 0);
+    if (LG.ai_done) lv_obj_remove_flag(LG.ai_save, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(LG.ai_save, LV_OBJ_FLAG_HIDDEN);
+    free(name);
+    free(answer);
+}
+
+static void ai_open(const char *path, bool from_detail)
+{
+    snprintf(LG.ai_path, sizeof LG.ai_path, "%s", path);
+    LG.ai_from_detail = from_detail;
+    lv_obj_add_flag(lv_obj_get_parent(LG.files), LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(LG.detail, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_remove_flag(LG.ai, LV_OBJ_FLAG_HIDDEN);
+    ai_update();
+}
+
+static void ai_go(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    if (!LG.ai_path[0]) return;
+    if (!analyze_start(LG.ai_path, S.team)) {
+        ui_island_say(BZ_I_AUTO_AWESOME, analyze_busy() ? "an analysis is already under way" : "the assistant isn't running");
+        return;
+    }
+    ai_watch_start();
+    hal_tone(1800, 10, S.volume * 0.4f);
+    ai_update();
+}
+
+static void ai_back(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    lv_obj_add_flag(LG.ai, LV_OBJ_FLAG_HIDDEN);
+    if (LG.ai_from_detail) lv_obj_remove_flag(LG.detail, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_remove_flag(lv_obj_get_parent(LG.files), LV_OBJ_FLAG_HIDDEN);
+}
+
+/* <sd>/CATOS/DOCS/MMDDHHMM.MD: the answer, then what was sent (a small write the user asked for: this thread) */
+static void ai_save(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    char *name = NULL, *answer = NULL, *digest = NULL, model[48] = "";
+    an_phase_t ph = analyze_get(&name, &answer, &digest, model, sizeof model);
+    time_t now = time(NULL);
+    struct tm tm;
+    localtime_r(&now, &tm);
+    char file[16], path[160];
+    snprintf(file, sizeof file, "%02d%02d%02d%02d.MD", tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min);
+    bool ok = false;
+    if (ph == AN_DONE && answer && cstore_path(CS_DOCS, file, path, sizeof path)) {
+        size_t cap = strlen(answer) + (digest ? strlen(digest) : 0) + 512;
+        char *md = malloc(cap);
+        if (md) {
+            char when[32];
+            strftime(when, sizeof when, "%Y-%m-%d %H:%M", &tm);
+            int k = snprintf(md, cap, "# log analysis: %s\n\n%s, by %s, for team %d\n\n%s\n\n## what was sent\n\n```\n%s```\n",
+                             name ? name : "", when, model, S.team, answer, digest ? digest : "");
+            ok = k > 0 && cstore_write(path, md, (size_t)k < cap ? (size_t)k : cap - 1);
+            free(md);
+        }
+    }
+    char msg[64];
+    snprintf(msg, sizeof msg, ok ? "saved to documents as %s" : "couldn't save %s: is the card in?", file);
+    ui_island_say(ok ? BZ_I_SAVE : BZ_I_SD_CARD, msg);
+    free(name);
+    free(answer);
+    free(digest);
+}
+
+static void lg_analyze(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    if (LG.cur >= 0) ai_open(LG.paths[LG.cur], true);
+}
+
+static char s_an_pending[160]; /* ui_logs_analyze's, for the next open */
+
+void ui_logs_analyze(const char *path)
+{
+    snprintf(s_an_pending, sizeof s_an_pending, "%s", path ? path : "");
+    ui_app_close();
+    ui_app_open(&APP_LOGS, NULL);
+}
+
+static void ai_build(lv_obj_t *b)
+{
+    int w = W - 2 * PAD, iw = w - 2 * BZ_PAD_TILE;
+    LG.ai = bz_tile(b, w, APP_H);
+    lv_obj_set_pos(LG.ai, PAD, APP_Y);
+    LG.ai_title = bz_label_line(LG.ai, "", BZ_F_NAME, BZ_C_INK, iw - 470);
+    LG.ai_state = bz_label_line(LG.ai, "", BZ_F_LABEL, BZ_C_DIM, iw - 470);
+    lv_obj_set_pos(LG.ai_state, 0, 38);
+    lv_obj_t *r = bz_row(LG.ai, 10);
+    lv_obj_align(r, LV_ALIGN_TOP_RIGHT, 0, 0);
+    LG.ai_go = ui_button(r, BZ_I_AUTO_AWESOME, "analyze", ai_go, NULL);
+    LG.ai_save = ui_button(r, BZ_I_SAVE, "save", ai_save, NULL);
+    ui_button(r, BZ_I_ARROW_BACK, "back", ai_back, NULL);
+    lv_obj_t *wrap = bz_box(LG.ai);
+    int h = APP_H - 2 * BZ_PAD_TILE - 84;
+    lv_obj_set_pos(wrap, 0, 84);
+    lv_obj_set_size(wrap, iw, h);
+    lv_obj_t *list = ui_scroller(wrap, iw, h);
+    LG.ai_text = bz_label(list, "", BZ_F_BODY_S, BZ_C_INK);
+    lv_label_set_long_mode(LG.ai_text, LV_LABEL_LONG_WRAP);
+    lv_obj_set_width(LG.ai_text, iw - 8);
+    lv_obj_set_style_text_line_space(LG.ai_text, 4, 0);
+    lv_obj_t *sp = bz_box(list); /* the last line clear of the bottom */
+    lv_obj_set_height(sp, 40);
+    lv_obj_add_flag(LG.ai, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void logs_frame(double now, double dt)
 {
     (void)now; (void)dt;
@@ -727,6 +951,13 @@ static void logs_frame(double now, double dt)
     wait = 0;
     int i = LG.pending;
     LG.pending = -1;
+    if (is_csv(LG.paths[i])) {
+        /* a run has no DS numbers to chart: straight to its analysis */
+        ui_text(LG.title, "%s", strrchr(LG.paths[i], '/') + 1);
+        ai_open(LG.paths[i], false);
+        return;
+    }
+    LG.cur = i;
     if (!LG.log) LG.log = malloc(sizeof(cat_log_t));
     if (!LG.log) return;
     bool ok = cat_log_read(LG.paths[i], LG.log);
@@ -739,7 +970,19 @@ static void logs_open(void)
     LG.pending = -1;
     lg_scan();
     lg_back(NULL, NULL);
+    lv_obj_add_flag(LG.ai, LV_OBJ_FLAG_HIDDEN);
     ui_text(LG.title, "%d log%s on the card", LG.nfiles, LG.nfiles == 1 ? "" : "s");
+    if (s_an_pending[0]) {
+        /* from the recorder's analyze button: the run's analysis, asked for already */
+        ai_open(s_an_pending, false);
+        s_an_pending[0] = 0;
+        ai_go(NULL, NULL);
+    }
+}
+
+static void logs_refresh(void)
+{
+    if (!lv_obj_has_flag(LG.ai, LV_OBJ_FLAG_HIDDEN) && analyze_gen() != LG.an_gen) ai_update();
 }
 
 static void logs_build(lv_obj_t *b)
@@ -759,6 +1002,8 @@ static void logs_build(lv_obj_t *b)
     lv_obj_set_style_text_line_space(LG.stats, 6, 0);
     lv_obj_t *back = ui_button(st, BZ_I_ARROW_BACK, "files", lg_back, NULL);
     lv_obj_align(back, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    lv_obj_t *an = ui_button(st, BZ_I_AUTO_AWESOME, "analyze", lg_analyze, NULL);
+    lv_obj_align(an, LV_ALIGN_BOTTOM_LEFT, 0, -66);
     static const char *const names[4] = { "battery (lowest)", "trip time", "can", "cpu" };
     int cw = W - 2 * PAD - 330 - BZ_GAP, chw = (cw - BZ_GAP) / 2;
     for (int c = 0; c < 4; c++) {
@@ -776,11 +1021,13 @@ static void logs_build(lv_obj_t *b)
     lv_obj_set_pos(lv_obj_get_parent(LG.events), 0, 28);
     lv_obj_set_style_pad_row(LG.events, 6, 0);
     lv_obj_add_flag(LG.detail, LV_OBJ_FLAG_HIDDEN);
+    ai_build(b);
     LG.pending = -1;
+    LG.cur = -1;
 }
 
 const ui_app_t APP_LOGS = { .name = "logs", .icon = BZ_I_RECEIPT_LONG, .build = logs_build, .open = logs_open,
-                            .frame = logs_frame };
+                            .refresh = logs_refresh, .frame = logs_frame };
 
 /* ================================================================== settings */
 

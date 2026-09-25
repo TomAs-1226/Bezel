@@ -217,7 +217,7 @@ static void cc_frame(double now, double dt, void *user)
      * began on (a module, a toggle) */
     bool pull = !C.open && C.p.target <= 0 && y0 <= EDGE_H && y - y0 > EDGE_SLOP && y - y0 > abs(x - x0);
     bool push = C.open && C.p.target >= 1 && y0 <= CC_SH && y0 - y > EDGE_SLOP && y0 - y > abs(x - x0);
-    if (!C.edge && down && !C.dragging && !bz_drag_active() && (pull || push)) {
+    if (!C.edge && down && !C.dragging && !bz_drag_active() && (pull || push) && !ui_alarm_up()) {
         C.edge = true;
         C.edge_y0 = y0;
         C.edge_vy = 0;

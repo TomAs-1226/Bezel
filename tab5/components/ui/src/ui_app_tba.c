@@ -2,9 +2,10 @@
  * every match of ours there, and the event's rankings.
  *
  * Left, top to bottom: the event, the next match (its countdown the one label that changes on its own, once
- * a minute), and the team's standing. Right: our matches or the event's rankings, a chip apart. The data
- * comes from tba.h on the home worker, polled only while this app is open; the lists are built again only
- * when their content changes, and labels are set only when their text does. */
+ * a minute), and the team's standing. Right: our matches, the event's rankings or the match alerts' settings
+ * (ui_match.c), a chip apart. The data comes from tba.h on the home worker, polled every 20-60 s while this app
+ * is open (and now and then by the match alerts when it isn't); the lists are built again only when their
+ * content changes, and labels are set only when their text does. */
 #include "ui_internal.h"
 #include "tba.h"
 
@@ -41,13 +42,13 @@ static TB_BSS struct {
     tba_state_t *s;                 /* the UI's copy (PSRAM) */
     unsigned gen;
     uint32_t match_sig, rank_sig;
-    bool show_ranks;
-    lv_obj_t *chip_m, *chip_r;
+    int view;                       /* 0 our matches, 1 the rankings, 2 the match alerts */
+    lv_obj_t *chip_m, *chip_r, *chip_a;
     lv_obj_t *ev_name, *ev_where, *ev_as_of;
     lv_obj_t *nx_label, *nx_when, *nx_note;
     side_t nx_side[2];
     lv_obj_t *st_rank, *st_of, *st_alliance, *st_line;
-    lv_obj_t *wrap_m, *wrap_r, *list_m, *list_r;
+    lv_obj_t *wrap_m, *wrap_r, *wrap_a, *list_m, *list_r;
 } TB;
 
 /* ------------------------------------------------------------------ helpers */
@@ -243,24 +244,21 @@ static void ranks_build(const tba_state_t *s)
     lv_obj_set_height(sp, 40);
 }
 
-static void show_list(bool ranks)
+static void show_list(int view)
 {
-    TB.show_ranks = ranks;
-    ui_chip_set(TB.chip_m, !ranks);
-    ui_chip_set(TB.chip_r, ranks);
-    if (ranks) {
-        lv_obj_add_flag(TB.wrap_m, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(TB.wrap_r, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(TB.wrap_r, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_remove_flag(TB.wrap_m, LV_OBJ_FLAG_HIDDEN);
+    TB.view = view;
+    lv_obj_t *chips[3] = { TB.chip_m, TB.chip_r, TB.chip_a }, *wraps[3] = { TB.wrap_m, TB.wrap_r, TB.wrap_a };
+    for (int i = 0; i < 3; i++) {
+        ui_chip_set(chips[i], i == view);
+        if (i == view) lv_obj_remove_flag(wraps[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(wraps[i], LV_OBJ_FLAG_HIDDEN);
     }
 }
 
 static void list_tap(lv_obj_t *o, void *u)
 {
     (void)o;
-    if (TB.show_ranks != (u != NULL)) show_list(u != NULL);
+    if (TB.view != (int)(intptr_t)u) show_list((int)(intptr_t)u);
 }
 
 static void refresh_tap(lv_obj_t *o, void *u)
@@ -340,6 +338,7 @@ static void tba_build(lv_obj_t *b)
     lv_obj_set_height(hr, 60);
     TB.chip_m = ui_chip(hr, "matches", list_tap, NULL);
     TB.chip_r = ui_chip(hr, "rankings", list_tap, (void *)1);
+    TB.chip_a = ui_chip(hr, "alerts", list_tap, (void *)2);
     ui_button(hr, BZ_I_REFRESH, "refresh", refresh_tap, NULL);
 
     lv_obj_t *t = column_tile(b, APP_Y, EV_H, "event");
@@ -382,7 +381,10 @@ static void tba_build(lv_obj_t *b)
     lv_obj_set_size(TB.wrap_r, RW, APP_H);
     TB.list_r = ui_scroller(TB.wrap_r, RW, APP_H);
     lv_obj_set_style_pad_row(TB.list_r, 4, 0); /* rankings are rows of a table, not tiles */
-    show_list(false);
+    TB.wrap_a = bz_tile(b, RW, APP_H);
+    lv_obj_set_pos(TB.wrap_a, RX, APP_Y);
+    ui_match_settings(TB.wrap_a, IN(RW));
+    show_list(0);
     TB.gen = (unsigned)-1;
     TB.match_sig = TB.rank_sig = 1;
 }
@@ -428,6 +430,7 @@ static void tba_ui_refresh(void)
         }
     }
     left_update(TB.s, now); /* every label guarded: the countdown changes the text once a minute */
+    if (TB.view == 2) ui_match_settings_refresh();
 }
 
 const ui_app_t APP_TBA = { .name = "tba", .icon = BZ_I_BAR_CHART, .build = tba_build, .open = tba_open,

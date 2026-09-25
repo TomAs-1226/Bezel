@@ -2356,6 +2356,14 @@ static void rc_runs(void)
 
 static void rc_send(lv_obj_t *o, void *u);
 
+/* the run's analysis by GPT, in the logs app (ui_logs_analyze) */
+static void rc_analyze(lv_obj_t *o, void *u)
+{
+    (void)o;
+    int i = (int)(intptr_t)u;
+    if (i < RC.nruns) ui_logs_analyze(RC.list[i].path);
+}
+
 static void rc_runs_fill(void)
 {
     rc_runs();
@@ -2380,11 +2388,14 @@ static void rc_runs_fill(void)
         } else {
             snprintf(when, sizeof when, "%s", run->name);
         }
-        bz_label_line(c, when, BZ_F_BODY_S, BZ_C_INK, IN(RC_RIGHT_W) - 110);
+        bz_label_line(c, when, BZ_F_BODY_S, BZ_C_INK, IN(RC_RIGHT_W) - 190); /* two buttons beside it */
         char dur[24], size[24], sub[80];
         snprintf(sub, sizeof sub, "%s " MID " %d ch " MID " %s", fmt_dur(dur, sizeof dur, run->duration_s), run->channels,
                  fmt_bytes(size, sizeof size, (double)run->bytes));
-        bz_label_line(c, sub, BZ_F_CAPTION, BZ_C_DIM, IN(RC_RIGHT_W) - 110);
+        bz_label_line(c, sub, BZ_F_CAPTION, BZ_C_DIM, IN(RC_RIGHT_W) - 190);
+        lv_obj_t *an = ui_button(t, BZ_I_AUTO_AWESOME, NULL, rc_analyze, (void *)(intptr_t)i);
+        lv_obj_set_style_pad_hor(an, 16, 0);
+        bz_tile_set_fill(an, BZ_C_SURFACE3);
         lv_obj_t *send = ui_button(t, BZ_I_SEND, NULL, rc_send, (void *)(intptr_t)i);
         lv_obj_set_style_pad_hor(send, 16, 0);
         bz_tile_set_fill(send, BZ_C_SURFACE3);

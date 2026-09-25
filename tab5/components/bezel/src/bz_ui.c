@@ -626,6 +626,7 @@ void bz_ui_swallow_touch(void)
     U.swallow_seen = false;
 }
 void bz_ui_wake(void) { U.last_touch = U.now; }
+void bz_ui_swallow_cancel(void) { U.swallow = U.swallow_seen = false; }
 
 double bz_ui_clock(void);
 static double wall(void)
