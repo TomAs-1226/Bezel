@@ -70,7 +70,9 @@ CONFIG_ESP_HOSTED_SDIO_PIN_D2=9
 CONFIG_ESP_HOSTED_SDIO_PIN_D3=8
 CONFIG_ESP_HOSTED_SDIO_GPIO_RESET_SLAVE=15
 # fixed 1.5 KB receive packets from the pool: streaming mode grows one contiguous internal-DMA buffer to
-# whatever is pending, and a scan's results asked for more than internal RAM had (assert in sdio_rx_get_buffer)
+# whatever is pending, and a scan's results asked for more than internal RAM had (assert in sdio_rx_get_buffer).
+# The C6 must then send packet by packet (CONFIG_ESP_SDIO_STREAMING_MODE=n in its build, firmware/c6/): a slave
+# left in stream mode put several packets in one read, the host kept only the first, and the link hung
 CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_MAX_SIZE=y
 
 # robot.local (Systemcore) and roborio-TEAM-frc.local resolve through mDNS
