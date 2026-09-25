@@ -59,7 +59,8 @@ CONFIG_SLAVE_IDF_TARGET_ESP32C6=y
 CONFIG_ESP_HOSTED_SDIO_HOST_INTERFACE=y
 CONFIG_ESP_HOSTED_SDIO_4_BIT_BUS=y
 # 20 MHz, not 40: at 40 the C6 went on reporting "connected" while nothing got through, a few minutes into
-# any real traffic (DNS, TLS), and stopped answering RPCs; a UI doesn't need the speed
+# any real traffic (DNS, TLS), and stopped answering RPCs; a UI doesn't need the speed. 10 MHz was no better
+# than 20 (companion stress 2026-09-25: 9/12 against 8/12): below 20 the clock isn't what hangs it
 CONFIG_ESP_HOSTED_SDIO_CLOCK_FREQ_KHZ=20000
 CONFIG_ESP_HOSTED_SDIO_PIN_CLK=12
 CONFIG_ESP_HOSTED_SDIO_PIN_CMD=13
