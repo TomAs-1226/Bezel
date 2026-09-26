@@ -350,6 +350,7 @@ static void rssi_task(void *arg)
     if (s_c6_restarts[3] != 0xC6C6C6C6u) memset(s_c6_restarts, 0, sizeof s_c6_restarts);
     s_c6_restarts[3] = 0xC6C6C6C6u;
     int misses = 0, cycle = 0, dead = 0;
+    bool was_up = false;
     uint32_t answered = 0; /* the gateway that has answered: only its silence is news (kept across a rejoin) */
     int64_t rejoined = 0;
     for (;;) {
@@ -363,6 +364,12 @@ static void rssi_task(void *arg)
              * never spoken of again, still gets asked about later. The address clears it (IP_EVENT). */
             reconnect_soon(false);
         }
+        /* The beacon-loss window again on every fresh join. Espressif says it is "not stored into flash"
+         * and doesn't say whether it outlives a disconnect, and a 6 s window silently coming back is the
+         * whole fault; one RPC per join settles it. Here rather than in the connect event, for the same
+         * reason the reconnect moved: the event loop's task must not wait on SDIO. */
+        if (N.up && !was_up && N.inactive_s > 6) esp_wifi_set_inactive_time(WIFI_IF_STA, N.inactive_s);
+        was_up = N.up;
         if (!N.up || s_scanning) {
             misses = 0;
             dead = 0;
