@@ -567,9 +567,16 @@ answers `ESP_ERR_WIFI_STATE` to anything asked while a connect is in flight) and
 | `pmf_cfg.capable` | false | true | Deprecated (the C6 turns PMF on whenever the AP offers it) but free to state, and WPA3 needs it. |
 | `bssid_set`, `channel` | 0 | 0, explicitly | Either would pin the station to one AP, which is the fault above. |
 | `rm_enabled`, `btm_enabled`, `mbo_enabled`, `ft_enabled` | 0 | 0, **deliberately** | 802.11k/v make the station honour the AP's request to move to another BSS, and acting on one needs a slave built with the roaming app (`CONFIG_ESP_WIFI_ENABLE_ROAMING_APP`); `firmware/c6`'s slave is not. Advertising the capability and then not moving invites an AP to deauthenticate it (reason **12**) — worse than not claiming it. 11r (`ft`) is for WPA2-Enterprise. |
-| beacon-loss window | 6 s (the C6's default) | 30 s, `esp_wifi_set_inactive_time()` | Miss six seconds of the AP's beacons — trivial on a crowded 2.4 GHz channel, a pit full of radios, or a phone hotspot that stutters — and the C6 sends five probe requests and throws the connection away (reason **200**, `BEACON_TIMEOUT`). Nothing is lost by waiting: a genuinely dead AP is caught meanwhile by the gateway probe below, which acts in 15 s and doesn't need the radio's opinion. Espressif documents the default and the mechanism but does **not** recommend raising it — 30 s is this firmware's judgement, made because it has a better detector of a dead AP than the radio does. |
+| beacon-loss window | 6 s (the C6's default) | **asked for 30 s and refused; still 6 s** | Miss six seconds of the AP's beacons — trivial on a crowded 2.4 GHz channel, a pit full of radios, or a phone hotspot that stutters — and the C6 sends five probe requests and throws the connection away (reason **200**, `BEACON_TIMEOUT`). 30 s would cost nothing, since the gateway probe below catches a genuinely dead AP in 15 s without the radio's opinion. It cannot be set from here: esp-hosted 1.4.7 defines `Req_WifiSetInactiveTime` (325) and `Req_WifiGetInactiveTime` (326) and implements **neither end**, so `esp_wifi_set_inactive_time()` falls through to esp_wifi_remote's weak stub. Measured on the tablet: `ESP_ERR_NOT_SUPPORTED`, and `esp_wifi_get_inactive_time()` still reads 6. The call and the read-back stay, so a slave that grows the RPC starts working with no edit and `net` reports the window the radio really has. |
 | `esp_wifi_set_ps` | `WIFI_PS_NONE` | unchanged | Right for latency, and right for staying joined: an always-awake station answers every poll, and what an AP throws a client off for is silence (reason **4**), never wakefulness. It does mean the C6 forwards every broadcast frame over SDIO, which is load the link has to carry. |
 | TX power, `esp_wifi_set_protocol` | default (20 dBm, 11b/g/n/ax) | unchanged, but **reported** | Both are real levers — a too-high TX power into a small antenna, or an AP that mishandles HE, can each cause drops — and neither should be moved on a guess. `net` prints what is actually in force so a change can be judged against a measurement. |
+
+**Only one connect is ever in the air.** Measured on the tablet: an all-channel scan and join take ~3 s
+from the request to "connected" and ~3.8 s to the address. A retry deadline set blindly 2 s later therefore
+asked again while the first attempt was still working, and the C6 answered that by abandoning it — **reason
+205, `CONNECTION_FAIL`, at rssi −128**, which is a failed attempt rather than a lost link. The outstanding
+connect is tracked now: a drop or an address clears it, and 25 s of neither counts as an attempt that went
+missing. The backoff steps were widened to match what a join actually costs.
 
 **The reconnect no longer runs on the event loop, and backs off.** It used to be `esp_wifi_connect()`
 straight out of the `WIFI_EVENT_STA_DISCONNECTED` handler, which is wrong twice over. Every `esp_wifi_*`
@@ -580,7 +587,7 @@ connect, reason 201, connect, for as long as the AP stayed away, which leaves th
 pause: the state the SDIO link is least happy in, and the one that makes a scan from the settings page
 fail with `ESP_ERR_WIFI_STATE`. Espressif's own Wi-Fi guide says to reconnect on the event but to "avoid
 infinite reconnection loops that starve scan operations". Now the handler only records, and `rssi_task`
-acts: **0, 2, 4, 8, 15, 30 s and 30 s thereafter**, reset to 0 by an address (`IP_EVENT_STA_GOT_IP`) and
+acts: **0, 3, 6, 12, 20, 30 s and 30 s thereafter**, reset to 0 by an address (`IP_EVENT_STA_GOT_IP`) and
 by a rejoin the firmware chose (`hal_wifi_rejoin`, which the two watchdogs below now go through).
 
 **Every drop is logged, with its reason named.** The handler used to log only when the reason *changed*,
@@ -663,6 +670,28 @@ What it risks, stated plainly, because it should not be run without the owner's 
 - The C6's **NVS is not touched**: an OTA writes an app partition, so the saved network stays. (This is
   unlike `firmware/catalyst-tab-merged.bin`, which erases the *host's* NVS and takes the tablet's settings,
   its saved network and its Catalyst Link pairing with it. Never flash that one to a tablet in use.)
+
+### Measured on the tablet, 2026-09-26
+
+Read off the device over the USB-C console, not reasoned from documentation. The tablet was on its own
+network at the time; the numbers are the tablet's, not a general truth.
+
+| | |
+|---|---|
+| C6 slave | **esp-hosted 1.4.7** — the packet-mode one this repository builds, not M5Stack's 1.4.1. The streaming-mode fault is not in play here, and the C6 needs no reflash. |
+| Station config after `sta_tune` | `scan all sort rssi retry 3 pmf 1 authmode>=2` — read back out of the C6, so the whole tuning crosses the SDIO link and sticks. |
+| Beacon-loss window | 6 s. `esp_wifi_set_inactive_time(30)` → `ESP_ERR_NOT_SUPPORTED`; the read-back still says 6. |
+| Country / channels | `01`, channels 1–11 — and the AP is on **channel 1**, so the 12–13 problem is not this tablet's. |
+| Signal | −53 to −58 dBm on channel 1. Not a weak-signal fault. |
+| TX power / protocol | 80 quarter-dBm (20 dBm, the default max) and `0x47` = 11b/g/n + HE. Both left alone. |
+| **Antenna** | **Internal: 15 networks, best −53 dBm. External (MMCX): 3 networks, best −78 dBm.** Two scans, one per side of the RF switch, `antcmp`. So M5Stack's polarity is right (E1.P0 low = internal), the switch works, nothing is plugged into the MMCX, and `hal_tab5.c` already selects the one that works. The antenna is not the fault. |
+| Before the connect fix | 3 drops in ~9 minutes, the last **reason 205 at rssi −128**. |
+| After it | one drop — the `rejoin` that was asked for, reason 8 — then **five minutes with none**, one connect per drop, and the address back 3.8 s later. |
+
+The owner's original complaint predates this firmware, and the code it was reported against logged a drop
+only when the reason *changed*, so **the reason code from before any of this is not recoverable** — that is
+why every drop is logged now. What was measured is the reason this build produced, 205, whose mechanism was
+found in this firmware's own reconnect and removed.
 
 ### The link to the C6
 

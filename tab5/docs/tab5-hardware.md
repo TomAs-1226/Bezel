@@ -43,7 +43,8 @@ crypto, beacons, retries and power save run on it, and the P4 sees Ethernet-like
 which aggregates received packets (stream mode) and does not survive steady traffic against this host;
 Catalyst Tab therefore ships its own **1.4.7** slave, built in packet mode — `firmware/c6/`, with the
 reasoning and the over-the-air install. **Which one a given tablet is running is in the boot log and in
-the dev console's `net`:** `wi-fi: the C6 runs esp-hosted 1.4.7` is ours, `1.4.1` is M5Stack's. Either
+the dev console's `net`:** `wi-fi: the C6 runs esp-hosted 1.4.7` is ours, `1.4.1` is M5Stack's. Measured
+2026-09-26: this tablet reports 1.4.7, so it is on the slave from `firmware/c6/`. Either
 way the slave is all the C6 can take: the host has no way to run other code on it.
 
 Giving it more would mean new C6 firmware — esp-hosted 2.x's *network split* (lwIP on the C6, which
@@ -90,6 +91,12 @@ alone is not enough — `hal_tab5.c` puts E1.P0 and E1.P2 into push-pull as well
 switch connects **neither** antenna and every scan came back empty. And which way round the switch sits
 is M5Stack's word, not a measurement: `antcmp` scans on each side and prints the network count and the
 best RSSI of each, which is what settles it on a given tablet.
+
+**Measured, 2026-09-26, `antcmp` on the Tab5:** internal **15 networks, best −53 dBm**; external (MMCX)
+**3 networks, best −78 dBm**. So the polarity is as documented, the switch does move, nothing is plugged
+into the MMCX socket, and `hal_tab5.c` already starts on the one that works — 25 dB of it. Worth repeating
+if a tablet ever gets an external antenna fitted, and worth remembering as the first thing to check if a
+Tab5 sees nothing at all: a floating switch reads as very few networks on both sides.
 
 ## Gotchas this firmware handles
 

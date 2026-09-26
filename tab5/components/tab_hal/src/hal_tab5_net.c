@@ -142,10 +142,19 @@ static bool wifi_has_network(void)
  * event, but "avoid infinite reconnection loops that starve scan operations".
  *
  * So: the handler only records, and the poll acts. First drop retries at once (a pit network that blinks
- * should not cost a second), then 2, 4, 8, 15, 30 s, and 30 s from then on. A won address clears it. */
+ * should not cost a second), then 3, 6, 12, 20, 30 s, and 30 s from then on. A won address clears it.
+ *
+ * And only ever one connect in the air. An all-channel scan and a join take several seconds — measured on
+ * the tablet, 3 s from the request to "connected" and another second to the address — so a deadline set
+ * blindly for 2 s later had the poll ask again while the first attempt was still working, and the C6
+ * answered that by abandoning it: reason 205, CONNECTION_FAIL, at rssi -128, which is a failed attempt
+ * rather than a lost link. s_issued holds the time the outstanding connect was asked for; a drop or an
+ * address clears it, and 25 s of neither counts as an attempt that went missing. */
 static volatile int64_t s_retry_at;  /* esp_timer time to try again; 0 = nothing wanted */
+static volatile int64_t s_issued;    /* when the outstanding connect was asked for; 0 = none */
 static volatile int s_retry_step;
-static const int RETRY_S[] = { 0, 2, 4, 8, 15, 30 };
+static const int RETRY_S[] = { 0, 3, 6, 12, 20, 30 };
+#define CONNECT_LOST_US (25 * 1000000LL)
 
 static void reconnect_soon(bool fresh)
 {
@@ -176,12 +185,14 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
             ESP_LOGW(TAG, "wi-fi: '%.32s' dropped, reason %d (%s), rssi %d, drop %u", e->ssid, e->reason,
                      drop_name(e->reason), e->rssi, (unsigned)N.drops);
         N.drop_reason = e->reason;
+        s_issued = 0; /* whatever was outstanding is over, one way or the other */
         /* keep trying, backing off: the pit network comes and goes — but not during a scan, and not with
          * nothing saved */
         if (!s_scanning && wifi_has_network()) reconnect_soon(false);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_retry_at = 0;
         s_retry_step = 0;
+        s_issued = 0;
         ip_event_got_ip_t *e = data;
         snprintf(N.ip, sizeof N.ip, IPSTR, IP2STR(&e->ip_info.ip));
         N.up = true;
@@ -357,17 +368,24 @@ static void rssi_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(3000));
         wifi_ap_record_t ap;
         /* the reconnect the disconnect handler asked for, done here rather than on the event loop */
-        int64_t at = s_retry_at;
-        if (at && esp_timer_get_time() >= at && !s_scanning && !N.up) {
-            if (wifi_has_network()) esp_wifi_connect();
+        int64_t now = esp_timer_get_time();
+        if (s_issued && now - s_issued > CONNECT_LOST_US) s_issued = 0; /* neither joined nor dropped: gone */
+        if (s_retry_at && now >= s_retry_at && !s_issued && !s_scanning && !N.up) {
+            s_retry_at = 0;
+            if (wifi_has_network()) {
+                s_issued = now;
+                esp_wifi_connect();
+            }
             /* and a deadline for the next one either way: a connect that is refused, or accepted and then
-             * never spoken of again, still gets asked about later. The address clears it (IP_EVENT). */
+             * never spoken of again, still gets asked about later. The address clears it (IP_EVENT), and
+             * s_issued keeps this deadline from firing on top of an attempt that is still working. */
             reconnect_soon(false);
         }
-        /* The beacon-loss window again on every fresh join. Espressif says it is "not stored into flash"
-         * and doesn't say whether it outlives a disconnect, and a 6 s window silently coming back is the
-         * whole fault; one RPC per join settles it. Here rather than in the connect event, for the same
-         * reason the reconnect moved: the event loop's task must not wait on SDIO. */
+        /* The beacon-loss window again on every fresh join, if it ever becomes settable: Espressif says it
+         * is "not stored into flash" and doesn't say whether it outlives a disconnect, and a 6 s window
+         * silently coming back would be the whole fault. Skipped while it reads as the default, which is
+         * what esp-hosted 1.4.7 leaves it at. Here rather than in the connect event, for the same reason
+         * the reconnect moved: the event loop's task must not wait on SDIO. */
         if (N.up && !was_up && N.inactive_s > 6) esp_wifi_set_inactive_time(WIFI_IF_STA, N.inactive_s);
         was_up = N.up;
         if (!N.up || s_scanning) {
@@ -493,14 +511,28 @@ static void wifi_init(void)
     /* The first join, from here rather than from the STA_START event: the poll that issues every later
      * reconnect only wakes every 3 s, and Wi-Fi at boot shouldn't wait for it. The event's own
      * reconnect_soon stays as the backstop for a start that this misses. */
-    if (s == ESP_OK && wifi_has_network()) esp_wifi_connect();
-    /* The beacon-loss window. The C6's default is 6 s: miss six seconds of the AP's beacons — trivial on a
-     * crowded 2.4 GHz channel, a pit full of radios, or a phone hotspot that stutters — and it sends five
-     * probe requests and then throws the connection away (reason 200), and everything above has to put it
-     * back. 30 s instead. Nothing is lost by waiting: a genuinely dead AP is caught meanwhile by the
-     * gateway probe in rssi_task, which acts in 15 s and doesn't need the radio's opinion. */
+    if (s == ESP_OK && wifi_has_network()) {
+        s_issued = esp_timer_get_time();
+        esp_wifi_connect();
+    }
+    /* The beacon-loss window, asked for and — on this stack — refused. The C6's default is 6 s: miss six
+     * seconds of the AP's beacons, trivial on a crowded 2.4 GHz channel or a pit full of radios, and it
+     * sends five probe requests and throws the connection away (reason 200). 30 s would be better, and
+     * nothing would be lost by waiting, because the gateway probe in rssi_task catches a genuinely dead AP
+     * in 15 s without the radio's opinion.
+     *
+     * It cannot be set from here. esp-hosted 1.4.7 defines the RPCs (Req_WifiSetInactiveTime 325,
+     * Req_WifiGetInactiveTime 326) and implements neither end, so esp_wifi_set_inactive_time() falls
+     * through to esp_wifi_remote's weak stub and returns ESP_ERR_NOT_SUPPORTED — the same shape as the
+     * antenna API. Measured on the tablet: it returns not-supported and the window stays 6 s. The call and
+     * the read-back stay, so a slave or a host component that grows the RPC starts working without an
+     * edit, and so "net" reports the window the radio really has rather than the one that was asked for. */
     esp_err_t it = esp_wifi_set_inactive_time(WIFI_IF_STA, 30);
-    N.inactive_s = it == ESP_OK ? 30 : 6;
+    uint16_t got = 0;
+    N.inactive_s = esp_wifi_get_inactive_time(WIFI_IF_STA, &got) == ESP_OK && got ? got : 6;
+    if (it != ESP_OK)
+        ESP_LOGW(TAG, "wi-fi: the beacon-loss window stays at %us: %s (esp-hosted 1.4.7 doesn't carry it)",
+                 (unsigned)N.inactive_s, esp_err_to_name(it));
     wifi_country_t cc = { 0 };
     esp_err_t c = esp_wifi_get_country(&cc);
     if (c == ESP_OK) {
@@ -553,6 +585,7 @@ void hal_wifi_join(const char *ssid, const char *pass)
     }
     if (e != ESP_OK) ESP_LOGE(TAG, "wi-fi: couldn't save '%.32s': %s", ssid, esp_err_to_name(e));
     s_retry_step = 0;
+    s_issued = esp_timer_get_time();
     esp_wifi_connect();
 }
 
