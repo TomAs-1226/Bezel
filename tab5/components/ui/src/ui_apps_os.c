@@ -11,6 +11,7 @@
  * app's refresh polls. App state lives in PSRAM's .bss and anything large in PSRAM heap (malloc routes
  * big blocks there), so none of this costs internal RAM. */
 #include "ui_internal.h"
+#include "ui_md.h"
 #include "ui_storage.h"
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
 
@@ -303,6 +304,8 @@ static void alarm_tick(void *u)
     }
 }
 
+static void docs_tick(void *u); /* below, with the documents app it belongs to */
+
 void ui_os_boot(void)
 {
     if (CL.booted) return;
@@ -311,6 +314,7 @@ void ui_os_boot(void)
     al_load();
     zones_load();
     ui_on_refresh(alarm_tick, NULL);
+    ui_on_refresh(docs_tick, NULL);
 }
 
 static const char *days_text(uint8_t d, char *b, size_t n)
@@ -1163,6 +1167,15 @@ static void doc_chunk(char *s, size_t n)
     }
 }
 
+/* The open document is one the renderer handles rather than plain text. */
+static bool doc_is(const char *ext)
+{
+    size_t n = strlen(DC.name), e = strlen(ext);
+    return n > e && !strcasecmp(DC.name + n - e, ext);
+}
+
+static bool doc_rendered(void) { return doc_is(".md") || doc_is(".svg"); }
+
 static void *doc_lister(void *u)
 {
     (void)u;
@@ -1172,7 +1185,7 @@ static void *doc_lister(void *u)
         return NULL;
     }
     cstore_layout();
-    int n = cstore_list(dir, ".TXT.MD", false, DC.files, DOC_FILES);
+    int n = cstore_list(dir, ".TXT.MD.SVG", false, DC.files, DOC_FILES);
     DC.nfiles = n < 0 ? 0 : n;
     PUBLISH(DC.list_state, n < 0 ? 4 : 2);
     return NULL;
@@ -1192,7 +1205,9 @@ static void *doc_reader(void *u)
         while (len && ((unsigned char)t[len - 1] & 0xC0) == 0x80) len--;
     if (trunc && len && ((unsigned char)t[len - 1] & 0xC0) == 0xC0) len--;
     len = doc_clean(t, len);
-    doc_chunk(t, len);
+    /* a .TXT is cut into chunks so LVGL draws only the labels in view; markdown and a drawing have to
+     * reach the renderer whole, because a chunk boundary could fall inside a fence */
+    if (!doc_rendered()) doc_chunk(t, len);
     DC.got = t;
     DC.got_len = len;
     DC.got_trunc = trunc;
@@ -1289,6 +1304,27 @@ static void doc_show_text(void)
         bz_label(DC.vs.content, "This file is empty.", BZ_F_BODY, BZ_C_DIM);
         return;
     }
+    /* markdown and drawings go through the one renderer the assistant's answers use (ui_md.c), into a
+     * box of their own so the scroller's own column keeps its layout */
+    if (doc_is(".svg")) {
+        char why[160] = "";
+        lv_obj_t *box = bz_box(DC.vs.content);
+        lv_obj_set_width(box, w);
+        lv_obj_set_height(box, LV_SIZE_CONTENT);
+        if (!ui_md_svg(box, DC.text, w, 520, why, sizeof why)) {
+            lv_obj_t *l = bz_label(box, why[0] ? why : "nothing in this drawing could be drawn", BZ_F_BODY, BZ_C_WARN);
+            lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+            lv_obj_set_width(l, w);
+        } else if (why[0]) {
+            ui_text(DC.meta, "%s", why);
+        }
+        return;
+    }
+    if (doc_is(".md")) {
+        lv_obj_t *box = bz_box(DC.vs.content);
+        ui_md_render(box, DC.text, w);
+        return;
+    }
     for (const char *p = DC.text; p < DC.text + DC.len; p += strlen(p) + 1) {
         lv_obj_t *l = bz_label(DC.vs.content, "", BZ_F_BODY, BZ_C_INK);
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
@@ -1331,8 +1367,84 @@ static void docs_build(lv_obj_t *b)
 
 static void docs_open(void) { doc_list_start(); }
 
+/* ---- a document written from outside the app ----
+ *
+ * The assistant writes documentation straight onto the card; this is the whole of the tablet's side of
+ * that tool. It runs on the assistant's worker, not the UI thread, so it only touches the card and
+ * leaves a note for docs_tick() to say out of the island a tenth of a second later.
+ *
+ * What it refuses, and why: a name with a slash or a "..", because a tool that can name a path can write
+ * anywhere on the card; an empty body, because an empty document is a mistake every time; a name that is
+ * all punctuation once the characters FAT will not take are gone. The extension is forced to .MD — this
+ * is the markdown-writing tool, and a document the app cannot render is not what was asked for. */
+static char g_doc_note[96];
+static volatile bool g_doc_note_new;
+
+bool ui_docs_write(const char *name, const char *markdown, char *why, size_t nwhy)
+{
+    char local[128];
+    if (!why || !nwhy) {
+        why = local;
+        nwhy = sizeof local;
+    }
+    why[0] = 0;
+    if (!markdown || !markdown[0]) {
+        snprintf(why, nwhy, "there is nothing to write");
+        return false;
+    }
+    if (!name || !name[0]) {
+        snprintf(why, nwhy, "the document needs a name");
+        return false;
+    }
+    if (strstr(name, "..") || strchr(name, '/') || strchr(name, '\\')) {
+        snprintf(why, nwhy, "a document name can't contain a path: \"%.40s\"", name);
+        return false;
+    }
+    /* keep what FAT takes, drop the rest, and stop at the extension the caller gave */
+    char stem[48];
+    size_t k = 0;
+    for (const char *p = name; *p && k + 1 < sizeof stem; p++) {
+        if (*p == '.' && (!strcasecmp(p, ".md") || !strcasecmp(p, ".txt"))) break;
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || strchr("\"*:<>?|", c)) continue;
+        stem[k++] = *p == ' ' ? '-' : *p;
+    }
+    stem[k] = 0;
+    if (!k) {
+        snprintf(why, nwhy, "\"%.40s\" leaves no usable file name", name);
+        return false;
+    }
+    char path[200];
+    if (!cstore_layout() || !cstore_path(CS_DOCS, NULL, path, sizeof path)) {
+        snprintf(why, nwhy, "there is no microSD card to write to");
+        return false;
+    }
+    size_t at = strlen(path);
+    snprintf(path + at, sizeof path - at, "/%s.MD", stem);
+    if (!cstore_write(path, markdown, strlen(markdown))) {
+        snprintf(why, nwhy, "the card wouldn't take %s.MD (full, or write-protected)", stem);
+        return false;
+    }
+    snprintf(g_doc_note, sizeof g_doc_note, "wrote %s.MD to documents", stem);
+    __sync_synchronize();
+    g_doc_note_new = true;
+    if (DC.list_state == 0) DC.list_state = 5; /* the list is stale: docs_open rescans */
+    return true;
+}
+
+/* On the UI thread: says what the assistant wrote, once. */
+static void docs_tick(void *u)
+{
+    (void)u;
+    if (!g_doc_note_new) return;
+    g_doc_note_new = false;
+    __sync_synchronize();
+    ui_island_say(BZ_I_DESCRIPTION, g_doc_note);
+}
+
 static void docs_refresh(void)
 {
+    if (DC.list_state == 5) DC.list_state = 0; /* written from outside: doc_list_start reads it again */
     if (DC.list_state >= 2) {
         doc_show_list();
         DC.list_state = 0;

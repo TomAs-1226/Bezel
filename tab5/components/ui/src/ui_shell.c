@@ -5,6 +5,7 @@
  * snap); an island that carries status and morphs for a message; apps that grow out of the icon that
  * opened them and can be caught mid-flight or dragged down to close. */
 #include "ui_internal.h"
+#include "ui.h"
 #include "as_snap.h"
 #include "assist.h"
 #include "link.h"
@@ -814,7 +815,8 @@ static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
-        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5))
+        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
+        strncmp(line, "docwrite", 8))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -826,6 +828,74 @@ static bool dev_handler(const char *line)
 static double s_prof[12];
 static const char *const s_prof_name[12] = { "slide", "caches", "dock", "orient", "windows", "perf", "model",
                                              "assist", "island", "pages", "app", "rest" };
+
+/* A document that exercises everything the renderer draws, written onto the card through the very
+ * function the assistant's document tool calls. It is the only way to see a chart and a drawing on the
+ * tablet without a model in the loop, and the syntax it shows is the syntax docs/render-blocks.md
+ * specifies — if one drifts from the other, this is what catches it. */
+static const char DOC_SAMPLE[] =
+    "# What this tablet draws\n"
+    "\n"
+    "This page is written by the dev console and rendered by the same code as an answer from the\n"
+    "assistant. If any of it looks wrong here, it looks wrong there.\n"
+    "\n"
+    "## Text\n"
+    "\n"
+    "A paragraph with **bold words** in it, a `monospaced run`, and ordinary prose around them so the\n"
+    "faces can be compared on the same line.\n"
+    "\n"
+    "- a bullet, which the body face draws with an em dash\n"
+    "- a second one, long enough to wrap onto another line and show that the text hangs under itself\n"
+    "\n"
+    "1. numbered\n"
+    "2. also numbered\n"
+    "\n"
+    "> a quoted line, dimmed, with a rule down its left\n"
+    "\n"
+    "---\n"
+    "\n"
+    "## A chart\n"
+    "\n"
+    "```chart\n"
+    "line battery through a match\n"
+    "x 0 15 30 45 60 75 90 105 120\n"
+    "y 12.6 12.4 12.1 11.7 12.0 11.9 11.6 11.4 11.8\n"
+    "unit V\n"
+    "```\n"
+    "\n"
+    "```chart\n"
+    "bar current by mechanism\n"
+    "y 34 18 52 7\n"
+    "labels drive, arm, shooter, intake\n"
+    "unit A\n"
+    "```\n"
+    "\n"
+    "## A chart that is wrong on purpose\n"
+    "\n"
+    "```chart\n"
+    "line two series of different lengths\n"
+    "y 1 2 3 4\n"
+    "y 1 2\n"
+    "```\n"
+    "\n"
+    "## A drawing\n"
+    "\n"
+    "```svg\n"
+    "<svg viewBox=\"0 0 200 90\">\n"
+    "  <rect x=\"6\" y=\"6\" width=\"188\" height=\"78\" rx=\"8\" fill=\"none\" stroke=\"#7f8ea3\" stroke-width=\"2\"/>\n"
+    "  <circle cx=\"40\" cy=\"45\" r=\"22\" fill=\"#8f7ae6\"/>\n"
+    "  <path d=\"M74 66 L96 24 L118 66 Z\" fill=\"none\" stroke=\"#5fcf8f\" stroke-width=\"3\"/>\n"
+    "  <line x1=\"130\" y1=\"66\" x2=\"178\" y2=\"24\" stroke=\"#e6b45f\" stroke-width=\"3\"/>\n"
+    "  <text x=\"100\" y=\"82\" font-size=\"9\" text-anchor=\"middle\">shapes</text>\n"
+    "</svg>\n"
+    "```\n"
+    "\n"
+    "## Code\n"
+    "\n"
+    "```\n"
+    "10.58.5.2:8765\n"
+    "devtools gradle -- deploy\n"
+    "```\n";
 
 static void dev_run(void)
 {
@@ -873,6 +943,12 @@ static void dev_run(void)
     } else if (!strncmp(s_dev_cmd, "ask ", 4)) {
         /* a typed question to the companion, as its keyboard would send it */
         voice_ask(s_dev_cmd + 4);
+    } else if (!strncmp(s_dev_cmd, "docwrite", 8)) {
+        /* the assistant's own document tool, driven from the cable: writes the sample onto the card */
+        const char *nm = s_dev_cmd[8] == ' ' ? s_dev_cmd + 9 : "render sample";
+        char why[128] = "";
+        bool ok = ui_docs_write(nm, DOC_SAMPLE, why, sizeof why);
+        printf("docwrite: %s%s%s\n", ok ? "written" : "refused", ok ? "" : ": ", ok ? "" : why);
     } else if (!strncmp(s_dev_cmd, "voice", 5)) {
         /* The companion's voice, from the cable. The spoken path is the one that is hard to reproduce at a
          * desk, and it is where it was failing: "voice" reports the state, the note and the last reply,

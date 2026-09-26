@@ -19,6 +19,7 @@
 #include "ccwatch.h"
 #include "link.h"
 #include "ui_companion.h"
+#include "ui_md.h"
 #include "voice.h"
 
 #include <math.h>
@@ -38,8 +39,9 @@
 
 /* ================================================================== text */
 
-/* Markdown-light for a label: **bold** and `code` lose their marks (the faces have no bold or mono
- * run inside a label), "- " and "* " become dashes. */
+/* Markdown with its marks taken off, for the places that are still one label: what the owner typed,
+ * and an answer while it is still arriving. A finished answer goes through ui_md_render instead, which
+ * draws the marks rather than deleting them — see view_fill. */
 static void plain(char *out, size_t n, const char *in)
 {
     size_t o = 0;
@@ -118,6 +120,8 @@ typedef struct {
     uint32_t rev;
     as_entry_kind_t kind;
     lv_obj_t *row, *text, *mark;
+    lv_obj_t *rich;      /* the rendered answer, once it has stopped arriving */
+    uint32_t rich_rev;   /* what was rendered, so a settled answer is drawn once and not per frame */
 } view_t;
 
 static struct {
@@ -173,6 +177,8 @@ static void view_make(view_t *v, const as_entry_t *e)
 {
     v->kind = e->kind;
     v->mark = NULL;
+    v->rich = NULL;      /* the row is new: whatever was rendered into the old one went with it */
+    v->rich_rev = 0;
     switch (e->kind) {
     case AS_E_USER: {
         /* the question: on ice, on the right */
@@ -247,11 +253,37 @@ static void view_make(view_t *v, const as_entry_t *e)
     v->rev = e->rev - 1; /* forces the first fill */
 }
 
+/* An answer is rendered properly — headings, bold, code, charts, drawings — once it has stopped
+ * arriving. While it streams it stays one plain label: re-laying out a column of objects on every
+ * delta would cost more than the answer, and a fence half-written is not a chart yet. */
+static void view_rich(view_t *v, const as_entry_t *e)
+{
+    const char *t = e->text ? e->text : "";
+    if (v->rich_rev == e->rev) return;
+    v->rich_rev = e->rev;
+    if (!v->rich) {
+        v->rich = bz_box(v->row);
+        lv_obj_set_pos(v->rich, 0, 0);
+    }
+    ui_md_render(v->rich, t, TW - 2 * BZ_PAD_TILE);
+    if (v->text) lv_obj_add_flag(v->text, LV_OBJ_FLAG_HIDDEN);
+}
+
 static void view_fill(view_t *v, const as_entry_t *e)
 {
+    /* the streaming answer settles: draw it again, this time as what it says it is */
+    if (v->kind == AS_E_TEXT && v->rev == e->rev && v->rich_rev != e->rev && assist_phase() != AS_PHASE_WRITING &&
+        ui_md_is_rich(e->text))
+        view_rich(v, e);
     if (v->rev == e->rev) return;
     v->rev = e->rev;
     const char *t = e->text ? e->text : "";
+    if (v->kind == AS_E_TEXT && v->rich) {
+        /* it grew again after settling (a second block of the same answer): back to the renderer */
+        v->rich_rev = e->rev - 1;
+        if (assist_phase() != AS_PHASE_WRITING) view_rich(v, e);
+        return;
+    }
     if (v->kind == AS_E_TEXT || v->kind == AS_E_USER) {
         size_t n = strlen(t) + 8;
         char *buf = malloc(n);

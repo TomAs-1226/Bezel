@@ -32,6 +32,7 @@
 #include "link.h"
 #include "voice.h"
 #include "ui_home_mode.h"
+#include "ui_md.h"
 
 #include "lvgl_private.h" /* lv_area_intersect, and the layer's clip for drawing an eye */
 
@@ -202,6 +203,7 @@ struct crow {
 
 static struct {
     bool built, open;
+    lv_obj_t *cap_rich;            /* an answer with markdown in it, drawn instead of the plain label */
     lv_obj_t *body, *face, *can[2], *mouth, *dots[3], *status, *cap, *cap_box, *asked, *answer, *bar, *chips,
         *cc_btn, *cc_label, *talk_btn;
     lv_obj_t *panel, *list, *panel_note, *panel_head;
@@ -523,39 +525,31 @@ static void status_line(double now, char *out, size_t n)
     }
 }
 
-/* ================================================================== the conversation */
-
-static void plain_into(char *out, size_t n, const char *in)
-{
-    size_t o = 0;
-    bool line_start = true;
-    for (const char *p = in; *p && o + 4 < n; p++) {
-        if (p[0] == '*' && p[1] == '*') { p++; continue; }
-        if (*p == '`') continue;
-        if (line_start && (p[0] == '-' || p[0] == '*') && p[1] == ' ') {
-            memcpy(out + o, "\xe2\x80\x94", 3); /* the face has no bullet: an em dash */
-            o += 3;
-            line_start = false;
-            continue;
-        }
-        if (line_start && p[0] == '#') {
-            while (p[1] == '#') p++;
-            if (p[1] == ' ') p++;
-            continue;
-        }
-        out[o++] = *p;
-        line_start = *p == '\n';
-    }
-    out[o] = 0;
-}
 
 static void caption(const char *asked, const char *answer, double now)
 {
     ui_text(CP.asked, "%s", asked);
-    const char *cur = lv_label_get_text(CP.answer);
-    if (!cur || strcmp(cur, answer) != 0) {
-        lv_label_set_text(CP.answer, answer);
+    /* An answer meant to be spoken is plain prose, and a label is the cheapest thing that draws it. When
+     * the model reaches for markdown anyway — a list of what it found, a chart of the battery — the same
+     * renderer the assist app uses draws it here (ui_md.c), and the plain label steps aside. */
+    bool rich = ui_md_is_rich(answer);
+    if (rich) {
+        lv_obj_add_flag(CP.answer, LV_OBJ_FLAG_HIDDEN);
+        if (!CP.cap_rich) {
+            CP.cap_rich = bz_box(CP.cap_box);
+            lv_obj_set_width(CP.cap_rich, lv_obj_get_width(CP.answer));
+        }
+        lv_obj_remove_flag(CP.cap_rich, LV_OBJ_FLAG_HIDDEN);
+        ui_md_render(CP.cap_rich, answer, lv_obj_get_width(CP.answer));
         ui_scroller_follow(CP.cap_box);
+    } else {
+        if (CP.cap_rich) lv_obj_add_flag(CP.cap_rich, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_remove_flag(CP.answer, LV_OBJ_FLAG_HIDDEN);
+        const char *cur = lv_label_get_text(CP.answer);
+        if (!cur || strcmp(cur, answer) != 0) {
+            lv_label_set_text(CP.answer, answer);
+            ui_scroller_follow(CP.cap_box);
+        }
     }
     CP.cap_at = now;
     CP.cap_has = true;
@@ -615,15 +609,8 @@ static void voice_sync(double now)
             CP.fix_until = now + (r->look == VO_LOOK_CENTER ? 0.5 : 1.6);
             if (r->emotion == VO_EMO_EXCITED || r->emotion == VO_EMO_HAPPY || r->emotion == VO_EMO_LOVE) CP.bounce_t0 = now;
             if (rnd() < 0.4f) CP.blink_t0 = now;
-            if (r->shown) {
-                size_t l = strlen(r->say) + 8;
-                char *a = malloc(l);
-                if (a) {
-                    plain_into(a, l, r->say);
-                    caption(asked, a, now);
-                    free(a);
-                }
-            }
+            /* caption() decides: plain prose into the label, markdown through the renderer */
+            if (r->shown) caption(asked, r->say, now);
             if (!r->spoken) {
                 chime(CHIME_ANSWER);
                 /* meant to be heard, but the sound is off: say where the answer went, once per answer */
@@ -673,9 +660,11 @@ static void assist_sync(double now)
         for (int i = n - 1; i > last_user; i--) {
             const as_entry_t *e = assist_entry(i);
             if (e->kind == AS_E_TEXT && e->text && e->text[0]) {
-                size_t l = strlen(e->text) + 8;
-                answer = malloc(l);
-                if (answer) plain_into(answer, l, e->text);
+                {
+                    size_t l = strlen(e->text) + 1;
+                    answer = malloc(l);
+                    if (answer) memcpy(answer, e->text, l); /* the lock goes below; caption reads it after */
+                }
                 break;
             }
         }

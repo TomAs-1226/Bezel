@@ -72,6 +72,10 @@
 #define LV_USE_THEME_DEFAULT 0
 #define LV_USE_THEME_SIMPLE 0
 
+/* Several faces inside one flowing paragraph: **bold** and `code` in rendered markdown (ui_md.c). A
+ * label carries one font, so without this the marks could only ever be stripped off. */
+#define LV_USE_SPAN 1
+
 #define LV_USE_CANVAS 1
 #define LV_USE_SNAPSHOT 0
 #define LV_USE_OBSERVER 0

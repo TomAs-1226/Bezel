@@ -53,6 +53,7 @@ TEXT_FONTS = [
     ("bz_font_title_36", "flex600.ttf", 36, ASCII + "," + EXTRA, True),
     ("bz_font_name_24", "flex600.ttf", 24, ASCII + "," + EXTRA, True),
     ("bz_font_body_20", "flex400.ttf", 20, ASCII + "," + EXTRA, True),
+    ("bz_font_body_bold_20", "flex600.ttf", 20, ASCII + "," + EXTRA, True),
     ("bz_font_body_17", "flex400.ttf", 17, ASCII + "," + EXTRA, True),
     ("bz_font_mono_16", "code400.ttf", 16, ASCII + "," + EXTRA, False),
     ("bz_font_mono_13", "code400.ttf", 13, ASCII + "," + EXTRA, False),
@@ -64,6 +65,7 @@ TEXT_FONTS = [
     ("bz_font_title_44", "flex600.ttf", 44, ASCII + "," + EXTRA, True),
     ("bz_font_name_30", "flex600.ttf", 30, ASCII + "," + EXTRA, True),
     ("bz_font_body_24", "flex400.ttf", 24, ASCII + "," + EXTRA, True),
+    ("bz_font_body_bold_24", "flex600.ttf", 24, ASCII + "," + EXTRA, True),
     ("bz_font_body_21", "flex400.ttf", 21, ASCII + "," + EXTRA, True),
     ("bz_font_mono_19", "code400.ttf", 19, ASCII + "," + EXTRA, False),
     # the Catalyst wordmark on the boot screen: "Catalyst" light, the product bold (the family's banners)

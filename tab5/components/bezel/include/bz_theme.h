@@ -16,6 +16,7 @@ typedef enum {
     BZ_F_TITLE,    /* 36, Sans Flex 600 */
     BZ_F_NAME,     /* 24, Sans Flex 600 */
     BZ_F_BODY,     /* 20, Sans Flex 400 */
+    BZ_F_BODY_B,   /* 20, Sans Flex 600 — bold body, for rendered markdown */
     BZ_F_BODY_S,   /* 17 */
     BZ_F_LABEL,    /* 16, Sans Code 400 — lowercase mono labels */
     BZ_F_CAPTION,  /* 13, Sans Code 400 */

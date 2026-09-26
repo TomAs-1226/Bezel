@@ -16,10 +16,10 @@ static const lv_font_t *const FONTS[BZ_F_COUNT] = {
 #if BZ_LEAN
     /* the tablet's scale: every role 1.25x Bezel's reference, read at arm's length on a 294 ppi panel */
     &bz_font_clock_118, &bz_font_display_92, &bz_font_display_56, &bz_font_title_44, &bz_font_name_30,
-    &bz_font_body_24, &bz_font_body_21, &bz_font_mono_19, &bz_font_mono_16,
+    &bz_font_body_24, &bz_font_body_bold_24, &bz_font_body_21, &bz_font_mono_19, &bz_font_mono_16,
 #else
     &bz_font_clock_118, &bz_font_display_76, &bz_font_display_46, &bz_font_title_36, &bz_font_name_24,
-    &bz_font_body_20, &bz_font_body_17, &bz_font_mono_16, &bz_font_mono_13,
+    &bz_font_body_20, &bz_font_body_bold_20, &bz_font_body_17, &bz_font_mono_16, &bz_font_mono_13,
 #endif
 };
 
