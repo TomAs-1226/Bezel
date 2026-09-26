@@ -163,6 +163,84 @@ void home_player_skip(int dir);                     /* next (+1) / previous (-1)
 void home_player_stop(void);
 void home_player_get(home_play_t *out);
 
+/* ---- the timed photo: home mode's own snapshot, every few minutes, kept only up to a limit ----
+ *
+ * home_capture_tick() is called once a second from ui_home_mode.c's frame hook, whether or not home mode is
+ * on screen; it does nothing unless `home_active` is true, the setting is on, the period has elapsed, there
+ * is a card, and `camera_free` (nothing else has a window open: the lens app's own camera use, or just
+ * someone using the tablet, in which case an unattended photo isn't the point anyway). When it's due, it
+ * fires a one-shot worker (hal_thread): camera on, wait for a frame, encode and write it, camera off. The
+ * camera is never left running between shots — a photo every five minutes doesn't justify keeping the ISP
+ * and the P4's video pipeline powered the other four minutes and fifty-some seconds, and a lit camera is
+ * exactly the thing this feature's own privacy story asks it not to be by default. */
+#define HOME_CAP_KEEP_DEFAULT 300   /* a ring of the newest N; at ~50-150 KB a JPEG that's tens of MB, not GB */
+#define HOME_CAP_MARGIN_MB 32       /* free space this feature tries to keep clear by trimming its own oldest */
+
+void home_capture_config(bool enabled, int period_min, int keep); /* settings > home; period/keep <= 0 uses the default */
+typedef struct {
+    bool enabled;
+    bool live;                 /* the camera is on for a shot right now: show something on screen while it is */
+    double last_shot;          /* hal_seconds() of the last photo actually saved; 0 none yet */
+    int kept;                  /* photos on the card under this feature's own tree, as of the last sweep */
+    char reason[64];           /* "" when off or fine; else why the last attempt didn't save one, in words */
+} home_capture_status_t;
+void home_capture_status(home_capture_status_t *out);
+void home_capture_tick(double now, bool home_active, bool camera_free);
+
+/* The pure retention decision (home_capture_policy.c: no I/O, no hal — the part worth testing without a
+ * card or a camera). `files` in any order; `del[i]` is marked true, oldest (smallest mtime) first, until the
+ * count still standing is <= keep AND free_bytes plus whatever this call frees is >= margin_bytes (deleting
+ * every file it was given if that still isn't enough: it only ever sees its own tree, never the whole card).
+ * Returns how many it marked. */
+typedef struct {
+    double mtime;               /* newer is greater; only the ordering matters */
+    uint64_t bytes;
+} home_cap_file_t;
+int home_capture_plan(const home_cap_file_t *files, int n, int keep, uint64_t free_bytes, uint64_t margin_bytes,
+                      bool *del);
+
+/* ---- room-occupied signal from the microphones' ambient level ----
+ * NOT person detection: a fan, a TV or a dishwasher reads the same as a person talking. The honest
+ * alternative was the camera's frame-to-frame difference, which is motion, not presence, and needs the
+ * camera running far more often than the timed photo above does — fighting that feature's own "off unless
+ * it's actually taking a photo" story. The microphones are cheap to sample instead, and this is a purely
+ * passive reader of them: it never calls hal_mic_start() or hal_mic_stop() itself. Home mode's own wake
+ * word already keeps the microphones open the whole time home mode is showing (ui_home_mode_showing() ->
+ * voice_enable(), in ui_home_mode.c and assist's voice.c), so presence just samples the level that's
+ * already being produced (hal_mic_on() + hal_mic_level()) on its own poll; when nothing is already
+ * listening it takes no sample and waits, so it can never contend for the codec and never keeps it powered
+ * on its own account (an earlier version that duty-cycled the mic itself did exactly that — opened and
+ * closed it every few seconds regardless of the wake word — which was a real bug, not a style choice). It
+ * doesn't get its own settings toggle the way the camera does: it never records or transmits audio, keeps
+ * only a coarse level in RAM, and only ever polls while home mode itself is on screen (ui_home_mode.c's
+ * go(), like the eyes' blink and the stand watcher already do without one). A future owner-facing switch
+ * would be a one-line addition to home_presence_set_active's caller. */
+typedef enum { HOME_PRESENCE_UNKNOWN, HOME_PRESENCE_EMPTY, HOME_PRESENCE_OCCUPIED } home_presence_state_t;
+
+void home_presence_config(float threshold01, double poll_s, double confirm_s, double quiet_s); /* all tunable */
+void home_presence_set_active(bool home_active); /* home mode entering/leaving screen: gates the poll */
+/* UI thread, once a frame; internally throttled to poll_s. Never touches hal_mic_start/stop — see above. */
+void home_presence_tick(double now);
+home_presence_state_t home_presence_state(void);
+double home_presence_last_seen(void);     /* hal_seconds() the level last crossed the threshold; 0 never */
+/* now - last_seen, or a large number with no signal yet: what ui_shell.c's dim/sleep timer blends in, home
+ * mode only (ui_home_mode_presence_idle_s) — so home mode brightens when the room's making noise and dims on
+ * the same idle timer as everything else once it's been quiet a while, rather than a second timer of its own. */
+double home_presence_idle_s(double now);
+
+/* The pure hysteresis step (home_presence_policy.c: no I/O, no hal). CONFIRM_S of sustained level at or
+ * above `threshold` before OCCUPIED; QUIET_S of sustained quiet before EMPTY (so one loud moment doesn't
+ * flip it, and one quiet pause doesn't either); a fresh track goes straight to EMPTY on its first quiet
+ * sample (absence is the default that needs no confirming) but still needs a confirm_s run of loud ones
+ * before its first OCCUPIED. */
+typedef struct {
+    home_presence_state_t state;
+    double above_since, below_since;  /* 0: not currently in that run */
+    double last_seen;                  /* 0: never */
+} home_presence_track_t;
+void home_presence_step(home_presence_track_t *t, double now, float level, float threshold, double confirm_s,
+                        double quiet_s);
+
 #ifdef __cplusplus
 }
 #endif

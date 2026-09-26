@@ -21,10 +21,14 @@ static const char *const KINDS[] = { "lights", "switches", "scenes", "sensors", 
 static const int SAVER_MIN[] = { 0, 5, 15, 30 };
 #define NSAVER 4
 
+static const int CAM_MIN[] = { 1, 5, 15, 30 };
+#define NCAMMIN 4
+
 static struct {
     lv_obj_t *start_catalyst, *start_home, *stand, *far, *cel, *pc;
     lv_obj_t *saver[NSAVER], *tag_state, *tag_btn, *tag_forget, *pc_state;
     lv_obj_t *net_state, *net_btn, *net_any;
+    lv_obj_t *cam_on, *cam_min[NCAMMIN], *cam_state;
     int tag_shown;             /* what tag_state says: -2 not yet, else hm_tag_pair_state()'s idea */
     bool tag_waiting;
     lv_obj_t *place, *url, *token, *ha_state, *list_state, *list, *kind[NKINDS];
@@ -48,6 +52,8 @@ static void show(void)
     ui_chip_set(HS.far, c->fahrenheit);
     ui_chip_set(HS.pc, c->pc);
     for (int i = 0; i < NSAVER; i++) ui_chip_set(HS.saver[i], c->saver_min == SAVER_MIN[i]);
+    ui_chip_set(HS.cam_on, c->cam_on);
+    for (int i = 0; i < NCAMMIN; i++) ui_chip_set(HS.cam_min[i], c->cam_min == CAM_MIN[i]);
     ui_text(lv_obj_get_child(HS.place, 1), "%s", c->place[0] ? c->place : "set the place");
     ui_text(lv_obj_get_child(HS.url, 1), "%s", c->ha_url[0] ? c->ha_url : "home assistant's address");
     ui_text(lv_obj_get_child(HS.token, 1), "%s", c->ha_token[0] ? "token set \xc2\xb7 change it" : "add a token");
@@ -79,6 +85,7 @@ static void toggle(lv_obj_t *o, void *u)
     case 1: c->fahrenheit = false; break;
     case 2: c->fahrenheit = true; break;
     case 3: c->pc = !c->pc; break;
+    case 4: c->cam_on = !c->cam_on; break;
     }
     hm_cfg_save();
     show();
@@ -121,6 +128,14 @@ static void pick_saver(lv_obj_t *o, void *u)
 {
     (void)o;
     hm_cfg()->saver_min = SAVER_MIN[(intptr_t)u];
+    hm_cfg_save();
+    show();
+}
+
+static void pick_cam_min(lv_obj_t *o, void *u)
+{
+    (void)o;
+    hm_cfg()->cam_min = CAM_MIN[(intptr_t)u];
     hm_cfg_save();
     show();
 }
@@ -338,12 +353,39 @@ static void load_list(lv_obj_t *o, void *u)
     ui_text(HS.list_state, "%s", "reading home assistant's entities...");
 }
 
+/* "off", or "on · last photo 3 min ago · 12 kept", or, when the last attempt didn't save one, whatever
+ * plain-words reason home_capture.c gave for that (no card, the camera's busy, the card's full and being
+ * trimmed, ...). */
+static void cam_show(void)
+{
+    if (!HS.cam_state) return;
+    home_capture_status_t st;
+    home_capture_status(&st);
+    if (!st.enabled) {
+        ui_text(HS.cam_state, "%s", "off");
+        return;
+    }
+    if (st.reason[0]) {
+        ui_text(HS.cam_state, "%s", st.reason);
+        return;
+    }
+    if (!st.last_shot) {
+        ui_text(HS.cam_state, "%s", "on \xc2\xb7 no photo yet");
+        return;
+    }
+    double ago = hal_seconds() - st.last_shot;
+    if (ago < 90) ui_text(HS.cam_state, "on \xc2\xb7 last photo just now \xc2\xb7 %d kept", st.kept);
+    else if (ago < 3600) ui_text(HS.cam_state, "on \xc2\xb7 last photo %d min ago \xc2\xb7 %d kept", (int)(ago / 60), st.kept);
+    else ui_text(HS.cam_state, "on \xc2\xb7 last photo %d h ago \xc2\xb7 %d kept", (int)(ago / 3600), st.kept);
+}
+
 /* 10 Hz while the settings app is open (through its hook below) */
 static void hs_tick(void *u)
 {
     (void)u;
     if (!HS.list || !ui_app_is_open(&APP_SETTINGS)) return;
     home_want(HOME_WANT_HA);
+    cam_show();
     tag_show();
     link_status_t ls;
     link_status(&ls);
@@ -447,6 +489,22 @@ void ui_home_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     }
     caption(col, "On home mode, untouched: the card's photos (CATOS/PHOTOS) one after another. A tap ends it.", w);
 
+    bz_label(col, "home photo", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    HS.cam_on = ui_chip(r, "take a photo every few minutes", toggle, (void *)(intptr_t)4);
+    r = wrap(col, w);
+    for (int i = 0; i < NCAMMIN; i++) {
+        char t[16];
+        snprintf(t, sizeof t, "every %d min", CAM_MIN[i]);
+        HS.cam_min[i] = ui_chip(r, t, pick_cam_min, (void *)(intptr_t)i);
+    }
+    HS.cam_state = caption(col, "", w);
+    cam_show();
+    caption(col, "Off by default. On, home mode's camera wakes just long enough for one shot, saved to "
+                 "CATOS/PHOTOS/HOME, and sleeps again — never left running between photos. Something shows on "
+                 "screen the moment it's live. Old photos are cleared automatically so this never fills the card.",
+            w);
+
     bz_label(col, "weather", BZ_F_LABEL, BZ_C_DIM);
     r = wrap(col, w);
     HS.place = ui_button(r, BZ_I_PIN_DROP, "set the place", edit, (void *)(intptr_t)ED_PLACE);
@@ -546,5 +604,6 @@ void ui_home_settings_open(void)
     HS.ha_gen = 0;
     HS.tag_shown = -2;
     show();
+    cam_show();
     ui_text(HS.list_state, "%d of %d picked", npicked(), HOME_HA_PICKS);
 }

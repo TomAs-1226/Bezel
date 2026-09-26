@@ -227,6 +227,8 @@ static void logs(void)
 void test_sc(int *checks, int *fails);
 /* test_batt.c: the battery fleet: the resistance fit, a log's battery numbers, the JSON, the ranking */
 void test_batt(int *checks, int *fails);
+/* test_home.c: home mode's timed-photo retention ring and its room-occupied hysteresis */
+void test_home(int *checks, int *fails);
 
 int main(void)
 {
@@ -238,6 +240,7 @@ int main(void)
     test_assist(&checks, &fails);
     test_sc(&checks, &fails);
     test_batt(&checks, &fails);
+    test_home(&checks, &fails);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

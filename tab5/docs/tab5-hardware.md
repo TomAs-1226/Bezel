@@ -30,7 +30,7 @@ read as raw HTML, **[S]** the Tab5 schematic PDF. Anything not confirmed from on
 | **microSD** | SDMMC 4-bit: CLK 43, CMD 44, D0–D3 39–42 [M] | Lens snapshots and clips, and reading Driver Station logs (`.wpilog`, `.dslog`, `.dsevents`). |
 | **USB-A** | The P4's USB 2.0 **high-speed** OTG controller and its UTMI PHY (P4 pins 49/50 → 33 Ω pair R113/R114 → common-mode filter FT2 → J10); 5 V to the port switched by E2.P3 [S] | The **USB tether**: Systemcore's USB-C gadget through an A-to-C cable, or a CDC-ECM USB-Ethernet adapter into the robot's radio or switch. See [USB tether](#usb-tether). |
 | **USB-C** | Full-speed PHY0 on GPIO24/25 = USB-Serial/JTAG (R111/R112 → FT1 → J8); VBUS feeds the charger, nothing switches 5 V out [S] | Flashing, the console, and power in. **It can't host**: it takes power, never supplies it, so the tether has to use the USB-A port. |
-| **Grove Port A** | Its own I2C (the firmware uses controller I2C_NUM_0; the system bus is I2C_NUM_1): SDA 53, SCL 54, switched 5 V (E1.P2) | The **CAN tap**: with a Grove CAN transceiver unit on these two pins, the P4's TWAI controller listens (listen-only, never transmits) to a classic 1 Mbit/s robot CAN bus. **NFC for home mode**: the Tab5 has no NFC reader of its own (nothing on the system bus reads a tag, so the tag in the box needs a reader); M5Stack's **Unit RFID 2** (WS1850S, MFRC522 registers, I2C 0x28) here is probed a few seconds after boot (absent: the 5 V goes off again and nothing runs), then polled for an ISO 14443A card every 300 ms by a small task (`hal_tab5_nfc.c`). Starting the CAN tap takes the port from the reader until the next start-up. UNVERIFIED on hardware. |
+| **Grove Port A** | Its own I2C (the firmware uses controller I2C_NUM_0; the system bus is I2C_NUM_1): SDA 53, SCL 54, switched 5 V (E1.P2) | The **CAN tap**: with a Grove CAN transceiver unit on these two pins, the P4's TWAI controller listens (listen-only, never transmits) to a classic 1 Mbit/s robot CAN bus. **NFC for home mode**: the Tab5 has no NFC reader of its own (nothing on the system bus reads a tag, so the tag in the box needs a reader); M5Stack's **Unit RFID 2** (WS1850S, MFRC522 registers, I2C 0x28) here is probed a few seconds after boot (absent: the 5 V goes off again and nothing runs), then polled for an ISO 14443A card every 300 ms by a small task (`hal_tab5_nfc.c`). Starting the CAN tap takes the port from the reader until the next start-up. UNVERIFIED on hardware. See [A future camera](#grove-port-a-a-future-camera) for a Grove camera unit: nothing built, just what's already here and what to check first. |
 | **RS-485** | SIT3088 on UART1 (TX 20, RX 21, DE 34); its 1.25 mm 6-pin connector also carries **SYS_VIN 6–24 V** [S] | Mainly a **power input**: the tablet can run off a robot's 12 V rail. The serial side isn't used — nothing on an FRC robot speaks RS-485. |
 | **Buttons** | Power (press on, double press off), Reset/Boot | — |
 | Not present | Ethernet, IR, magnetometer | — |
@@ -159,6 +159,34 @@ best RSSI of each, which is what settles it on a given tablet.
 | P5 | touch reset | quick-charge enable (active low) |
 | P6 | camera reset | charge status (input) |
 | P7 | headphone detect (input) | charge enable |
+
+## Grove Port A: a future camera
+
+Not implemented — a note for later, not a plan. The owner also has an M5Stack Grove-connected smart camera
+unit and wants to talk to it from this firmware "in the future." Nothing here does that yet; this is only
+what's already on the port and what such a unit would actually need, so whoever picks it up next isn't
+starting from nothing.
+
+What Port A already is, today: its own I2C controller (I2C_NUM_0; the system bus is I2C_NUM_1) on SDA 53 /
+SCL 54, plus a switched 5 V rail (E1.P2, the "Expander bits" table above). The switch is
+`hal_tab5_ext5v(bool on)` in `hal_tab5_priv.h` — **not** a public HAL call (`hal.h` exposes no `hal_grove_5v()`;
+that name doesn't exist in this codebase, so don't go looking for it). It's shared, not per-device: the CAN
+tap and the NFC reader (`hal_tab5_nfc.c`) already fight over both the port's power and its bus, one at a
+time, and a third device would join that same queue. Two things already there for reference:
+
+- The **CAN tap**: a Grove CAN transceiver, listen-only, on the same two pins repurposed as TWAI.
+- **NFC for home mode**: M5Stack's Unit RFID 2 (WS1850S/MFRC522, I2C 0x28), probed at start-up, polled while present.
+
+What a camera unit would need, and what's UNVERIFIED here: M5Stack's own Camera units (Unit Cam, UnitCamS3,
+and similar) are, as far as this note's author recalls without having re-checked M5Stack's current catalog
+for this write-up, mostly **self-contained ESP32 modules that speak UART or Wi-Fi/HTTP**, not the Grove I2C
+bus most of their other Units use — closer to a second, independent microcontroller you talk to as a peer
+than a sensor you poll. If that holds for the specific unit the owner has, it changes the shape of the
+work: it isn't "read a register over the existing Grove I2C," it's either a second UART wired in separately
+(Port A only carries I2C today, so a UART link needs its own pins) or a Wi-Fi/HTTP client living entirely in
+software, alongside (not instead of) the tablet's own Wi-Fi use through the C6. Before wiring anything: check
+the specific unit's own wiki page for its actual interface, and settle who gets Port A's 5 V and bus time
+when the CAN tap or the NFC reader also want it.
 
 ## USB tether
 

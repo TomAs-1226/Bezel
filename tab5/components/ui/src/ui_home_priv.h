@@ -21,6 +21,10 @@ typedef struct {
     bool small_clock;      /* "hm_clock": "1" the clock in the display face instead of the big one */
     bool seconds;          /* "hm_secs": seconds beside the clock */
     bool tint;             /* "hm_bg": "1" the ground tinted with the accent */
+    /* the timed photo (settings > home > photo): off by default, see home.h and home_capture.c */
+    bool cam_on;           /* "hm_cam_on" */
+    int cam_min;           /* "hm_cam_min": minutes between shots, default 5 */
+    int cam_keep;          /* "hm_cam_keep": the ring size, default HOME_CAP_KEEP_DEFAULT */
 } hm_cfg_t;
 
 /* Where the weather starts, until the settings screen says otherwise. home_weather.c knows
