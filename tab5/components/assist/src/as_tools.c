@@ -17,6 +17,7 @@
 #include "as_snap.h"
 #include "assist.h"
 #include "cat_logs.h"
+#include "cat_sc.h"
 #include "cat_preflight.h"
 #include "hal.h"
 #include "link.h"
@@ -959,6 +960,160 @@ static void kcopy(ab_t *o, const char *k, const aj_t *v)
     aj_write(o, v);
 }
 
+/* ---------------------------------------------------------------- the tablet's own recordings */
+
+/* A run name from list_recordings, and nothing else: no path of any kind. */
+static bool run_name_ok(const char *n)
+{
+    if (!n || !*n || strlen(n) > 47) return false;
+    if (strstr(n, "..") || strchr(n, '/') || strchr(n, '\\')) return false;
+    const char *dot = strrchr(n, '.');
+    return dot && !strcmp(dot, ".csv");
+}
+
+static as_tres_t t_list_recordings(as_env_t *e, ab_t *o, char *s, size_t sn)
+{
+    (void)e;
+    cat_run_t *runs = malloc(sizeof *runs * 40);
+    if (!runs) return AS_TR_ERROR;
+    int n = cat_runs_list(runs, 40);
+    if (n <= 0) {
+        free(runs);
+        ab_puts(o, hal_sd_root() ? "{\"runs\":[],\"note\":\"no recordings on the card yet\"}"
+                                 : "{\"error\":\"no microSD card\"}");
+        sum(s, sn, hal_sd_root() ? "no recordings" : "no microSD card");
+        return hal_sd_root() ? AS_TR_OK : AS_TR_ERROR;
+    }
+    ab_puts(o, "{");
+    kstr(o, "folder", "runs/");
+    key(o, "runs");
+    ab_puts(o, "[");
+    for (int i = 0; i < n; i++) {
+        comma(o);
+        ab_puts(o, "[");
+        ab_str(o, runs[i].name);
+        ab_fmt(o, ",%ld,", runs[i].bytes);
+        /* NAN duration means the file could not be read to its last complete row */
+        if (runs[i].duration_s == runs[i].duration_s) ab_fmt(o, "%.1f", runs[i].duration_s);
+        else ab_puts(o, "null");
+        ab_fmt(o, ",%d]", runs[i].channels);
+    }
+    ab_puts(o, "]");
+    kstr(o, "columns", "[name, bytes, duration_s, channels]");
+    kstr(o, "next", "analyze_recording with a name from this list");
+    ab_puts(o, "}");
+    sum(s, sn, "%d recording%s", n, n == 1 ? "" : "s");
+    free(runs);
+    return AS_TR_OK;
+}
+
+static as_tres_t t_analyze_recording(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    (void)e;
+    const char *name = aj_gets(in, "name"), *root = hal_sd_root();
+    if (!root || !run_name_ok(name)) {
+        ab_puts(o, "{\"error\":\"give a .csv run name from list_recordings\"}");
+        sum(s, sn, "not a run name");
+        return AS_TR_ERROR;
+    }
+    char path[320];
+    snprintf(path, sizeof path, "%s/runs/%s", root, name);
+    /* The digest is plain text and already bounded; it is returned as one JSON string rather than
+     * re-parsed into fields, because its shape is per-column and varies with what was recorded. */
+    size_t cap = 5000;
+    char *txt = malloc(cap);
+    if (!txt) return AS_TR_ERROR;
+    bool ok = cat_csv_digest(path, txt, cap);
+    ab_puts(o, "{");
+    kstr(o, "name", name);
+    kstr(o, ok ? "analysis" : "error", txt);
+    ab_puts(o, "}");
+    sum(s, sn, ok ? "analysed %s" : "%s: %s", name, txt);
+    free(txt);
+    return ok ? AS_TR_OK : AS_TR_ERROR;
+}
+
+/* ---------------------------------------------------------------- the state timelines */
+
+static as_tres_t t_get_states(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    (void)e;
+    double win = aj_getn(in, "window_s", 0);
+    if (!(win > 0)) win = 0;                    /* 0: since boot */
+    cat_states_lock();
+    uint32_t now = cat_states_now();
+    uint32_t t0 = win > 0 && (uint32_t)(win * 1000) < now ? now - (uint32_t)(win * 1000) : 0;
+    int nl = cat_states_count();
+    ab_puts(o, "{");
+    knum(o, "recorded_s", now / 1000.0, 1);
+    if (t0) knum(o, "window_s", (now - t0) / 1000.0, 1);
+    key(o, "lanes");
+    ab_puts(o, "[");
+    for (int i = 0; i < nl && i < 24; i++) {
+        const cat_st_lane_t *l = cat_states_lane(i);
+        if (!l) continue;
+        comma(o);
+        ab_puts(o, "{");
+        kstr(o, "name", l->name);
+        const char *cur = cat_st_current(l);
+        kstr(o, "now", cur ? cur : "(no value)");
+        kint(o, "changes", cat_st_count(l, t0, now));
+        kint(o, "changes_ever", (long)l->total);
+        /* Time in each state it was actually in. A lane with 24 possible states usually visits
+         * three; listing the ones with no time in them is noise for a model to read. */
+        key(o, "time_s");
+        ab_puts(o, "{");
+        for (int k = 0; k < l->nnames; k++) {
+            uint32_t ms = cat_st_time_in(l, k, t0, now, now);
+            if (ms < 50) continue;              /* under a twentieth of a second: not a visit */
+            knum(o, l->names[k], ms / 1000.0, 1);
+        }
+        ab_puts(o, "}");
+        /* The most recent transitions, newest first: what just happened, which is usually the
+         * question ("why did it drop out of SHOOT?"). */
+        key(o, "recent");
+        ab_puts(o, "[");
+        cat_st_edge_t ed;
+        for (int k = 0; k < 8 && cat_st_edge(l, k, &ed); k++) {
+            if (ed.ms < t0) break;
+            comma(o);
+            ab_puts(o, "[");
+            ab_fmt(o, "%.1f,", (now - ed.ms) / 1000.0);
+            ab_str(o, ed.s >= 0 && ed.s < l->nnames ? l->names[ed.s] : "(no value)");
+            ab_puts(o, "]");
+        }
+        ab_puts(o, "]");
+        kstr(o, "recent_columns", "[seconds_ago, entered]");
+        if (l->kind == CAT_LANE_MACHINE) {
+            /* A state machine also publishes why it did NOT move: rejections, timeouts, aborts and
+             * yields are the half of the story the timeline cannot show. */
+            char base[96];
+            snprintf(base, sizeof base, "%s", l->topic);
+            char *tail = strstr(base, "/State");
+            if (tail && !tail[6]) *tail = 0;
+            cat_state_counters_t c;
+            cat_state_counters(base, &c);
+            if (c.transitions == c.transitions || c.rejections == c.rejections) {
+                key(o, "counters");
+                ab_puts(o, "{");
+                if (c.transitions == c.transitions) knum(o, "transitions", c.transitions, 0);
+                if (c.rejections == c.rejections) knum(o, "rejections", c.rejections, 0);
+                if (c.timeouts == c.timeouts) knum(o, "timeouts", c.timeouts, 0);
+                if (c.aborts == c.aborts) knum(o, "aborts", c.aborts, 0);
+                if (c.yields == c.yields) knum(o, "yields", c.yields, 0);
+                ab_puts(o, "}");
+            }
+        }
+        ab_puts(o, "}");
+    }
+    ab_puts(o, "]");
+    ab_puts(o, "}");
+    cat_states_unlock();
+    sum(s, sn, "%d state lane%s over %.0f s", nl, nl == 1 ? "" : "s",
+        (t0 ? now - t0 : now) / 1000.0);
+    return AS_TR_OK;
+}
+
 static as_tres_t t_systemcore(as_env_t *e, ab_t *o, char *s, size_t sn)
 {
     aj_t *d = agent_get(e, "/api/system", 256 * 1024, o, s, sn);
@@ -1692,6 +1847,9 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     else if (!strcmp(name, "summarize_log")) r = t_summarize_log(e, in, o, s, sn);
     else if (!strcmp(name, "systemcore_health")) r = t_systemcore(e, o, s, sn);
     else if (!strcmp(name, "motor_history")) r = t_motor_history(e, o, s, sn);
+    else if (!strcmp(name, "list_recordings")) r = t_list_recordings(e, o, s, sn);
+    else if (!strcmp(name, "analyze_recording")) r = t_analyze_recording(e, in, o, s, sn);
+    else if (!strcmp(name, "get_states")) r = t_get_states(e, in, o, s, sn);
     else if (!strncmp(name, "code_", 5) || !strcmp(name, "list_patches") || !strcmp(name, "list_work_orders") ||
              !strcmp(name, "claude_sessions"))
         r = t_code(name, in, o, s, sn);

@@ -76,6 +76,26 @@ const as_tooldef_t AS_TOOLS[] = {
       "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":120}},"
       "\"required\":[\"name\"],\"additionalProperties\":false}",
       AS_T_READ },
+    { "list_recordings",
+      "The run recorder's own recordings on the tablet's card: name, size, length and channel count, "
+      "newest first. These are 50 Hz CSVs the technician recorded, not robot logs -- list_logs is those.",
+      NOARGS, AS_T_READ },
+    { "analyze_recording",
+      "Analyses one recording ON THE TABLET and returns the numbers, not the samples: per channel its "
+      "count, minimum and maximum with the times they happened, mean, last value and a sliced trend, plus "
+      "where the marks are. Use this rather than asking for raw data -- a five-minute run is hundreds of "
+      "thousands of samples.",
+      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1,"
+      "\"maxLength\":48}},\"required\":[\"name\"],\"additionalProperties\":false}",
+      AS_T_READ },
+    { "get_states",
+      "The state timelines the tablet has recorded since it booted: for each mechanism and state machine, "
+      "the state it is in now, how long it spent in each state, how many times it changed, the last few "
+      "transitions, and for a state machine its rejection, timeout, abort and yield counters. Answers "
+      "\"what has it been doing\" and \"why did it leave that state\".",
+      "{\"type\":\"object\",\"properties\":{\"window_s\":{\"type\":\"number\",\"minimum\":1,"
+      "\"maximum\":86400}},\"additionalProperties\":false}",
+      AS_T_READ },
     { "systemcore_health",
       "Systemcore's own view from catalyst-agent (port 9010): OS and uptime, per-core CPU and throttling, "
       "temperatures, memory, storage, top processes, CAN interface error counters, network, and the robot "
