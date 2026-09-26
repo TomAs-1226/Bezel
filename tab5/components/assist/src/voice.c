@@ -287,6 +287,7 @@ static bool post(const char *path, const char *ctype, const char *body, size_t l
 {
     memset(r, 0, sizeof *r);
     r->status = -1;
+    double t_start = hal_seconds();
     char url[200], *hdr = malloc(512);
     char *key = oai_key();
     if (!hdr || !key) {
@@ -305,7 +306,11 @@ static bool post(const char *path, const char *ctype, const char *body, size_t l
     hal_http_t *h = hal_http_open(&rq, &r->status, r->err, sizeof r->err);
     memset(hdr, 0, 512);
     free(hdr);
-    if (!h) return false;
+    if (!h) {
+        printf("voice: POST %s %u bytes -> never opened after %.1f s: %s\n", path, (unsigned)len,
+               hal_seconds() - t_start, r->err[0] ? r->err : "no reason given");
+        return false;
+    }
     int cap = 4096;
     r->body = malloc((size_t)cap + 1);
     int rd = 0;
@@ -323,6 +328,10 @@ static bool post(const char *path, const char *ctype, const char *body, size_t l
     }
     hal_http_close(h);
     if (r->body) r->body[r->len] = 0;
+    /* one line per request on the console: which call, how big, what came back and how long it took. The
+     * pipeline is three round trips and only this says which of them is the slow or the failing one. */
+    printf("voice: POST %s %u bytes -> %d in %.1f s%s%s\n", path, (unsigned)len, r->status,
+           hal_seconds() - t_start, r->err[0] ? ": " : "", r->err);
     if (rd < 0 && r->status == 200) {
         snprintf(r->err, sizeof r->err, "the connection dropped");
         return false;
@@ -494,9 +503,17 @@ static char *transcribe(const int16_t *pcm, int n)
             return NULL;
         }
         if (ok && r.status == 200) {
-            aj_t *d = aj_parse(r.body, (size_t)r.len, NULL, 0);
+            char perr[80] = "";
+            aj_t *d = aj_parse(r.body, (size_t)r.len, perr, sizeof perr);
             const char *t = aj_gets(d, "text");
             char *out = t ? as_strdup(t) : NULL;
+            /* An answer that arrived and could not be read used to be indistinguishable from silence: the
+             * caller saw NULL, no note was ever set, and the face simply went idle. */
+            if (!out) {
+                printf("voice: transcription: %d bytes came back with no text%s%s: %.200s\n", r.len,
+                       perr[0] ? ", " : "", perr, r.body ? r.body : "(nothing)");
+                set_err("OpenAI answered, but not with anything I could read: try again");
+            }
             aj_free(d);
             resp_free(&r);
             return out;
@@ -1004,6 +1021,31 @@ static void publish(const vo_reply_t *rep)
     bump();
 }
 
+/* A failure that happens *before* there is ever an answer — the microphones, or hearing you — put where the
+ * answer would have been, and not only in the status line, which fades after ten seconds.
+ *
+ * This is the whole of "it heard me and then it just stopped": a transcription that failed set a note and
+ * went back to idle, so the waveform ended, the old answer stayed in the bubble, and nothing on the screen
+ * ever said why. `since` is the moment the attempt began; a note set after it is the reason for this
+ * failure rather than some older one.  */
+static void publish_fail(const char *heard, double since)
+{
+    vo_reply_t *rep = calloc(1, sizeof *rep);
+    if (!rep) return;
+    snprintf(rep->heard, sizeof rep->heard, "%s", heard ? heard : "");
+    pthread_mutex_lock(&V.lock);
+    bool why = V.note_at >= since && V.note[0];
+    snprintf(rep->say, sizeof rep->say, "%s", why ? V.note : "something went wrong before I could answer: ask me again");
+    pthread_mutex_unlock(&V.lock);
+    rep->failed = true;
+    rep->shown = true;
+    rep->emotion = VO_EMO_WORRIED;
+    rep->intensity = 0.6f;
+    rep->look = VO_LOOK_DOWN;
+    publish(rep);
+    free(rep);
+}
+
 /* One question to its answer, shown and spoken. true when it was answered. */
 static bool turn(const char *question, bool heard)
 {
@@ -1018,6 +1060,7 @@ static bool turn(const char *question, bool heard)
     publish(rep); /* the question, with no answer yet */
     double t0 = hal_seconds();
     bool ok = answer(question, rep);
+    printf("voice: the answer took %.1f s: %s\n", hal_seconds() - t0, ok ? "ok" : "failed");
     if (cancelled()) {
         /* stopped: the face went idle when it was; nothing more to show */
     } else if (!ok) {
@@ -1044,11 +1087,16 @@ static bool turn(const char *question, bool heard)
         V.note[0] = 0;
         pthread_mutex_unlock(&V.lock);
         publish(rep);
-        if (rep->spoken && !speak(rep) && !cancelled() && !rep->shown) {
-            /* it couldn't be said: show it instead */
-            rep->spoken = false;
-            rep->shown = true;
-            publish(rep);
+        if (rep->spoken) {
+            double ts = hal_seconds();
+            bool said = speak(rep);
+            printf("voice: speaking took %.1f s: %s\n", hal_seconds() - ts, said ? "ok" : "failed");
+            if (!said && !cancelled()) {
+                /* it couldn't be said: show it instead, and say why where the answer is */
+                rep->spoken = false;
+                rep->shown = true;
+                publish(rep);
+            }
         }
     }
     free(rep);
@@ -1066,6 +1114,7 @@ static void *worker(void *arg)
         return NULL;
     }
     bool follow = false;           /* just answered: a follow-up needs no wake word */
+    bool spoke = false;            /* the speaker was talking: what the microphones heard then is not a wake word */
     for (;;) {
         pthread_mutex_lock(&V.lock);
         char *text = V.ask;
@@ -1120,8 +1169,10 @@ static void *worker(void *arg)
             pthread_mutex_unlock(&V.lock);
         }
         if ((ptt || follow) && ready) {
+            double t_try = hal_seconds();
             if (!hal_mic_start()) {
                 set_err("the microphones didn't start");
+                publish_fail(NULL, t_try);
                 follow = false;
                 continue;
             }
@@ -1130,19 +1181,27 @@ static void *worker(void *arg)
             bool was_follow = follow;
             follow = false;
             if (n == 0 && !was_follow) set_note("didn't hear anything");
+            /* the microphones failed part-way through: record() said why, and the owner should read it */
+            if (n < 0 && !cancelled()) publish_fail(NULL, t_try);
             if (n <= 0) {
                 set_state(VO_IDLE);
                 continue;
             }
+            printf("voice: recorded %.1f s\n", (double)n / SR);
             set_state(VO_HEARING);
             pthread_mutex_lock(&V.lock);
             V.working = true;
             pthread_mutex_unlock(&V.lock);
+            double t_stt = hal_seconds();
             char *heard = transcribe(rec, n);
             size_t l = heard ? strlen(heard) : 0;
             while (l && (heard[l - 1] == ' ' || heard[l - 1] == '\n')) heard[--l] = 0;
+            printf("voice: hearing %.1f s of speech took %.1f s: %s\n", (double)n / SR, hal_seconds() - t_stt,
+                   heard ? (l ? "transcribed" : "nothing came back") : "failed");
             if (!heard || !l) {
-                if (heard && !cancelled()) set_note("didn't catch that");
+                if (heard && !cancelled()) set_note("I didn't catch that: say it again");
+                /* a failure here used to leave the face idle with nothing said: the whole symptom */
+                if (!cancelled()) publish_fail(NULL, t_stt);
                 free(heard);
                 pthread_mutex_lock(&V.lock);
                 V.working = false;
@@ -1179,6 +1238,17 @@ static void *worker(void *arg)
                 continue;
             }
             floor_track(mean_square(chunk, r));
+            /* Never listen for the wake word through our own voice. The microphones hear the speaker across
+             * the case, and "Hi ESP" said back by the companion — or anything close enough to it — would wake
+             * it in a loop. What it heard while talking is dropped, and the recogniser starts clean after. */
+            if (hal_play_busy() || hal_play_level() > 0.02f) {
+                spoke = true;
+                continue;
+            }
+            if (spoke) {
+                spoke = false;
+                hal_wake_reset();
+            }
             if (hal_wake_feed(chunk, r)) {
                 pthread_mutex_lock(&V.lock);
                 V.ptt = true; /* the next pass records */
@@ -1233,6 +1303,17 @@ void voice_enable(bool on)
     pthread_cond_signal(&V.wake);
     pthread_mutex_unlock(&V.lock);
     bump();
+}
+
+/* The microphones are actually open right now. The state alone doesn't say it: idle with no wake word means
+ * the microphones are off and only a tap will start them. Home mode shows this, so a person standing in
+ * front of the tablet can tell that it is listening. */
+bool voice_mics_on(void)
+{
+    pthread_mutex_lock(&V.lock);
+    bool on = V.enabled;
+    pthread_mutex_unlock(&V.lock);
+    return on && hal_mic_on();
 }
 
 const char *voice_wake_word(void)

@@ -9,9 +9,10 @@
  *   schema: {"say","emotion","intensity","look"} → OpenAI speech (gpt-4o-mini-tts, 24 kHz PCM) streamed to
  *   the speaker as it arrives.
  *
- * The microphones are on only while voice_enable(true) (desk mode on screen) — and, without a wake word,
- * only while it records after a tap. Everything that blocks runs on the worker; the UI reads state and the
- * last reply. Needs an OpenAI key (the assistant's, from settings) and the internet. */
+ * The microphones are on only while voice_enable(true) — desk mode on screen, or home mode with the wake
+ * word turned on (`v_wake`), which listens the whole time it is showing — and, without a wake word, only
+ * while it records after a tap. Everything that blocks runs on the worker; the UI reads state and the last
+ * reply. Needs an OpenAI key (the assistant's, from settings) and the internet. */
 #pragma once
 #include <stdbool.h>
 #include <stddef.h>
@@ -79,6 +80,8 @@ void voice_enable(bool on);
 bool voice_ready(char *why, size_t n);
 /* The wake phrase ("Hi ESP") once the model has loaded; NULL while loading or when there is none. */
 const char *voice_wake_word(void);
+/* The microphones are open right now (home mode shows this, so a person can tell it is listening). */
+bool voice_mics_on(void);
 
 void voice_listen(void);                       /* tap to talk: record now */
 bool voice_ask(const char *text);              /* a typed question into the same conversation */

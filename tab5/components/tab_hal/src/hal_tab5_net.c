@@ -1215,6 +1215,7 @@ struct hal_http {
     esp_http_client_handle_t c;
     int timeout_ms;
     bool done;
+    bool read_any;                 /* a body byte has been handed over: only then does "complete" mean "read" */
     char last_modified[40];
 };
 
@@ -1376,7 +1377,14 @@ int hal_http_read(hal_http_t *h, char *buf, int max)
      * wait out the whole timeout for nothing — the companion sat 20 s "speaking" after every spoken answer */
     /* (only with a length or chunks to go by: a body of unknown length, ended by the server closing, counts as
      * "complete" from the start) */
-    if ((esp_http_client_get_content_length(h->c) > 0 || esp_http_client_is_chunked_response(h->c)) &&
+    /* …and only once a byte has actually come out of here. esp_http_client counts a body into
+     * response->data_process inside http_on_body, which runs from esp_http_client_fetch_headers() whenever
+     * the headers and the whole body land in one TCP segment. A short answer therefore reads as "complete"
+     * before a single byte has been handed over, and this shortcut used to throw it away: the caller got
+     * HTTP 200 and an empty body. It is exactly what killed speech-to-text — an OpenAI transcription is
+     * forty-odd bytes and always arrives in one segment, so it was empty every single time, while the
+     * kilobytes of a chat completion or a spoken answer span segments and came through fine. */
+    if (h->read_any && (esp_http_client_get_content_length(h->c) > 0 || esp_http_client_is_chunked_response(h->c)) &&
         esp_http_client_is_complete_data_received(h->c)) {
         h->done = true;
         return 0;
@@ -1394,6 +1402,7 @@ int hal_http_read(hal_http_t *h, char *buf, int max)
         return esp_http_client_is_complete_data_received(h->c) ? 0 : -1;
     }
     if (r < 0) return -1; /* includes -ESP_ERR_HTTP_EAGAIN: nothing within the timeout */
+    h->read_any = true;
     if (max > 1) {
         esp_http_client_set_timeout_ms(h->c, 0);
         int more = esp_http_client_read(h->c, buf + 1, max - 1);
