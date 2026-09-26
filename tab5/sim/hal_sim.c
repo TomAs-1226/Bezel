@@ -333,6 +333,10 @@ void hal_net_report(char *out, size_t n, const char *host)
     snprintf(out, n, "simulator");
 }
 
+void hal_wifi_diag(char *out, size_t n) { snprintf(out, n, "simulator: no radio"); }
+void hal_antenna(bool external) { (void)external; }
+int hal_antenna_get(void) { return -1; }
+
 void hal_net(hal_net_t *o)
 {
     memset(o, 0, sizeof *o);

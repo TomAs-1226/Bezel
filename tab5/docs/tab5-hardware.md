@@ -39,9 +39,12 @@ read as raw HTML, **[S]** the Tab5 schematic PDF. Anything not confirmed from on
 
 The C6 already carries all of the radio's work: the 802.11 MAC and PHY, the WPA2/3 handshake and its
 crypto, beacons, retries and power save run on it, and the P4 sees Ethernet-like frames over SDIO
-(4-bit, 40 MHz, with the C6 aggregating received packets — `ESP_HOSTED_SDIO_OPTIMIZATION_RX_STREAMING_MODE`).
-That is all its stock firmware (esp-hosted **1.4.1** slave) can take: the 1.4.7 host this firmware pairs
-with has no way to run other code on it.
+(4-bit, 20 MHz, one packet per fixed 1.5 KB transfer). A Tab5 ships with esp-hosted's **1.4.1** slave,
+which aggregates received packets (stream mode) and does not survive steady traffic against this host;
+Catalyst Tab therefore ships its own **1.4.7** slave, built in packet mode — `firmware/c6/`, with the
+reasoning and the over-the-air install. **Which one a given tablet is running is in the boot log and in
+the dev console's `net`:** `wi-fi: the C6 runs esp-hosted 1.4.7` is ours, `1.4.1` is M5Stack's. Either
+way the slave is all the C6 can take: the host has no way to run other code on it.
 
 Giving it more would mean new C6 firmware — esp-hosted 2.x's *network split* (lwIP on the C6, which
 answers or filters traffic itself) or a custom RPC — flashed to the C6 from the P4, which breaks the
@@ -51,6 +54,42 @@ and a frame (1.8 MB) takes ~90 ms just to cross that bus, so graphics can't move
 and TLS are a few percent of the P4's core 0. The one offload worth it later is **host sleep**: with
 network split, the C6 keeps the robot link and wakes the P4 on traffic, so the tablet can sleep on
 the cart without dropping off the network. That needs the C6 reflashed and a Tab5 to test it on.
+
+### The antenna: one expander pin, and no API behind it
+
+The tablet has two antennas — the internal 3D one on the C6 module's feed, and an MMCX socket — and one
+RF switch between them, driven by **E1.P0**: low internal, high MMCX. `hal_antenna()` sets it,
+`hal_antenna_get()` reads it back off the expander, and the dev console has `ant 0|1` to move it and
+`antcmp` to measure both.
+
+That pin is the whole of the antenna control on a Tab5, and it is worth being clear about why, because
+ESP-IDF appears to offer more:
+
+- `esp_wifi_set_ant()` / `esp_wifi_set_ant_gpio()` are **declared and not implemented** in this build.
+  esp_wifi_remote's injected `esp_wifi.h` declares both (deprecated, pointing at `esp_phy_set_ant`), but
+  its `esp_wifi_with_remote.c` forwards `set_protocol`, `set_country`, `set_country_code`,
+  `set_max_tx_power` and `set_protocols` — and not these. Calling one is a link error, not a runtime
+  failure. Checked with `nm` on `libespressif__esp_wifi_remote.a` and `libespressif__esp_hosted.a`:
+  `esp_wifi_remote_set_ps`, `_set_country`, `_set_max_tx_power` and their `rpc_wifi_set_*` bodies are all
+  there, and no `set_ant` symbol of any kind is.
+- The **RPC exists on paper**. `esp_hosted_rpc.proto` defines `Req_WifiSetAntGpio` (320),
+  `Req_WifiGetAntGpio` (321), `Req_WifiSetAnt` (322), `Req_WifiGetAnt` (323) and the `wifi_ant_config` /
+  `wifi_ant_gpio_config` messages, and protobuf-c generates all of them — which is why grepping the
+  component finds `WIFI_ANT_*` and suggests the feature is there. Nothing calls them. The only reference
+  to a host-side `esp_hosted_wifi_set_ant()` is an inline in esp_wifi_remote's legacy
+  `esp_wifi_remote_with_hosted.h`, and that function does not exist in esp-hosted 1.4.7.
+- It would not help if it did. `esp_phy_set_ant()` configures the PHY of the chip it runs on, and it is
+  compiled out on the esp32p4 (no `ant` symbols in the P4's `libesp_phy.a` — the P4 has no radio). It
+  would have to reach the C6, and the C6's antenna diversity, if it had any, would switch between pins on
+  the C6 — not the switch on the P4's I²C expander, which is where the Tab5's two antennas actually meet.
+
+So: the antenna setting the owner was thinking of is real, and it is E1.P0. There is nothing else to set.
+
+Two live cautions about that pin. The expander's reset leaves every output high-impedance, so the level
+alone is not enough — `hal_tab5.c` puts E1.P0 and E1.P2 into push-pull as well, because a floating RF
+switch connects **neither** antenna and every scan came back empty. And which way round the switch sits
+is M5Stack's word, not a measurement: `antcmp` scans on each side and prints the network count and the
+best RSSI of each, which is what settles it on a given tablet.
 
 ## Gotchas this firmware handles
 

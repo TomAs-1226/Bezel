@@ -69,11 +69,56 @@ static struct {
     char ssid[33];
     volatile int rssi;
     TaskHandle_t rssi_task;
+    /* what the C6 said about itself at start-up, for the dev console's "net": the slave's esp-hosted
+     * version tells the custom packet-mode slave (1.4.7) from M5Stack's factory one, and the rest are the
+     * radio settings that a drop usually turns out to be about */
+    char fw[16];
+    int8_t txpower;      /* esp_wifi_get_max_tx_power, quarter-dBm */
+    uint8_t proto;       /* esp_wifi_get_protocol bitmap */
+    uint16_t inactive_s; /* the beacon-loss window actually in force */
+    char country[4];
+    uint8_t cc_lo, cc_n; /* the channels that country allows */
+    /* the last drop, kept so it can be read back without the log */
+    volatile int drop_reason;
+    volatile int drop_rssi;
+    volatile uint32_t drops;
 } N;
 
 static void tether_promote_all(void);
 
 static volatile bool s_scanning;
+
+/* Espressif's wifi_err_reason_t, the codes that actually turn up on a station. Anything else prints as a
+ * number: the number is what matters, the name only saves a lookup. */
+static const char *drop_name(int reason)
+{
+    switch (reason) {
+    case 1: return "unspecified";
+    case 2: return "auth expired";
+    case 3: return "deauthenticated (AP said leave)";
+    case 4: return "disassociated for inactivity";
+    case 5: return "AP has too many stations";
+    case 8: return "disassociated (AP said leave)";
+    case 12: return "AP asked it to move (BSS transition)";
+    case 14: return "MIC failure";
+    case 15: return "4-way handshake timed out";
+    case 16: return "group key update timed out";
+    case 23: return "802.1X auth failed";
+    case 39: return "timeout";
+    case 200: return "beacon timeout";
+    case 201: return "no AP found";
+    case 202: return "auth failed (wrong password?)";
+    case 203: return "association failed";
+    case 204: return "handshake timeout";
+    case 205: return "connection failed";
+    case 206: return "AP reset its TSF";
+    case 207: return "roaming";
+    case 210: return "no AP found with compatible security";
+    case 211: return "no AP found passing the authmode threshold";
+    case 212: return "no AP found passing the RSSI threshold";
+    default: return "?";
+    }
+}
 
 /* Whether a network has been saved (hal_wifi_join; the driver keeps it in NVS). Without one there's
  * nothing to connect to, and a station forever connecting refuses to scan (ESP_ERR_WIFI_STATE). */
@@ -85,10 +130,36 @@ static bool wifi_has_network(void)
            strcmp((const char *)wc.sta.ssid, "M5Stack-Production") != 0;
 }
 
+/* The reconnect, asked for here and done by rssi_task a moment later.
+ *
+ * It used to be esp_wifi_connect() straight out of the disconnect handler, and that is wrong twice over.
+ * Every esp_wifi_* call is an RPC over SDIO to the C6 that blocks for up to 5 s, and the handler runs on
+ * the default event loop's task — the same task esp-hosted posts its Wi-Fi events to (os_wrapper.c's
+ * esp_event_post), so a slow connect stalls every other event behind it. And with the AP simply gone the
+ * two lines chased each other: connect, "no AP found" (201), connect, for as long as the AP stayed away,
+ * which leaves the C6 scanning without pause — the state the SDIO link is least happy in, and the one
+ * that makes a scan from the settings page fail. Espressif's own guide says as much: reconnect on the
+ * event, but "avoid infinite reconnection loops that starve scan operations".
+ *
+ * So: the handler only records, and the poll acts. First drop retries at once (a pit network that blinks
+ * should not cost a second), then 2, 4, 8, 15, 30 s, and 30 s from then on. A won address clears it. */
+static volatile int64_t s_retry_at;  /* esp_timer time to try again; 0 = nothing wanted */
+static volatile int s_retry_step;
+static const int RETRY_S[] = { 0, 2, 4, 8, 15, 30 };
+
+static void reconnect_soon(bool fresh)
+{
+    if (fresh) s_retry_step = 0;
+    int i = s_retry_step;
+    if (i >= (int)(sizeof RETRY_S / sizeof *RETRY_S)) i = (int)(sizeof RETRY_S / sizeof *RETRY_S) - 1;
+    s_retry_at = esp_timer_get_time() + (int64_t)RETRY_S[i] * 1000000LL;
+    if (s_retry_step < (int)(sizeof RETRY_S / sizeof *RETRY_S) - 1) s_retry_step++;
+}
+
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        if (wifi_has_network()) esp_wifi_connect();
+        if (wifi_has_network()) reconnect_soon(true);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
         wifi_event_sta_connected_t *e = data;
         snprintf(N.ssid, sizeof N.ssid, "%.32s", (const char *)e->ssid);
@@ -96,12 +167,21 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         N.up = false;
         N.rssi = 0;
         wifi_event_sta_disconnected_t *e = data;
-        static uint8_t last;
-        if (e->reason != last) ESP_LOGW(TAG, "wi-fi: '%.32s' dropped, reason %d, rssi %d", e->ssid, e->reason, e->rssi);
-        last = e->reason;
-        /* keep trying: the pit network comes and goes — but not during a scan, and not with nothing saved */
-        if (!s_scanning && wifi_has_network()) esp_wifi_connect();
+        /* Every drop is logged. It used to log only when the reason changed, which meant a network
+         * dropping the same way every minute said so once and then went quiet — the one number that
+         * names the fault, lost. A run of the same reason is collapsed into a count instead. */
+        N.drops++;
+        N.drop_rssi = e->rssi;
+        if (e->reason != N.drop_reason || N.drops <= 1 || N.drops % 10 == 0)
+            ESP_LOGW(TAG, "wi-fi: '%.32s' dropped, reason %d (%s), rssi %d, drop %u", e->ssid, e->reason,
+                     drop_name(e->reason), e->rssi, (unsigned)N.drops);
+        N.drop_reason = e->reason;
+        /* keep trying, backing off: the pit network comes and goes — but not during a scan, and not with
+         * nothing saved */
+        if (!s_scanning && wifi_has_network()) reconnect_soon(false);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
+        s_retry_at = 0;
+        s_retry_step = 0;
         ip_event_got_ip_t *e = data;
         snprintf(N.ip, sizeof N.ip, IPSTR, IP2STR(&e->ip_info.ip));
         N.up = true;
@@ -275,6 +355,14 @@ static void rssi_task(void *arg)
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(3000));
         wifi_ap_record_t ap;
+        /* the reconnect the disconnect handler asked for, done here rather than on the event loop */
+        int64_t at = s_retry_at;
+        if (at && esp_timer_get_time() >= at && !s_scanning && !N.up) {
+            if (wifi_has_network()) esp_wifi_connect();
+            /* and a deadline for the next one either way: a connect that is refused, or accepted and then
+             * never spoken of again, still gets asked about later. The address clears it (IP_EVENT). */
+            reconnect_soon(false);
+        }
         if (!N.up || s_scanning) {
             misses = 0;
             dead = 0;
@@ -298,7 +386,7 @@ static void rssi_task(void *arg)
                 if (dead == 2 && (!rejoined || now - rejoined > 60 * 1000000LL)) {
                     ESP_LOGW(TAG, "wi-fi: connected but the gateway is silent: joining again");
                     rejoined = now;
-                    esp_wifi_disconnect(); /* the disconnect handler connects again */
+                    hal_wifi_rejoin(); /* the disconnect handler asks for the reconnect, at once for a rejoin we chose */
                 } else if (dead >= 4) {
                     c6_restart("connected, but nothing gets through even after joining again", gw_ok);
                 }
@@ -312,6 +400,45 @@ static void rssi_task(void *arg)
         if (++misses < 2) continue;
         c6_restart("the C6 stopped answering", rpc_ok); /* returns only when it has to wait: asked again in 3 s */
     }
+}
+
+/* The station settings a drop usually turns out to be about. They travel to the C6 whole: esp-hosted's
+ * wifi_sta_config proto message carries scan_method, sort_method, threshold, pmf_cfg, the rm/btm/mbo
+ * bitmask and failure_retry_cnt, and rpc_req.c packs every one of them — so these are the C6's settings,
+ * not the host's idea of them.
+ *
+ *  - ALL_CHANNEL_SCAN with sort by signal. The driver's default is FAST_SCAN, which "ends when the first
+ *    matched AP is found": on a network with more than one AP — a mesh, an extender, a pit with repeaters
+ *    — that is whichever answered first, not the strongest, and a station sitting on the far one loses
+ *    beacons until it is thrown off (reason 200). All-channel scan looks at every AP with that name and
+ *    takes the loudest. It also costs a full scan per attempt, which is why the reconnect above backs off.
+ *  - failure_retry_cnt, which Espressif documents as only working with ALL_CHANNEL_SCAN: the C6 retries
+ *    an AP three times, and moves to the next one with the same name, before it tells the host anything.
+ *  - authmode threshold WPA, not WPA2. With a password set and no threshold the driver defaults to WPA2
+ *    and refuses a WPA-only AP outright (reason 211) — this file used to ask for WPA2 explicitly, which is
+ *    the same refusal written down. WPA2 and WPA3 are both above WPA, so nothing is given up but WEP.
+ *  - pmf capable. The field is deprecated (the C6 turns PMF on whenever the AP offers it) but costs
+ *    nothing to state, and WPA3 needs it.
+ *  - no BSSID and no channel pinned, ever: both would keep the station on one AP, which is the fault above.
+ *  - rm/btm/mbo (802.11k/v) left off deliberately. They make the station honour the AP's request to move to
+ *    another BSS, and acting on one needs a slave built with the roaming app (CONFIG_ESP_WIFI_ENABLE_ROAMING_APP);
+ *    firmware/c6's slave is not. Advertising the capability and then not moving invites an AP to deauthenticate
+ *    it (reason 12) — worse than not claiming it. ft (11r) is for WPA2-Enterprise. */
+static void sta_tune(wifi_sta_config_t *s)
+{
+    s->scan_method = WIFI_ALL_CHANNEL_SCAN;
+    s->sort_method = WIFI_CONNECT_AP_BY_SIGNAL;
+    s->failure_retry_cnt = 3;
+    s->threshold.rssi = 0; /* no floor: a weak AP still beats no AP */
+    s->threshold.authmode = s->password[0] ? WIFI_AUTH_WPA_PSK : WIFI_AUTH_OPEN;
+    s->pmf_cfg.capable = true;
+    s->pmf_cfg.required = false;
+    s->bssid_set = false;
+    s->channel = 0;
+    s->rm_enabled = 0;
+    s->btm_enabled = 0;
+    s->mbo_enabled = 0;
+    s->ft_enabled = 0;
 }
 
 static void wifi_init(void)
@@ -331,30 +458,83 @@ static void wifi_init(void)
     esp_log_level_set("rpc_core", ESP_LOG_WARN);
     esp_log_level_set("rpc_rsp", ESP_LOG_WARN);
     esp_err_t m = esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_ps(WIFI_PS_NONE); /* latency over battery: a dashboard wants its packets now */
+    /* The saved network gets the settings above before the station starts. Before, so it can't collide with
+     * the connect the start triggers: esp_wifi_set_config answers ESP_ERR_WIFI_STATE to anything asked
+     * while a connect is in flight, and it would have answered it silently. */
+    wifi_config_t wc = { 0 };
+    esp_err_t t = ESP_ERR_NOT_FOUND;
+    if (esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK && wc.sta.ssid[0]) {
+        sta_tune(&wc.sta);
+        t = esp_wifi_set_config(WIFI_IF_STA, &wc);
+    }
+    esp_wifi_set_ps(WIFI_PS_NONE); /* latency over battery: a dashboard wants its packets now. It is also the
+                                    * right way round for staying joined — an always-awake station answers
+                                    * every poll, and what an AP throws a client off for is silence
+                                    * (reason 4), never wakefulness. */
     esp_err_t s = esp_wifi_start();
+    /* The first join, from here rather than from the STA_START event: the poll that issues every later
+     * reconnect only wakes every 3 s, and Wi-Fi at boot shouldn't wait for it. The event's own
+     * reconnect_soon stays as the backstop for a start that this misses. */
+    if (s == ESP_OK && wifi_has_network()) esp_wifi_connect();
+    /* The beacon-loss window. The C6's default is 6 s: miss six seconds of the AP's beacons — trivial on a
+     * crowded 2.4 GHz channel, a pit full of radios, or a phone hotspot that stutters — and it sends five
+     * probe requests and then throws the connection away (reason 200), and everything above has to put it
+     * back. 30 s instead. Nothing is lost by waiting: a genuinely dead AP is caught meanwhile by the
+     * gateway probe in rssi_task, which acts in 15 s and doesn't need the radio's opinion. */
+    esp_err_t it = esp_wifi_set_inactive_time(WIFI_IF_STA, 30);
+    N.inactive_s = it == ESP_OK ? 30 : 6;
     wifi_country_t cc = { 0 };
     esp_err_t c = esp_wifi_get_country(&cc);
+    if (c == ESP_OK) {
+        snprintf(N.country, sizeof N.country, "%.2s", cc.cc);
+        N.cc_lo = cc.schan;
+        N.cc_n = cc.nchan;
+    }
+    esp_wifi_get_max_tx_power(&N.txpower);
+    esp_wifi_get_protocol(WIFI_IF_STA, &N.proto);
     esp_hosted_coprocessor_fwver_t fw = { 0 };
-    if (esp_hosted_get_coprocessor_fwversion(&fw) == ESP_OK)
-        ESP_LOGI(TAG, "wi-fi: the C6 runs esp-hosted %u.%u.%u", (unsigned)fw.major1, (unsigned)fw.minor1, (unsigned)fw.patch1);
-    else
+    if (esp_hosted_get_coprocessor_fwversion(&fw) == ESP_OK) {
+        snprintf(N.fw, sizeof N.fw, "%u.%u.%u", (unsigned)fw.major1, (unsigned)fw.minor1, (unsigned)fw.patch1);
+        /* At warn, and kept for "net": this line is how anyone tells which slave the C6 is running. 1.4.7 is
+         * the packet-mode one this repository builds (firmware/c6); M5Stack's factory image is 1.4.1, and on
+         * that one the SDIO streaming-mode fault the recovery machinery was built around is still present. */
+        ESP_LOGW(TAG, "wi-fi: the C6 runs esp-hosted %s", N.fw);
+    } else {
+        snprintf(N.fw, sizeof N.fw, "?");
         ESP_LOGW(TAG, "wi-fi: the C6 doesn't report its esp-hosted version (older than 1.x)");
-    ESP_LOGI(TAG, "wi-fi: mode %s, start %s, country %s %.2s ch %d+%d", esp_err_to_name(m), esp_err_to_name(s),
-             esp_err_to_name(c), cc.cc, cc.schan, cc.nchan);
+    }
+    ESP_LOGI(TAG, "wi-fi: mode %s, tune %s, start %s, country %s %.2s ch %d+%d, beacon window %us, tx %d/4 dBm, proto 0x%02x",
+             esp_err_to_name(m), esp_err_to_name(t), esp_err_to_name(s), esp_err_to_name(c), cc.cc, cc.schan,
+             cc.nchan, (unsigned)N.inactive_s, N.txpower, N.proto);
 }
 
-/* drop the network and join it again (the disconnect handler reconnects): for the dev console's "rejoin" */
-void hal_wifi_rejoin(void) { esp_wifi_disconnect(); }
+/* drop the network and join it again (the disconnect handler asks for the reconnect): for the dev console's
+ * "rejoin", and for the two watchdogs */
+void hal_wifi_rejoin(void)
+{
+    s_retry_step = 0; /* asked for on purpose: the first try is immediate */
+    esp_wifi_disconnect();
+}
 
 void hal_wifi_join(const char *ssid, const char *pass)
 {
     wifi_config_t wc = { 0 };
     snprintf((char *)wc.sta.ssid, sizeof wc.sta.ssid, "%s", ssid);
     snprintf((char *)wc.sta.password, sizeof wc.sta.password, "%s", pass);
-    wc.sta.threshold.authmode = pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    sta_tune(&wc.sta);
     esp_wifi_disconnect();
-    esp_wifi_set_config(WIFI_IF_STA, &wc); /* stored in NVS by the driver: rejoins on the next boot */
+    /* stored in NVS by the driver: rejoins on the next boot. The disconnect above is asked of the C6 and
+     * answered before it has happened, so the first set_config can land while the station is still
+     * connecting and be refused with ESP_ERR_WIFI_STATE — which used to be dropped on the floor, and the
+     * network the user typed in was simply not saved. Tried again as the state settles. */
+    esp_err_t e = ESP_FAIL;
+    for (int i = 0; i < 6; i++) {
+        e = esp_wifi_set_config(WIFI_IF_STA, &wc);
+        if (e != ESP_ERR_WIFI_STATE) break;
+        vTaskDelay(pdMS_TO_TICKS(250));
+    }
+    if (e != ESP_OK) ESP_LOGE(TAG, "wi-fi: couldn't save '%.32s': %s", ssid, esp_err_to_name(e));
+    s_retry_step = 0;
     esp_wifi_connect();
 }
 
@@ -388,7 +568,9 @@ int hal_wifi_scan(hal_ap_t *out, int max)
         if (!rec) n = 0;
     }
     s_scanning = false;
-    if (!N.up && wifi_has_network()) esp_wifi_connect();
+    /* asked for, not done here: a connect issued straight after a scan from the settings page's own thread
+     * raced the poll's one and the C6 saw two */
+    if (!N.up && wifi_has_network()) reconnect_soon(true);
     for (int i = 0; i < n; i++) {
         snprintf(out[i].ssid, sizeof out[i].ssid, "%s", (const char *)rec[i].ssid);
         out[i].rssi = rec[i].rssi;
@@ -877,6 +1059,30 @@ void hal_net_report(char *out, size_t n, const char *host)
              def ? esp_netif_get_desc(def) : "none", host ? host : "", resolved, r);
 }
 
+/* The radio's own side of it, for the dev console's "net": which slave the C6 is running, what the station's
+ * settings actually are after wifi_init, and how the last drop was explained. Everything here is read back
+ * from the C6 at start-up rather than assumed, so a setting that didn't take shows as what it is. */
+void hal_wifi_diag(char *out, size_t n)
+{
+    wifi_config_t wc = { 0 };
+    bool have = esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK;
+    wifi_ap_record_t ap = { 0 };
+    bool joined = esp_wifi_sta_get_ap_info(&ap) == ESP_OK;
+    int a = hal_antenna_get();
+    snprintf(out, n,
+             "c6 esp-hosted %s; saved '%.32s' authmode>=%d scan %s sort %s retry %u pmf %d; "
+             "beacon window %us tx %d/4dBm proto 0x%02x country %s ch %u+%u antenna %s; "
+             "joined %d ch %u rssi %d bssid %02x:%02x:%02x:%02x:%02x:%02x; drops %u last reason %d (%s) at rssi %d",
+             N.fw[0] ? N.fw : "?", have ? (const char *)wc.sta.ssid : "", have ? wc.sta.threshold.authmode : -1,
+             have && wc.sta.scan_method == WIFI_ALL_CHANNEL_SCAN ? "all" : "fast",
+             have && wc.sta.sort_method == WIFI_CONNECT_AP_BY_SIGNAL ? "rssi" : "security",
+             have ? (unsigned)wc.sta.failure_retry_cnt : 0u, have ? wc.sta.pmf_cfg.capable : 0,
+             (unsigned)N.inactive_s, N.txpower, N.proto, N.country[0] ? N.country : "?", (unsigned)N.cc_lo,
+             (unsigned)N.cc_n, a < 0 ? "?" : a ? "external (MMCX)" : "internal", joined, (unsigned)ap.primary,
+             joined ? ap.rssi : 0, ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5],
+             (unsigned)N.drops, N.drop_reason, drop_name(N.drop_reason), N.drop_rssi);
+}
+
 /* esp-hosted's OTA steps (rpc_wrap.c; not in its public header): the image goes over the SDIO link in
  * chunks and the C6 writes it to its other OTA slot, switching to it only when the whole image checks out */
 int rpc_ota_begin(void);
@@ -1069,7 +1275,7 @@ static void wifi_heal(void)
     last = now;
     s_http_fails = 0;
     ESP_LOGW(TAG, "wi-fi: connected but nothing gets through: joining again");
-    esp_wifi_disconnect(); /* the disconnect handler connects again */
+    hal_wifi_rejoin(); /* the disconnect handler asks for the reconnect, at once for a rejoin we chose */
 }
 
 hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, size_t errn)

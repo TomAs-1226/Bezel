@@ -206,8 +206,12 @@ static void run(char *line)
         say(buf);
         say("OK\n");
     } else if (!strncmp(line, "net", 3) && (line[3] == 0 || line[3] == ' ')) {
-        char buf[256];
+        char buf[420];
         hal_net_report(buf, sizeof buf, line[3] ? line + 4 : "api.openai.com");
+        say("MEM ");
+        say(buf);
+        say("\n");
+        hal_wifi_diag(buf, sizeof buf);
         say("MEM ");
         say(buf);
         say("\n");
@@ -392,8 +396,30 @@ static void run(char *line)
             hal_restart_planned("a key file arrived"); /* the start-up imports it */
         }
     } else if (sscanf(line, "ant %d", &a) == 1) {
-        void hal_antenna(bool external);
         hal_antenna(a != 0);
+        say("OK\n");
+    } else if (!strcmp(line, "antcmp")) {
+        /* Which antenna actually works, measured. The tablet's only antenna control is the RF switch on
+         * E1.P0 (low internal, high the MMCX socket) — the C6 has no antenna API that reaches the host — and
+         * whether a Tab5 has anything on the MMCX, or whether the switch is even the way round the docs say,
+         * is not something to assume. So: pick one, let the switch settle, scan, and print how many networks
+         * came back and the strongest of them; then the other; then put it back where it was. A side with
+         * nothing connected reads as few networks and a much weaker best. Roughly 10 s. */
+        int was = hal_antenna_get();
+        char m[200];
+        int nap[2] = { 0, 0 }, best[2] = { -127, -127 };
+        static hal_ap_t aps[24];
+        for (int side = 0; side < 2; side++) {
+            hal_antenna(side != 0);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            nap[side] = hal_wifi_scan(aps, 24);
+            for (int i = 0; i < nap[side]; i++)
+                if (aps[i].rssi > best[side]) best[side] = aps[i].rssi;
+        }
+        hal_antenna(was == 1);
+        snprintf(m, sizeof m, "MEM antenna internal: %d networks, best %d dBm; external (MMCX): %d networks, best %d dBm; left on %s\n",
+                 nap[0], best[0], nap[1], best[1], was == 1 ? "external" : "internal");
+        say(m);
         say("OK\n");
     } else if (!strcmp(line, "flip")) {
         hal_set_flip(!hal_flip());

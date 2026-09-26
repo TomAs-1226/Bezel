@@ -466,7 +466,7 @@ the file has grown since the table was last written and every line number had sh
 | `up` | release any held synthetic touch | `hal_tab5_dev.c:183` |
 | `settime <epoch> [tz]` | set the tablet's clock and POSIX TZ | `hal_tab5_dev.c:186` |
 | `bat` | battery status line | `hal_tab5_dev.c:201` |
-| `net [host]` | Wi-Fi/network status (`net` alone, or a reachability check against `host`) | `hal_tab5_dev.c:208` |
+| `net [host]` | Wi-Fi/network status: addresses, DNS and a reachability check against `host` on the first line; the radio's own state on the second (the C6's esp-hosted version, the saved network's settings, the beacon window, TX power, protocol, country and channels, the antenna, the joined AP, and the drop count with the last reason) — see §5.6 | `hal_tab5_dev.c:208` |
 | `putbegin <path> <len>` / `puthex <off> <hex>` / `putend <crc32>` | push a file onto the SD card in 512-byte hex-coded chunks, checked by CRC-32 | `hal_tab5_dev.c:215,234,256` |
 | `c6ota <path>` | OTA the companion MCU (C6) from a file already on the card, then a planned restart | `hal_tab5_dev.c:265` |
 | `wdhold [0]` | hold the C6 watchdog's restart for inspection (bare) or let it resume (`wdhold 0`) | `hal_tab5_dev.c:279` |
@@ -477,6 +477,7 @@ the file has grown since the table was last written and every line number had sh
 | `scan` | Wi-Fi AP scan, results as `AP ...` lines | `hal_tab5_dev.c:331` |
 | `keybegin` / `keyhex <hex>` / `keyend` | push a `KEYS.ENV`-shaped file over serial (hex-coded, never printed); the tablet restarts and imports it | `hal_tab5_dev.c:341,349,356`, `tools/tab5_dev.py:135-144` |
 | `ant 0\|1` | select the internal or external Wi-Fi antenna | `hal_tab5_dev.c:386` |
+| `antcmp` | measure both antennas: scan on internal, then on external, printing each side's network count and best RSSI, then put the switch back. ~10 s, and it drops the connection while it runs | `hal_tab5_dev.c` |
 | `flip` | toggle screen orientation | `hal_tab5_dev.c:390` |
 
 `put <local> <remote>` and `keys <file>` are `tools/tab5_dev.py`-side conveniences, not device commands:
@@ -542,6 +543,73 @@ Why this belongs here: every cloud API in §4 and the NT4 client in §1 ride ove
 for a real, if usually brief, stretch and recovers on its own — worth knowing before reading a gap in
 telemetry or a failed request as a bug. All of this is `components/tab_hal/src/hal_tab5_net.c`, read in
 full this session.
+
+### The station's settings, which is where a drop usually comes from
+
+Added 2026-09-26, after the owner reported the tablet dropping off Wi-Fi repeatedly. The recovery
+machinery below is about the **link to the C6** failing. This part is about the **join to the AP**
+failing, which is a different fault with different fixes, and the firmware had been leaving every one of
+its settings at the driver's default.
+
+Everything here travels to the C6 whole. esp-hosted's `wifi_sta_config` proto message carries
+`scan_method`, `sort_method`, `threshold`, `pmf_cfg`, the rm/btm/mbo/ft/owe bitmask and
+`failure_retry_cnt`, and `host/drivers/rpc/core/rpc_req.c` packs every one of them — so these are the
+C6's settings, not the host's idea of them. `sta_tune()` (`hal_tab5_net.c`) sets them, and is applied both
+to the network already in NVS (in `wifi_init`, **before** `esp_wifi_start()`, since `esp_wifi_set_config`
+answers `ESP_ERR_WIFI_STATE` to anything asked while a connect is in flight) and in `hal_wifi_join()`.
+
+| Setting | Was | Is | Why |
+|---|---|---|---|
+| `scan_method` | `WIFI_FAST_SCAN` (default) | `WIFI_ALL_CHANNEL_SCAN` | Fast scan "ends when the first matched AP is found". On a network with more than one AP — a mesh, an extender, a pit with repeaters — that is whichever answered first, not the strongest, so the tablet can sit on the far AP and lose beacons until it is thrown off. |
+| `sort_method` | by security | `WIFI_CONNECT_AP_BY_SIGNAL` | With all-channel scan, take the loudest of the APs with that name. |
+| `failure_retry_cnt` | 0 | 3 | The C6 retries an AP three times, and moves to the next one with the same name, before it tells the host anything. Espressif documents this as only working with `WIFI_ALL_CHANNEL_SCAN`. |
+| `threshold.authmode` | `WIFI_AUTH_WPA2_PSK` | `WIFI_AUTH_WPA_PSK` (with a password) | With a password set and no threshold the driver defaults to WPA2 and refuses a WPA-only AP outright (reason **211**, `NO_AP_FOUND_IN_AUTHMODE_THRESHOLD`); asking for WPA2 explicitly was the same refusal written down. WPA2 and WPA3 are both above WPA, so only WEP is given up. |
+| `pmf_cfg.capable` | false | true | Deprecated (the C6 turns PMF on whenever the AP offers it) but free to state, and WPA3 needs it. |
+| `bssid_set`, `channel` | 0 | 0, explicitly | Either would pin the station to one AP, which is the fault above. |
+| `rm_enabled`, `btm_enabled`, `mbo_enabled`, `ft_enabled` | 0 | 0, **deliberately** | 802.11k/v make the station honour the AP's request to move to another BSS, and acting on one needs a slave built with the roaming app (`CONFIG_ESP_WIFI_ENABLE_ROAMING_APP`); `firmware/c6`'s slave is not. Advertising the capability and then not moving invites an AP to deauthenticate it (reason **12**) — worse than not claiming it. 11r (`ft`) is for WPA2-Enterprise. |
+| beacon-loss window | 6 s (the C6's default) | 30 s, `esp_wifi_set_inactive_time()` | Miss six seconds of the AP's beacons — trivial on a crowded 2.4 GHz channel, a pit full of radios, or a phone hotspot that stutters — and the C6 sends five probe requests and throws the connection away (reason **200**, `BEACON_TIMEOUT`). Nothing is lost by waiting: a genuinely dead AP is caught meanwhile by the gateway probe below, which acts in 15 s and doesn't need the radio's opinion. |
+| `esp_wifi_set_ps` | `WIFI_PS_NONE` | unchanged | Right for latency, and right for staying joined: an always-awake station answers every poll, and what an AP throws a client off for is silence (reason **4**), never wakefulness. It does mean the C6 forwards every broadcast frame over SDIO, which is load the link has to carry. |
+| TX power, `esp_wifi_set_protocol` | default (20 dBm, 11b/g/n/ax) | unchanged, but **reported** | Both are real levers — a too-high TX power into a small antenna, or an AP that mishandles HE, can each cause drops — and neither should be moved on a guess. `net` prints what is actually in force so a change can be judged against a measurement. |
+
+**The reconnect no longer runs on the event loop, and backs off.** It used to be `esp_wifi_connect()`
+straight out of the `WIFI_EVENT_STA_DISCONNECTED` handler, which is wrong twice over. Every `esp_wifi_*`
+call is an RPC over SDIO that blocks for up to 5 s, and the handler runs on the default event loop's task
+— the same task esp-hosted posts its Wi-Fi events to (`os_wrapper.c`'s `esp_event_post`) — so a slow
+connect stalls every other event behind it. And with the AP simply gone the two lines chased each other:
+connect, reason 201, connect, for as long as the AP stayed away, which leaves the C6 scanning without
+pause: the state the SDIO link is least happy in, and the one that makes a scan from the settings page
+fail with `ESP_ERR_WIFI_STATE`. Espressif's own Wi-Fi guide says to reconnect on the event but to "avoid
+infinite reconnection loops that starve scan operations". Now the handler only records, and `rssi_task`
+acts: **0, 2, 4, 8, 15, 30 s and 30 s thereafter**, reset to 0 by an address (`IP_EVENT_STA_GOT_IP`) and
+by a rejoin the firmware chose (`hal_wifi_rejoin`, which the two watchdogs below now go through).
+
+**Every drop is logged, with its reason named.** The handler used to log only when the reason *changed*,
+so a network dropping the same way every minute said so once and then went quiet — the one number that
+names the fault, lost. A run of the same reason is collapsed into a count instead (`drop N`), and the last
+one is kept for `net`. The codes that matter are different faults: **200** beacon timeout with a weak RSSI
+is a radio or antenna problem; **8**/**3** is the AP kicking the client; **15**/**204** is a PMF/WPA3 or
+busy-AP handshake problem; **201** means the AP was not found at all (check the channel — see below);
+**202** is the password; **211** the authmode threshold; **4** means the AP decided the client was idle.
+
+**Channels 12–13 are a candidate for a 201 that never clears.** Nothing here sets the country: the C6
+comes up with the slave's default, which is the world-safe `01` — **channels 1–11**. An AP that picked
+channel 12 or 13 cannot be found at all, and no amount of retrying changes that. The boot log and `net`
+both print the country and its channel range, which is how to tell; the fix is a country code, and that is
+a regulatory choice for the owner to make, not one to hard-code here.
+
+**`hal_wifi_join` used to be able to silently not save.** `esp_wifi_disconnect()` is answered by the C6
+before it has happened, so the `esp_wifi_set_config` right after it could land while the station was still
+connecting and be refused with `ESP_ERR_WIFI_STATE` — and the return was dropped on the floor, so the
+network the user typed in was simply not there on the next boot. It is now retried for ~1.5 s as the state
+settles, and a failure is logged.
+
+**`net` in the dev console (§5.4) now prints a second line** with all of this: the C6's esp-hosted
+version, the saved network and the settings it actually holds, the beacon window, TX power, protocol
+bitmap, country and channel range, which antenna the RF switch is on, the joined AP's channel/RSSI/BSSID,
+and the drop count with the last reason. `antcmp` measures the two antennas rather than trusting the pin
+(see `docs/tab5-hardware.md`).
+
+### The link to the C6
 
 **The hang this machinery was built for is fixed at its cause** (2026-09-25): the host reads one packet per
 fixed 1.5 KB SDIO transfer (`CONFIG_ESP_HOSTED_SDIO_OPTIMIZATION_RX_MAX_SIZE`), but the C6 slave had been built

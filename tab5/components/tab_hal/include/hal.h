@@ -179,8 +179,12 @@ typedef struct {
 } hal_net_t;
 void hal_net(hal_net_t *out);
 void hal_net_report(char *out, size_t n, const char *host); /* dev console: addresses, DNS, a lookup */
+/* dev console: which slave the C6 runs, the station settings it actually holds, and the last drop's reason */
+void hal_wifi_diag(char *out, size_t n);
 void hal_wifi_join(const char *ssid, const char *pass);
 void hal_wifi_rejoin(void);
+void hal_antenna(bool external); /* the RF switch on E1.P0: false internal, true the MMCX socket */
+int hal_antenna_get(void);       /* which one, read back off the expander; -1 it didn't answer */
 /* The Wi-Fi watchdog restarts the tablet when the C6 stops answering (its reset needs a host restart). Before
  * it does, fn runs (the UI notes where it is with hal_resume_note, from the watchdog's task: only a note);
  * after, hal_resume_take gives it back once. */

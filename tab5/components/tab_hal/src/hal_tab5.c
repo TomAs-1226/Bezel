@@ -198,6 +198,16 @@ void hal_antenna(bool external)
     if (T.e1) esp_io_expander_set_level(T.e1, E1_ANTENNA, external);
 }
 
+/* Which antenna the RF switch is on, read back off the expander rather than remembered: the pin is the whole
+ * antenna "setting" on this tablet — the C6 has no antenna API of its own that reaches the host (esp-hosted
+ * 1.4.7 defines the RPCs and implements neither end), so E1.P0 is it. -1: the expander didn't answer. */
+int hal_antenna_get(void)
+{
+    uint32_t level = 0;
+    if (!T.e1 || esp_io_expander_get_level(T.e1, E1_ANTENNA, &level) != ESP_OK) return -1;
+    return level & E1_ANTENNA ? 1 : 0;
+}
+
 static void ext5v(bool on)
 {
     if (T.e1) esp_io_expander_set_level(T.e1, E1_EXT5V, on);
