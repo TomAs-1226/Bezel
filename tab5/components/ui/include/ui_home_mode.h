@@ -43,6 +43,11 @@ bool ui_home_mode_active(void);
  * what decides whether the microphones listen for the wake word. */
 bool ui_home_mode_showing(void);
 bool ui_home_mode_keeps_awake(void);
+/* now - (the room's ambient level last crossed the presence threshold), or a large number with no signal
+ * yet (home.h's home_presence_idle_s): ui_shell.c's dim/sleep timer blends this in while home mode is
+ * active, so it brightens on room noise and dims on the same idle timer as everything else once it's been
+ * quiet a while, rather than a second timer of its own. */
+double ui_home_mode_presence_idle_s(double now);
 /* An automatic trigger: `present` true asks for home mode, false says the reason went away (home mode then
  * leaves only if that same trigger brought it). UI thread only. */
 void ui_home_mode_trigger(ui_home_why_t why, bool present);

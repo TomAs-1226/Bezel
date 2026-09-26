@@ -108,6 +108,9 @@ hm_cfg_t *hm_cfg(void)
     CFG->small_clock = kv_bool("hm_clock", false);
     CFG->seconds = kv_bool("hm_secs", false);
     CFG->tint = kv_bool("hm_bg", false);
+    CFG->cam_on = kv_bool("hm_cam_on", false); /* off until the owner turns it on */
+    CFG->cam_min = hal_kv_get("hm_cam_min", v, sizeof v) ? atoi(v) : 5;
+    CFG->cam_keep = hal_kv_get("hm_cam_keep", v, sizeof v) ? atoi(v) : HOME_CAP_KEEP_DEFAULT;
     return CFG;
 }
 
@@ -117,6 +120,7 @@ void hm_cfg_apply(void)
     home_pc_enable(c->pc);
     home_weather_config(c->place, c->fahrenheit);
     home_ha_config(c->ha_url, c->ha_token, c->picks);
+    home_capture_config(c->cam_on, c->cam_min, c->cam_keep);
 }
 
 void hm_cfg_save(void)
@@ -140,6 +144,11 @@ void hm_cfg_save(void)
     hal_kv_set("hm_clock", c->small_clock ? "1" : "0");
     hal_kv_set("hm_secs", c->seconds ? "1" : "0");
     hal_kv_set("hm_bg", c->tint ? "1" : "0");
+    hal_kv_set("hm_cam_on", c->cam_on ? "1" : "0");
+    snprintf(v, sizeof v, "%d", c->cam_min);
+    hal_kv_set("hm_cam_min", v);
+    snprintf(v, sizeof v, "%d", c->cam_keep);
+    hal_kv_set("hm_cam_keep", v);
     hm_cfg_apply();
 }
 
@@ -249,6 +258,7 @@ bool ui_home_mode_showing(void)
     return HM.active && !HM.sheet && !ui_asleep() && (!ui_app_any_open() || HM.saver_on);
 }
 bool ui_home_mode_keeps_awake(void) { return HM.active && HM.power; }
+double ui_home_mode_presence_idle_s(double now) { return home_presence_idle_s(now); }
 
 void hm_open_settings(lv_obj_t *from)
 {
@@ -942,6 +952,10 @@ static void go(bool enter)
         hm_cfg_apply();
         HM.blink_at = hal_seconds() + 3;
     }
+    /* the room-occupied poll only ever runs while home mode is actually on screen, the same as the eyes'
+     * blink and the stand watcher's own timers: nothing here keeps a microphone duty-cycling in catalyst
+     * mode or with the tablet asleep in a bag */
+    home_presence_set_active(enter);
     bz_ui_wake();
     /* the platform slides the new picture in over the old one, drawing it a band at a time as it shows:
      * the state switches now, under a glass that keeps the old picture where the sheet hasn't reached */
@@ -1105,6 +1119,18 @@ int hm_tag_pair_state(void)
     return s;
 }
 
+/* ---- the timed photo: hand the camera and the lens app's own use of it to home_capture_tick, and put
+ * something on screen for the moment the camera is actually live (see home.h's privacy note) ---- */
+static void cap_tick(double now)
+{
+    static bool was_live;
+    home_capture_tick(now, HM.active, !ui_app_any_open());
+    home_capture_status_t st;
+    home_capture_status(&st);
+    if (st.live && !was_live) ui_island_say(BZ_I_PHOTO_CAMERA, "home photo");
+    was_live = st.live;
+}
+
 /* ---- the photos screensaver: the card's pictures after a while untouched, on home mode only ---- */
 static void saver_tick(void)
 {
@@ -1266,6 +1292,8 @@ static void hm_frame(double now, double dt, void *user)
         if (w > 0 && !HM.active) go(true);
         else if (w < 0 && HM.active) go(false);
     }
+    cap_tick(now);
+    home_presence_tick(now);
     saver_tick();
     eyes_tick(now);
     voice_tick(now);

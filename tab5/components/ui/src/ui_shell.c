@@ -2001,6 +2001,14 @@ static void shell_frame(double now, double dt, void *user)
     /* untouched, the panel dims (settings: display), then goes off; a tap wakes it, and that tap presses
      * nothing. Asleep, the link to the robot and everything behind the glass keep running. */
     double idle_s = bz_ui_idle_s();
+    /* home mode: the room's own ambient level counts as a touch too, so the dim/sleep timer below brightens
+     * on noise and dims again on the same timer as everywhere else once it's been quiet a while, rather than
+     * a second timer of its own (ui_home_mode_presence_idle_s is a large number until there's a signal, so
+     * this can only ever pull idle_s down, never make it dim or sleep sooner than a touch would) */
+    if (ui_home_mode_active()) {
+        double p = ui_home_mode_presence_idle_s(now);
+        if (p < idle_s) idle_s = p;
+    }
     /* the flashlight is the panel at full: it neither dims (it went to a quarter of the normal brightness after
      * the dim time) nor sleeps while it's open, and waking returns to it, not to the normal brightness */
     bool torch = ui_app_is_open(&APP_LIGHT);
