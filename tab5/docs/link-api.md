@@ -7,6 +7,13 @@ the contract between `components/assist/src/link.c` (the tablet) and the `cataly
 
 ## Discovery and auth
 
+- **This tablet's default.** `components/assist/src/link.c` compiles in one PC's host and port
+  (`LINK_DEFAULT_HOST`/`LINK_DEFAULT_PORT`) because only one tablet and one PC exist today — `link_init()`
+  falls back to it whenever kv has no saved address, so the tablet never needs mDNS or the "pair the pc"
+  screen just to reach that PC. Only the host/port are baked in; the token never is (this repo is public).
+  A `LINK_TOKEN` (and, to point at a different PC, `LINK_HOST`) in `KEYS.ENV` (`docs/keys.md`) writes into
+  the same `link_url`/`link_token` kv keys pairing uses, and — like pairing, like typing an address in
+  settings — always wins over the compiled default from then on.
 - Default port **8765**. The Link advertises `_catalyst-link._tcp` over mDNS (with the optional
   `zeroconf` package) with TXT `name=<pc>`, `version`, `path=/link/status` and `pair=1|0`.
 - Every request carries `X-Link-Token: <token>`. The Link writes its main token to

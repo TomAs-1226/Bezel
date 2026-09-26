@@ -909,8 +909,13 @@ static void burn_key_file(const char *path, size_t n)
 }
 
 /* KEYS.ENV: the names it knows, and the kv key each is kept under (the one its own settings screen reads).
- * WIFI_* go to the Wi-Fi driver instead (hal_wifi_join: the driver keeps the network in its own NVS). */
-enum { ENV_OPENAI, ENV_ANTHROPIC, ENV_TEAM = 8, ENV_WIFI_SSID, ENV_WIFI_PASS, ENV_COUNT };
+ * WIFI_* go to the Wi-Fi driver instead (hal_wifi_join: the driver keeps the network in its own NVS).
+ * LINK_HOST/LINK_TOKEN land in "link_url"/"link_token" — the same kv keys pairing and the link app's
+ * settings screen already use (ui_app_pair.c, ui_app_assist.c) — so a card dropped on this one tablet
+ * finishes the same "configure the link" job pairing does, without a token ever living in source
+ * (link.c's LINK_DEFAULT_HOST covers the non-secret address; see its comment). */
+enum { ENV_OPENAI, ENV_ANTHROPIC, ENV_TEAM = 8, ENV_WIFI_SSID, ENV_WIFI_PASS, ENV_LINK_HOST, ENV_LINK_TOKEN,
+       ENV_COUNT };
 static const struct {
     const char *name, *kv;
 } ENV_KEYS[ENV_COUNT] = {
@@ -925,6 +930,8 @@ static const struct {
     { "TEAM", "team" },                    /* the team number the shell looks for */
     { "WIFI_SSID", NULL },
     { "WIFI_PASS", NULL },
+    { "LINK_HOST", "link_url" },           /* overrides the compiled-in pc address, e.g. a different pc */
+    { "LINK_TOKEN", "link_token" },        /* Catalyst Link's per-tablet token: never compiled in */
 };
 
 /* One "NAME=value" line, dotenv style, cut in place: an optional "export ", spaces around the '=', a value
@@ -990,6 +997,9 @@ static int env_find(const char *name)
         { "wifissid", ENV_WIFI_SSID }, { "wifi", ENV_WIFI_SSID }, { "ssid", ENV_WIFI_SSID }, { "network", ENV_WIFI_SSID },
         { "wifipass", ENV_WIFI_PASS }, { "wifipassword", ENV_WIFI_PASS }, { "pass", ENV_WIFI_PASS },
         { "password", ENV_WIFI_PASS },
+        { "linkhost", ENV_LINK_HOST }, { "linkurl", ENV_LINK_HOST }, { "linkaddress", ENV_LINK_HOST },
+        { "pcaddress", ENV_LINK_HOST },
+        { "linktoken", ENV_LINK_TOKEN }, { "link", ENV_LINK_TOKEN },
     };
     for (size_t i = 0; i < sizeof ALIAS / sizeof ALIAS[0]; i++)
         if (!strcmp(n, ALIAS[i].alias)) return ALIAS[i].e;

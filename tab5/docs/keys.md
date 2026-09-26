@@ -31,6 +31,8 @@ FRC_EVENTS_TOKEN=...
 TEAM=5805
 WIFI_SSID="pit wifi"
 WIFI_PASS=...
+LINK_HOST=192.168.1.20:8765
+LINK_TOKEN=...
 ```
 
 ## The names
@@ -48,6 +50,11 @@ WIFI_PASS=...
 | `TEAM` | `team` | the team number everything looks for (robot address, the blue alliance) | your team number, 1–99999 |
 | `WIFI_SSID` | the Wi-Fi driver | joins that network and remembers it | your network's name |
 | `WIFI_PASS` | the Wi-Fi driver | its password; leave it out for an open network | |
+| `LINK_HOST` | `link_url` | Catalyst Link (`docs/link-api.md`): the pc's address, replacing the tablet's compiled-in default | Catalyst Link's console, or the pc's address on the pit LAN |
+| `LINK_TOKEN` | `link_token` | the same | pairing (`ui_app_pair.c`), or `catalyst-link token` on the pc |
 
 A new value replaces the old one. The import runs before the settings are loaded, so everything that
-reads them at start-up sees the new values without a second restart.
+reads them at start-up sees the new values without a second restart. `LINK_HOST`/`LINK_TOKEN` land in the
+same `link_url`/`link_token` kv keys pairing already uses, so a card is a third way to "pair" the tablet
+with a PC, alongside typing the address in settings and the six-digit code — and once either has run, the
+saved address always wins over the compiled-in one (`components/assist/src/link.c`, `LINK_DEFAULT_HOST`).

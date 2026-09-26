@@ -24,6 +24,16 @@
 #define LIST_MAX 32
 #define UPLOAD_MAX (12u << 20)
 
+/* This tablet only ever pairs with one PC, so the address is baked in rather than found by mDNS or typed
+ * by hand every time: the host and port aren't secrets — the Link already broadcasts both in the clear
+ * over mDNS (docs/link-api.md, "Discovery and auth") and the port is documented in this repo. Only the
+ * *token* authenticates, and that is never compiled in (this repo is public): it arrives from KEYS.ENV on
+ * the SD card (docs/keys.md, LINK_TOKEN) or from pairing, either of which persists to kv and then always
+ * wins — link_init() only reaches for this default when kv has no address of its own. A LINK_HOST key in
+ * KEYS.ENV can replace the host too, without a rebuild. */
+#define LINK_DEFAULT_HOST "ThomasRog.local"
+#define LINK_DEFAULT_PORT 8765
+
 static struct {
     pthread_mutex_t lock;
     char url[96], token[80];
@@ -645,6 +655,10 @@ void link_init(void)
     char url[96] = "", token[80] = "";
     hal_kv_get("link_url", url, sizeof url);
     hal_kv_get("link_token", token, sizeof token);
+    /* nothing saved (never paired, no KEYS.ENV yet): the compiled default, so the tablet never needs
+     * mDNS discovery or the "pair the pc" screen to reach the one PC it will ever talk to. A saved
+     * address — from pairing, from typing one in settings, or from a KEYS.ENV LINK_HOST — always wins. */
+    if (!url[0]) snprintf(url, sizeof url, "%s:%d", LINK_DEFAULT_HOST, LINK_DEFAULT_PORT);
     pthread_mutex_lock(&L.lock);
     if (!P) P = calloc(1, sizeof *P);
     if (!L.inbox) {
