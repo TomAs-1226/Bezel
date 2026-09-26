@@ -229,6 +229,8 @@ void test_sc(int *checks, int *fails);
 void test_batt(int *checks, int *fails);
 /* test_home.c: home mode's timed-photo retention ring and its room-occupied hysteresis */
 void test_home(int *checks, int *fails);
+/* test_tba_paths.c: the Blue Alliance path whitelist the assistant's tba_query goes through */
+void test_tba_paths(int *checks, int *fails);
 
 int main(void)
 {
@@ -241,6 +243,7 @@ int main(void)
     test_sc(&checks, &fails);
     test_batt(&checks, &fails);
     test_home(&checks, &fails);
+    test_tba_paths(&checks, &fails);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

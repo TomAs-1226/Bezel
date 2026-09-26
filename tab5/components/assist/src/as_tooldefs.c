@@ -76,6 +76,18 @@ const as_tooldef_t AS_TOOLS[] = {
       "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":120}},"
       "\"required\":[\"name\"],\"additionalProperties\":false}",
       AS_T_READ },
+    { "tba_query",
+      "Reads The Blue Alliance directly, for anything beyond our own event (get_matches is ours). "
+      "`path` is one of: /team/frc<N>/simple, /team/frc<N>/events/<year>/simple, "
+      "/team/frc<N>/event/<eventKey>/status, /team/frc<N>/event/<eventKey>/matches/simple, "
+      "/team/frc<N>/awards, /event/<eventKey>/simple, /event/<eventKey>/rankings, "
+      "/event/<eventKey>/oprs, /event/<eventKey>/matches/simple, /event/<eventKey>/teams/simple, "
+      "/events/<year>/simple, /match/<matchKey>/simple. An event key looks like 2026casj; a match "
+      "key like 2026casj_qm34. Nothing else is fetched. A long answer comes back as whole rows with "
+      "the count of what was left out.",
+      "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"minLength\":2,"
+      "\"maxLength\":120}},\"required\":[\"path\"],\"additionalProperties\":false}",
+      AS_T_READ },
     { "list_recordings",
       "The run recorder's own recordings on the tablet's card: name, size, length and channel count, "
       "newest first. These are 50 Hz CSVs the technician recorded, not robot logs -- list_logs is those.",

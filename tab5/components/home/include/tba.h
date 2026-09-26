@@ -94,6 +94,17 @@ bool tba_next_match(tba_match_t *out, time_t *when);
  * *offline as in tba_state_t, event_key ("" none) may be NULL. */
 tba_phase_t tba_upcoming(tba_match_t *out, int max, int *n, bool *live, bool *offline, char *event_key, size_t kn);
 
+/* A read of one whitelisted endpoint, for the assistant (assist.h's tba reader). `path` is a path
+ * under /api/v3 beginning with '/', and only the shapes tba_read_allowed() lists are fetched -- the
+ * key must never become a general-purpose proxy for whatever text a language model produces. The
+ * body is written to `out` (NUL-terminated, truncated at n-1). False with the reason in `out`.
+ *
+ * Blocks on the network: a worker's call, never the UI's. Not cached: these are one-off questions,
+ * unlike the four endpoints the poller keeps. The key is read here and never leaves this file. */
+bool tba_read(const char *path, char *out, size_t n);
+/* Whether tba_read would accept `path`. Pure: the tool's schema check and the tests use it. */
+bool tba_read_allowed(const char *path);
+
 #ifdef __cplusplus
 }
 #endif

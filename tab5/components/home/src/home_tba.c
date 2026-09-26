@@ -263,6 +263,46 @@ static int ep_fetch(ep_t *e, const char *key)
     return status;
 }
 
+/* ---- one-off reads for the assistant ---- */
+
+bool tba_read(const char *path, char *out, size_t n)
+{
+    if (!out || n < 64) return false;
+    if (!tba_read_allowed(path)) {
+        snprintf(out, n, "that path is not one of the endpoints this tablet will fetch");
+        return false;
+    }
+    char key[128];
+    pthread_mutex_lock(&g_lock);
+    tb_t *t = tb();
+    snprintf(key, sizeof key, "%s", t ? t->key : "");
+    pthread_mutex_unlock(&g_lock);
+    if (!key[0]) {
+        snprintf(out, n, "no Blue Alliance key is set (settings, then the match app)");
+        return false;
+    }
+    ep_t e;
+    memset(&e, 0, sizeof e);
+    snprintf(e.url, sizeof e.url, BASE "%s", path);
+    int status = ep_fetch(&e, key);
+    memset(key, 0, sizeof key);
+    bool ok = false;
+    if (status == 200 && e.body) {
+        snprintf(out, n, "%s", e.body);
+        ok = true;
+    } else if (status == 401) {
+        snprintf(out, n, "the blue alliance refused the key");
+    } else if (status == 404) {
+        snprintf(out, n, "no such team, event or match");
+    } else if (status < 0) {
+        snprintf(out, n, "couldn't reach the blue alliance");
+    } else {
+        snprintf(out, n, "the blue alliance answered %d", status);
+    }
+    free(e.body);
+    return ok;
+}
+
 /* ---- parsing ---- */
 
 /* Tokens sized to the text, with a second, roomier try for number-dense bodies. */

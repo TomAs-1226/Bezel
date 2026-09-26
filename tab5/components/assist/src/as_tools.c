@@ -960,6 +960,98 @@ static void kcopy(ab_t *o, const char *k, const aj_t *v)
     aj_write(o, v);
 }
 
+/* ---------------------------------------------------------------- The Blue Alliance */
+
+/* Keeps as many whole elements of a JSON array as fit, then closes it honestly.
+ *
+ * A rankings or matches body can be tens of kilobytes and the tool's budget is 8. Cutting the text
+ * at the budget would hand a language model a truncated object and let it read half a number as a
+ * whole one; this cuts between elements, so what arrives is valid JSON of fewer rows, and says how
+ * many rows there were. Depth- and string-aware, because an event key can contain a brace as
+ * easily as anything else can.
+ */
+static size_t json_head(char *b, size_t len, size_t budget, int *kept, int *total)
+{
+    *kept = *total = 0;
+    if (len == 0 || b[0] != '[') return len;
+    int depth = 0;
+    bool instr = false, esc = false;
+    size_t last_end = 1;                 /* just past '[': an empty array is the floor */
+    for (size_t i = 0; i < len; i++) {
+        char c = b[i];
+        if (esc) { esc = false; continue; }
+        if (instr) {
+            if (c == '\\') esc = true;
+            else if (c == '"') instr = false;
+            continue;
+        }
+        if (c == '"') { instr = true; continue; }
+        if (c == '[' || c == '{') depth++;
+        else if (c == ']' || c == '}') {
+            depth--;
+            if (depth == 0) { last_end = i + 1; break; }   /* the array's own ']': not an element */
+            if (depth == 1) { (*total)++; if (i + 1 <= budget) { *kept = *total; last_end = i + 1; } }
+        }
+    }
+    if (*kept == *total) return len;            /* all of it fits */
+    if (*kept == 0) { *kept = *total; return len; }  /* not even one row: let the caller refuse it */
+    b[last_end] = ']';
+    b[last_end + 1] = 0;
+    return last_end + 1;
+}
+
+static as_tres_t t_tba_query(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    (void)e;
+    const char *path = aj_gets(in, "path");
+    as_tba_read_fn read = assist_tba_reader();
+    if (!read) {
+        ab_puts(o, "{\"error\":\"the tablet has no Blue Alliance reader wired up\"}");
+        sum(s, sn, "no tba reader");
+        return AS_TR_ERROR;
+    }
+    size_t cap = 40000;
+    char *body = malloc(cap);
+    if (!body) return AS_TR_ERROR;
+    bool ok = read(path ? path : "", body, cap);
+    if (!ok) {
+        ab_puts(o, "{");
+        kstr(o, "error", body);
+        ab_puts(o, "}");
+        sum(s, sn, "tba: %s", body);
+        free(body);
+        return AS_TR_ERROR;
+    }
+    int kept = 0, total = 0;
+    size_t len = strlen(body);
+    len = json_head(body, len, 6500, &kept, &total);
+    if (len > 6500) {
+        /* An object body (rankings, oprs, a status) has no rows to drop. Saying so beats handing
+         * back a string cut mid-number, which reads as a smaller number and not as an error. */
+        ab_puts(o, "{");
+        kstr(o, "error", "that answer is too big to return whole");
+        kint(o, "bytes", (long)len);
+        kstr(o, "try", "a narrower endpoint: one team's matches rather than the event's");
+        ab_puts(o, "}");
+        sum(s, sn, "tba %s: %u bytes, too big", path, (unsigned)len);
+        free(body);
+        return AS_TR_ERROR;
+    }
+    ab_puts(o, "{");
+    kstr(o, "path", path);
+    key(o, "data");
+    ab_puts(o, body);
+    if (kept && kept < total) {
+        kint(o, "rows_returned", kept);
+        kint(o, "rows_total", total);
+        kstr(o, "truncated", "ask for a narrower endpoint if you need the rest");
+    }
+    ab_puts(o, "}");
+    sum(s, sn, kept && kept < total ? "tba %s (%d of %d rows)" : "tba %s", path, kept, total);
+    free(body);
+    return AS_TR_OK;
+}
+
 /* ---------------------------------------------------------------- the tablet's own recordings */
 
 /* A run name from list_recordings, and nothing else: no path of any kind. */
@@ -1850,6 +1942,7 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     else if (!strcmp(name, "list_recordings")) r = t_list_recordings(e, o, s, sn);
     else if (!strcmp(name, "analyze_recording")) r = t_analyze_recording(e, in, o, s, sn);
     else if (!strcmp(name, "get_states")) r = t_get_states(e, in, o, s, sn);
+    else if (!strcmp(name, "tba_query")) r = t_tba_query(e, in, o, s, sn);
     else if (!strncmp(name, "code_", 5) || !strcmp(name, "list_patches") || !strcmp(name, "list_work_orders") ||
              !strcmp(name, "claude_sessions"))
         r = t_code(name, in, o, s, sn);

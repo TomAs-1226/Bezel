@@ -35,3 +35,10 @@ char *assist_desk_get(as_desk_t which)
     pthread_mutex_unlock(&g_lock);
     return c;
 }
+
+/* ---- The Blue Alliance reader, registered by whoever can see both components ---- */
+
+static as_tba_read_fn g_tba;
+
+void assist_set_tba_reader(as_tba_read_fn fn) { g_tba = fn; }
+as_tba_read_fn assist_tba_reader(void) { return g_tba; }

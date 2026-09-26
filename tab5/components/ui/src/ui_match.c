@@ -118,6 +118,9 @@ static void ma_config(void)
     while (l && (key[l - 1] == ' ' || key[l - 1] == '\r' || key[l - 1] == '\n')) key[--l] = 0;
     MA.configured = key[0] && S.team > 0;
     tba_config(key, S.team);
+    /* The assistant cannot include tba.h (home requires assist, not the other way round), so it is
+     * handed the reader here, where both are in scope. Idempotent; also done in ui_app_tba.c. */
+    assist_set_tba_reader(tba_read);
     memset(key, 0, 1024);
     free(key);
 }

@@ -143,6 +143,14 @@ const char *assist_import_note(void);
  * for every question's context ("next match Q34 at 14:05 on red · battery #7 goes in next"). Any thread;
  * assist_desk_get's copy is the caller's to free. */
 typedef enum { AS_DESK_MATCHES, AS_DESK_BATTERIES, AS_DESK_NOW, AS_DESK_N } as_desk_t;
+/* The Blue Alliance, handed in rather than called: `home` requires `assist`, so the assistant
+ * cannot reach tba.h. Whoever requires both (the ui) registers tba_read here at start-up; without
+ * it the tba_query tool says so rather than failing obscurely. Called from the assistant's worker,
+ * so the reader must be safe to block in. */
+typedef bool (*as_tba_read_fn)(const char *path, char *out, size_t n);
+void assist_set_tba_reader(as_tba_read_fn fn);
+as_tba_read_fn assist_tba_reader(void);
+
 void assist_desk_post(as_desk_t which, const char *text);
 char *assist_desk_get(as_desk_t which);
 

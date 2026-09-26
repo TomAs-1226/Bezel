@@ -8,6 +8,7 @@
  * content changes, and labels are set only when their text does. */
 #include "ui_internal.h"
 #include "tba.h"
+#include "assist.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -414,6 +415,7 @@ static void tba_open(void)
         size_t l = strlen(key);
         while (l && (key[l - 1] == ' ' || key[l - 1] == '\r' || key[l - 1] == '\n')) key[--l] = 0;
         tba_config(key, S.team);
+        assist_set_tba_reader(tba_read);  /* see ui_match.c: the assistant is handed the reader */
         memset(key, 0, 1024);
         free(key);
     }
