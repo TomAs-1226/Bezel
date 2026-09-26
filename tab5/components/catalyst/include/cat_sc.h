@@ -302,7 +302,7 @@ void cat_state_counters(const char *base, cat_state_counters_t *out);
  * because they aren't a small enumerated set of named states — they're reasoning strings and numbers
  * that can change every loop. docs/catalyst-integration.md §14 is the gap list this closes;
  * AutonomyBoard.java is the schema these read against. Fetched fresh from NT4 on every call (nothing
- * kept, nothing recorded) — cheap the way the states screen's own Counters/* read already is. Absent is
+ * kept, nothing recorded) — cheap the way the states screen's own Counters topics read already are. Absent is
  * never zero, per this file's own rule: a number the robot hasn't published is NAN, a string is "". */
 typedef struct {
     char why[80];             /* Chase/Why: why the chaser picked what it picked */
