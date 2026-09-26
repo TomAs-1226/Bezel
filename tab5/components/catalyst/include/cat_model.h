@@ -194,6 +194,24 @@ typedef struct {
     double start_dist_m, start_heading_deg;
     char build_commit[16];
     bool build_dirty;
+
+    /* /Catalyst/Tablet/Summary (RobotSummary.java, since 2.0.0): one JSON rollup of what the pulse
+     * screen otherwise reconstructs from a dozen topics. Published at 4 Hz, not every loop, so it lags
+     * the individual topics slightly - that's the library's own tradeoff, not a bug here. `battery` and
+     * `can_worst` can come back as JSON null (RobotSummary.round(): non-finite rounds to "null") and read
+     * as NAN, same as never published. `have_summary_preflight` is false whenever `preflightReady` is
+     * left out of the JSON, which the library does deliberately when preflight has never run - that is
+     * not the same as "not ready" and must never be shown as one. */
+    bool have_summary;
+    bool summary_ok;
+    double summary_battery;             /* NAN: absent, or reported non-finite */
+    bool summary_battery_wants_swap;
+    int summary_errors, summary_warnings;
+    char summary_worst_alert[64];
+    double summary_can_worst;           /* NAN: absent, or reported non-finite */
+    char summary_can_worst_bus[32];
+    bool have_summary_preflight;        /* false: preflight has never run - not "not ready" */
+    bool summary_preflight_ready;
 } cat_robot_t;
 
 void cat_model_init(nt4_client_t *nt);

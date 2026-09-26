@@ -284,6 +284,54 @@ const cat_st_lane_t *cat_states_lane(int i);
 uint32_t cat_states_now(void);          /* ms since cat_sc_init, the lanes' clock */
 uint32_t cat_states_rev(void);          /* bumps on every recorded change */
 
+/* A CAT_LANE_MACHINE lane's own counters (CatalystStateMachineLog.java:192-196): all five, not the
+ * tablet's earlier three-of-five subset (docs/catalyst-integration.md §14). `base` is the lane's topic
+ * with its trailing "/State" removed, e.g. "/Catalyst/Arm" for a lane whose topic is
+ * "/Catalyst/Arm/State" — the same base the states screen already builds for Counters/Transitions et al.
+ * NAN for any counter the robot hasn't published. */
+typedef struct {
+    double transitions, rejections, timeouts, aborts, yields;
+} cat_state_counters_t;
+void cat_state_counters(const char *base, cat_state_counters_t *out);
+
+/* ================================================================== autonomy, beyond the fixed lanes
+ *
+ * `AutonomyBoard` (frc.lib.catalyst.autonomy.AutonomyBoard, since 2.1.0) publishes more under
+ * /Catalyst/Autonomy/ than the four lanes discover() tracks as state lanes above (Tasks/Running,
+ * Chase/Target, Intent/Guess, Authority/Binding): free text and figures that don't fit the lane model,
+ * because they aren't a small enumerated set of named states — they're reasoning strings and numbers
+ * that can change every loop. docs/catalyst-integration.md §14 is the gap list this closes;
+ * AutonomyBoard.java is the schema these read against. Fetched fresh from NT4 on every call (nothing
+ * kept, nothing recorded) — cheap the way the states screen's own Counters/* read already is. Absent is
+ * never zero, per this file's own rule: a number the robot hasn't published is NAN, a string is "". */
+typedef struct {
+    char why[80];             /* Chase/Why: why the chaser picked what it picked */
+    char rejected[96];        /* Chase/Rejected: comma-separated, or the library's own "—" for none */
+    double intent_hit_rate;   /* Intent/HitRate, 0..1 */
+    double intent_samples;    /* Intent/Samples */
+    char intent_explain[96];
+    double authority_scale;   /* Authority/Scale, 0..1 (published every loop when present) */
+    char authority_explain[96];
+    double power_deficit_a;   /* Power/Deficit, amps asked for beyond the budget */
+    double power_shed_a;      /* Power/Shed, amps actually found by shedding */
+    double power_short_a;     /* Power/Short, amps still missing after shedding (0: the budget was met) */
+    char power_explain[96];
+} cat_autonomy_extra_t;
+/* True when any field came back; every field is independently NAN/"" when the robot hasn't published it. */
+bool cat_autonomy_extra(cat_autonomy_extra_t *out);
+
+typedef struct {
+    bool have_valid;
+    bool valid;                /* Situation/Valid: false when the snapshot is blindfolded */
+    double confidence;         /* Situation/Confidence, 0..1; only when localization is valid */
+    double speed_mps;          /* Situation/Speed; only when the motion reading is valid */
+    double slip;               /* Situation/Slip; only when the traction reading is valid */
+    double bus_volts;          /* Situation/BusVolts */
+    double headroom_a;         /* Situation/Headroom, amps; only when the power reading is valid */
+    char binding[32];          /* Situation/Binding: which limit is currently binding, "" if none yet */
+} cat_autonomy_situation_t;
+bool cat_autonomy_situation(cat_autonomy_situation_t *out);
+
 /* ================================================================== recorder */
 
 #define CAT_REC_COLS 48

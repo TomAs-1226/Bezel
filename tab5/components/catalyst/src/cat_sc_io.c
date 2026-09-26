@@ -477,6 +477,68 @@ static void *states_thread(void *arg)
     return NULL;
 }
 
+void cat_state_counters(const char *base, cat_state_counters_t *out)
+{
+    char topic[128];
+    double v;
+    snprintf(topic, sizeof topic, "%s/Counters/Transitions", base);
+    out->transitions = G.nt && nt4_get_number(G.nt, topic, &v) ? v : NAN;
+    snprintf(topic, sizeof topic, "%s/Counters/Rejections", base);
+    out->rejections = G.nt && nt4_get_number(G.nt, topic, &v) ? v : NAN;
+    snprintf(topic, sizeof topic, "%s/Counters/Timeouts", base);
+    out->timeouts = G.nt && nt4_get_number(G.nt, topic, &v) ? v : NAN;
+    snprintf(topic, sizeof topic, "%s/Counters/Aborts", base);
+    out->aborts = G.nt && nt4_get_number(G.nt, topic, &v) ? v : NAN;
+    snprintf(topic, sizeof topic, "%s/Counters/Yields", base);
+    out->yields = G.nt && nt4_get_number(G.nt, topic, &v) ? v : NAN;
+}
+
+/* ================================================================== autonomy, beyond the fixed lanes */
+
+static double a_num(const char *topic)
+{
+    double v;
+    return G.nt && nt4_get_number(G.nt, topic, &v) ? v : NAN;
+}
+
+static void a_str(const char *topic, char *out, size_t n)
+{
+    out[0] = 0;
+    if (G.nt) nt4_get_string(G.nt, topic, out, n);
+}
+
+bool cat_autonomy_extra(cat_autonomy_extra_t *out)
+{
+    memset(out, 0, sizeof *out);
+    a_str("/Catalyst/Autonomy/Chase/Why", out->why, sizeof out->why);
+    a_str("/Catalyst/Autonomy/Chase/Rejected", out->rejected, sizeof out->rejected);
+    out->intent_hit_rate = a_num("/Catalyst/Autonomy/Intent/HitRate");
+    out->intent_samples = a_num("/Catalyst/Autonomy/Intent/Samples");
+    a_str("/Catalyst/Autonomy/Intent/Explain", out->intent_explain, sizeof out->intent_explain);
+    out->authority_scale = a_num("/Catalyst/Autonomy/Authority/Scale");
+    a_str("/Catalyst/Autonomy/Authority/Explain", out->authority_explain, sizeof out->authority_explain);
+    out->power_deficit_a = a_num("/Catalyst/Autonomy/Power/Deficit");
+    out->power_shed_a = a_num("/Catalyst/Autonomy/Power/Shed");
+    out->power_short_a = a_num("/Catalyst/Autonomy/Power/Short");
+    a_str("/Catalyst/Autonomy/Power/Explain", out->power_explain, sizeof out->power_explain);
+    return out->why[0] || out->rejected[0] || out->intent_explain[0] || out->authority_explain[0] ||
+           out->power_explain[0] || !isnan(out->intent_hit_rate) || !isnan(out->authority_scale) ||
+           !isnan(out->power_deficit_a);
+}
+
+bool cat_autonomy_situation(cat_autonomy_situation_t *out)
+{
+    memset(out, 0, sizeof *out);
+    out->have_valid = G.nt && nt4_get_bool(G.nt, "/Catalyst/Autonomy/Situation/Valid", &out->valid);
+    out->confidence = a_num("/Catalyst/Autonomy/Situation/Confidence");
+    out->speed_mps = a_num("/Catalyst/Autonomy/Situation/Speed");
+    out->slip = a_num("/Catalyst/Autonomy/Situation/Slip");
+    out->bus_volts = a_num("/Catalyst/Autonomy/Situation/BusVolts");
+    out->headroom_a = a_num("/Catalyst/Autonomy/Situation/Headroom");
+    a_str("/Catalyst/Autonomy/Situation/Binding", out->binding, sizeof out->binding);
+    return out->have_valid || !isnan(out->bus_volts) || out->binding[0] != 0;
+}
+
 /* ================================================================== run recorder */
 
 static struct {

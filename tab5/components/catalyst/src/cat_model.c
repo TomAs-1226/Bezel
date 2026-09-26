@@ -536,8 +536,15 @@ static void read_tunables(cat_robot_t *r)
             for (int i = 0; i < tok[0].size && r->ntunables < CAT_MAX_TUNABLES; i++) {
                 int e = jl_at(&d, 0, i);
                 cat_tunable_t *t = &r->tunables[r->ntunables];
-                if (!jl_str(&d, jl_get(&d, e, "key"), t->key, sizeof t->key) || !t->key[0]) continue;
-                if (t->key[0] != '/') continue;
+                /* TunablesManifest.Entry.key (TunablesManifest.java:60-61,76-77) is relative to
+                 * TunableNumber's own table and never starts with '/' or "Catalyst/Tuning/" — the real
+                 * NT4 path (what cat_set_tunable()'s absolute-path guard and the live-value read below
+                 * both need) is TunableNumber's table plus that key (TunableNumber.java:32,48-51). A raw
+                 * key that already looks absolute (a hand-rolled manifest) is kept as-is. */
+                char rel[80];
+                if (!jl_str(&d, jl_get(&d, e, "key"), rel, sizeof rel) || !rel[0]) continue;
+                if (rel[0] == '/') snprintf(t->key, sizeof t->key, "%s", rel);
+                else snprintf(t->key, sizeof t->key, "/Catalyst/Tuning/%s", rel);
                 if (!jl_str(&d, jl_get(&d, e, "name"), t->name, sizeof t->name)) {
                     const char *slash = strrchr(t->key, '/');
                     snprintf(t->name, sizeof t->name, "%s", slash ? slash + 1 : t->key);
@@ -635,6 +642,34 @@ static void read_checks(cat_robot_t *r)
     r->start_heading_deg = num_or("/Catalyst/Auto/StartCheck/HeadingErrorDeg", NAN);
 }
 
+/* /Catalyst/Tablet/Summary (RobotSummary.java): {ok,battery,batteryWantsSwap,errors,warnings,worstAlert,
+ * canWorst,canWorstBus,preflightReady?} - preflightReady is left out of the JSON entirely, not published
+ * false, when preflight has never run. */
+static void read_summary(cat_robot_t *r)
+{
+    static char json[512];
+    r->have_summary = str("/Catalyst/Tablet/Summary", json, sizeof json);
+    if (!r->have_summary) return;
+    static jl_tok_t tok[64];
+    int n = jl_parse(json, strlen(json), tok, 64);
+    jl_doc_t d = { json, tok, n };
+    if (n <= 0 || tok[0].type != JL_OBJ) {
+        r->have_summary = false;
+        return;
+    }
+    r->summary_ok = jl_bool(&d, jl_get(&d, 0, "ok"), false);
+    r->summary_battery = jl_num(&d, jl_get(&d, 0, "battery"), NAN);              /* "null" -> NAN */
+    r->summary_battery_wants_swap = jl_bool(&d, jl_get(&d, 0, "batteryWantsSwap"), false);
+    r->summary_errors = (int)jl_num(&d, jl_get(&d, 0, "errors"), 0);
+    r->summary_warnings = (int)jl_num(&d, jl_get(&d, 0, "warnings"), 0);
+    jl_str(&d, jl_get(&d, 0, "worstAlert"), r->summary_worst_alert, sizeof r->summary_worst_alert);
+    r->summary_can_worst = jl_num(&d, jl_get(&d, 0, "canWorst"), NAN);           /* "null" -> NAN */
+    jl_str(&d, jl_get(&d, 0, "canWorstBus"), r->summary_can_worst_bus, sizeof r->summary_can_worst_bus);
+    int pf = jl_get(&d, 0, "preflightReady");
+    r->have_summary_preflight = pf >= 0;                 /* omitted (never run) is not "not ready" */
+    r->summary_preflight_ready = jl_bool(&d, pf, false);
+}
+
 void cat_model_update(cat_robot_t *r)
 {
     nt4_status_t st;
@@ -655,6 +690,7 @@ void cat_model_update(cat_robot_t *r)
         r->match_time = r->brownout_v = r->predicted_v = r->total_current = NAN;
         r->loop_last_ms = r->loop_avg_ms = r->loop_max_ms = r->heading_deg = NAN;
         r->pd_voltage = r->pd_total = NAN;
+        r->summary_battery = r->summary_can_worst = NAN;
         /* absent, as read_systemcore leaves them: at 0 the systemcore app said "0 °c · ok" with no robot */
         r->sc_cpu = r->sc_temp = r->sc_ram = r->sc_storage = NAN;
         for (int i = 0; i < 24; i++) r->pd_amps[i] = NAN;
@@ -674,6 +710,7 @@ void cat_model_update(cat_robot_t *r)
     read_tunables(r);
     read_autos(r);
     read_checks(r);
+    read_summary(r);
 }
 
 int cat_addresses(int team, const char *override_addr, char out[][64], int max)
