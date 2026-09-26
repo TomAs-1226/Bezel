@@ -55,13 +55,21 @@ the auto choice and a Limelight's LED. Details are in
 ## The AI technician
 
 `components/assist/` is a Claude conversation (the Messages API, streamed; Claude Opus 5 with
-adaptive thinking) whose tools are the robot, the tablet and the PC. It has 33 tools. It **reads**
+adaptive thinking) whose tools are the robot, the tablet and the PC. It has 37 tools. It **reads**
 everything the tablet reads: the overview, alerts, mechanisms, power, CAN, vision, preflight, any
 topic, tunables, autos, logs, Systemcore health, motor history, and the robot's code on the PC
 (tree, read, search). It also reads what the tablet has recorded itself -- the run recorder's runs,
 analysed on the tablet rather than shipped out as samples, and the state timelines kept from boot --
 and The Blue Alliance beyond our own event, through a whitelist of endpoints
-(`components/home/src/home_tba_paths.c`) rather than a free-text URL. It **changes** things in only three ways, and each one first puts a card on
+(`components/home/src/home_tba_paths.c`) rather than a free-text URL.
+
+It **does** things to the tablet, the PC and the house without asking first — opens an app, sets
+brightness and volume, works the music player (the tablet's or, through the Link, the PC's) and the
+Home Assistant entities home mode already shows. The line is the robot: a lamp that demanded a tap
+on a screen before it would turn on is not worth having, and a tunable written without one would be
+a dangerous robot. Those tools reach nothing on NetworkTables.
+
+It **changes** the robot in only three ways, and each one first puts a card on
 screen that you approve or decline (a card declines itself after 90 s):
 
 - **a tunable or the auto choice**, with a snapshot taken first so it can be reverted;

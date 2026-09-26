@@ -960,6 +960,34 @@ static void kcopy(ab_t *o, const char *k, const aj_t *v)
     aj_write(o, v);
 }
 
+/* ---------------------------------------------------------------- the tablet and the house */
+
+/* Every AS_T_DEVICE tool goes through the one handler the ui registered: the assistant cannot call
+ * the ui (ui requires assist, not the reverse), and the handler is also what carries the work from
+ * this worker thread to the thread LVGL belongs to. */
+static as_tres_t t_device(const char *name, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    as_action_fn act = assist_action_handler();
+    if (!act) {
+        ab_puts(o, "{\"error\":\"this tablet has no action handler wired up\"}");
+        sum(s, sn, "no action handler");
+        return AS_TR_ERROR;
+    }
+    ab_t args;
+    ab_init(&args);
+    if (in) aj_write(&args, in);
+    else ab_puts(&args, "{}");
+    char msg[512];
+    msg[0] = 0;
+    bool ok = act(name, args.oom || !args.p ? "{}" : args.p, msg, sizeof msg);
+    ab_free(&args);
+    ab_puts(o, "{");
+    kstr(o, ok ? "done" : "error", msg[0] ? msg : (ok ? "done" : "it didn't work"));
+    ab_puts(o, "}");
+    sum(s, sn, "%s: %s", name, msg[0] ? msg : (ok ? "done" : "failed"));
+    return ok ? AS_TR_OK : AS_TR_ERROR;
+}
+
 /* ---------------------------------------------------------------- The Blue Alliance */
 
 /* Keeps as many whole elements of a JSON array as fit, then closes it honestly.
@@ -1943,6 +1971,9 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     else if (!strcmp(name, "analyze_recording")) r = t_analyze_recording(e, in, o, s, sn);
     else if (!strcmp(name, "get_states")) r = t_get_states(e, in, o, s, sn);
     else if (!strcmp(name, "tba_query")) r = t_tba_query(e, in, o, s, sn);
+    else if (!strcmp(name, "open_app") || !strcmp(name, "set_tablet") || !strcmp(name, "music") ||
+             !strcmp(name, "smart_home"))
+        r = t_device(name, in, o, s, sn);
     else if (!strncmp(name, "code_", 5) || !strcmp(name, "list_patches") || !strcmp(name, "list_work_orders") ||
              !strcmp(name, "claude_sessions"))
         r = t_code(name, in, o, s, sn);

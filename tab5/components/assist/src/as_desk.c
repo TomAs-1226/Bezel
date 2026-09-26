@@ -42,3 +42,10 @@ static as_tba_read_fn g_tba;
 
 void assist_set_tba_reader(as_tba_read_fn fn) { g_tba = fn; }
 as_tba_read_fn assist_tba_reader(void) { return g_tba; }
+
+/* ---- the tablet's and the house's actions, registered by whoever can see the ui ---- */
+
+static as_action_fn g_action;
+
+void assist_set_action_handler(as_action_fn fn) { g_action = fn; }
+as_action_fn assist_action_handler(void) { return g_action; }

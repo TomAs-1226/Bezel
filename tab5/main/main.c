@@ -220,6 +220,7 @@ void app_main(void)
     nt4_client_t *nt = nt4_create(&ncfg);
     ui_config_t ucfg = { .nt = nt, .team = 0, .sim_address = NULL };
     ui_init(&ucfg);
+    ui_actions_init();  /* the assistant may open apps, set brightness, drive the music and the lights */
     /* safe mode after a failed start: solid glass (no frost or refraction), the cheapest the UI draws */
     if (safe) bz_ui_set_mode(bz_ui_dark(), true);
     ui_boot_set(s_boot, 0.9f, "looking for the robot");

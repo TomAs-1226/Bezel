@@ -593,7 +593,9 @@ static char *tools_json(void)
     ab_puts(&b, "[");
     bool first = true;
     for (int i = 0; i < AS_NTOOLS; i++) {
-        if (AS_TOOLS[i].kind != AS_T_READ) continue;
+        /* Reads, and the tablet's and the house's own actions. Never AS_T_CHANGE: those touch the
+         * robot and need a card, and a spoken conversation is the wrong place for one. */
+        if (AS_TOOLS[i].kind != AS_T_READ && AS_TOOLS[i].kind != AS_T_DEVICE) continue;
         ab_puts(&b, first ? "" : ",");
         first = false;
         ab_puts(&b, "{\"type\":\"function\",\"function\":{\"name\":");
@@ -724,7 +726,8 @@ static void run_call(const aj_t *call, aj_t *turn, cat_robot_t *robot)
     const as_tooldef_t *def = name ? as_tool_find(name) : NULL;
     char err[200] = "", summary[200];
     aj_t *in = args ? aj_parse(args, strlen(args), err, sizeof err) : aj_new(AJ_OBJ);
-    if (!def || def->kind != AS_T_READ) ab_puts(&out, "{\"error\":\"no such read-only tool\"}");
+    if (!def || (def->kind != AS_T_READ && def->kind != AS_T_DEVICE))
+        ab_puts(&out, "{\"error\":\"that tool is not one this conversation may use\"}");
     else if (!in) ab_fmt(&out, "{\"error\":\"arguments aren't valid JSON\"}");
     else if (!as_tool_check(def, in, err, sizeof err)) {
         ab_puts(&out, "{\"error\":");

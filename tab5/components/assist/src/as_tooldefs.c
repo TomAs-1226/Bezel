@@ -108,6 +108,39 @@ const as_tooldef_t AS_TOOLS[] = {
       "{\"type\":\"object\",\"properties\":{\"window_s\":{\"type\":\"number\",\"minimum\":1,"
       "\"maximum\":86400}},\"additionalProperties\":false}",
       AS_T_READ },
+    /* ---- the tablet and the house: changes, but never to the robot ---- */
+    { "open_app",
+      "Brings one of the tablet's apps on screen, by the name on its icon: weather, music, photos, "
+      "clock, timer, notes, documents, lens, field, power, alerts, tune, logs, settings and the rest. "
+      "Say which one you opened.",
+      "{\"type\":\"object\",\"properties\":{\"app\":{\"type\":\"string\",\"minLength\":1,"
+      "\"maxLength\":32}},\"required\":[\"app\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "set_tablet",
+      "Sets the screen brightness and the speaker volume, each 0 to 100. Give only the one asked for.",
+      "{\"type\":\"object\",\"properties\":{"
+      "\"brightness\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":100},"
+      "\"volume\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":100}},"
+      "\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "music",
+      "The tablet's music player, over the tracks on its card: play, pause, next, previous, stop, or "
+      "what is playing now.",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":"
+      "[\"play\",\"pause\",\"next\",\"previous\",\"stop\",\"status\"]}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "smart_home",
+      "The Home Assistant entities chosen in home mode's settings. \"list\" first: it gives each "
+      "entity's id, name, kind and state, and nothing outside that list can be touched. \"toggle\" "
+      "does the natural thing for the kind; \"brightness\" takes 0-100 for a light (0 turns it off); "
+      "\"temperature\" takes a set point for a thermostat.",
+      "{\"type\":\"object\",\"properties\":{"
+      "\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"toggle\",\"brightness\",\"temperature\"]},"
+      "\"entity\":{\"type\":\"string\",\"maxLength\":80},"
+      "\"value\":{\"type\":\"number\"}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
     { "systemcore_health",
       "Systemcore's own view from catalyst-agent (port 9010): OS and uptime, per-core CPU and throttling, "
       "temperatures, memory, storage, top processes, CAN interface error counters, network, and the robot "

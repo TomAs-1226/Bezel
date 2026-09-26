@@ -12,7 +12,11 @@
 #include "as_json.h"
 #include "cat_model.h"
 
-typedef enum { AS_T_READ, AS_T_CHANGE, AS_T_SEND } as_tkind_t;
+/* AS_T_DEVICE changes the TABLET or the HOUSE -- a light, the volume, which app is on screen --
+ * and asks nobody first. AS_T_CHANGE changes the ROBOT or its code and always shows a card. The
+ * line between them is the robot: a lamp turned on by voice that first demanded a tap on a screen
+ * would be a worse assistant, and a tunable written without one would be a dangerous robot. */
+typedef enum { AS_T_READ, AS_T_CHANGE, AS_T_SEND, AS_T_DEVICE } as_tkind_t;
 
 typedef struct {
     const char *name;

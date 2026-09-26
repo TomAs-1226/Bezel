@@ -147,6 +147,18 @@ typedef enum { AS_DESK_MATCHES, AS_DESK_BATTERIES, AS_DESK_NOW, AS_DESK_N } as_d
  * cannot reach tba.h. Whoever requires both (the ui) registers tba_read here at start-up; without
  * it the tba_query tool says so rather than failing obscurely. Called from the assistant's worker,
  * so the reader must be safe to block in. */
+/* The tablet's and the house's own actions, handed in for the same reason as the reader below:
+ * ui requires assist, so assist cannot call the ui. `action` is the tool's name, `args` its
+ * validated input; `out` takes a sentence for the model either way. Called on the assistant's
+ * worker -- the handler is what moves the work to the UI thread.
+ *
+ * `args` is the validated input re-serialised as JSON, not a parsed object: as_json.h is private to
+ * this component, and a public header that leaks it would drag the parser into everyone who talks
+ * to the assistant. The handler parses it with whatever it already has. */
+typedef bool (*as_action_fn)(const char *action, const char *args_json, char *out, size_t n);
+void assist_set_action_handler(as_action_fn fn);
+as_action_fn assist_action_handler(void);
+
 typedef bool (*as_tba_read_fn)(const char *path, char *out, size_t n);
 void assist_set_tba_reader(as_tba_read_fn fn);
 as_tba_read_fn assist_tba_reader(void);
