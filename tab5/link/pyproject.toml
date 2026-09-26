@@ -13,6 +13,10 @@ dependencies = ["anthropic>=1.8", "claude-agent-sdk>=0.2.159"]
 
 [project.optional-dependencies]
 mdns = ["zeroconf>=0.130"]
+# the desktop app's firmware panel: it runs `python -m esptool` in the interpreter it runs the Link
+# with, so esptool has to be installed into that one and not merely on PATH somewhere. 4.7 is the
+# first release that writes an ESP32-P4 reliably, which is the chip in a Tab5.
+flash = ["esptool>=4.7"]
 # the media remote (/media/*): the PC's now-playing through Windows' media controls, album art, volume
 media = ["winrt-Windows.Media.Control>=2.0; sys_platform == 'win32'",
          "winrt-Windows.Storage.Streams>=2.0; sys_platform == 'win32'",

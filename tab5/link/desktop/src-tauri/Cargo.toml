@@ -24,6 +24,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 # The log panel's safety net: tokens and pairing codes are masked even if something prints one.
 regex = "1"
+# Enumerating serial ports for the flash panel. The alternative was reading
+# HKLM\HARDWARE\DEVICEMAP\SERIALCOMM through winreg, which is already here — but that gives bare port
+# names and nothing else, so it cannot tell the tablet from the robot radio or a mouse dongle. This
+# exposes the USB vendor id, which lets the panel mark the Espressif device instead of leaving someone
+# to guess which COM port to write firmware to.
+serialport = "4"
 
 [target.'cfg(windows)'.dependencies]
 # "Start with Windows" is a value under HKCU\...\Run, the per-user place Windows itself reads.

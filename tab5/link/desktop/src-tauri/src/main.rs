@@ -17,7 +17,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod autostart;
+mod flash;
 mod http;
+mod provision;
+mod recordings;
 mod redact;
 mod settings;
 mod supervisor;
@@ -39,6 +42,7 @@ static QUITTING: AtomicBool = AtomicBool::new(false);
 
 struct App {
     link: Arc<Supervisor>,
+    flash: Arc<flash::Flasher>,
     settings: Mutex<Settings>,
 }
 
@@ -196,6 +200,127 @@ fn open_work_order(app: AppHandle, path: String) -> Result<(), String> {
     app.opener().open_path(file.display().to_string(), None::<&str>).map_err(|e| e.to_string())
 }
 
+// --- flashing the tablet ----------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct FlashReady {
+    esptool: Option<String>,
+    problem: Option<String>,
+    firmware_dir: Option<String>,
+    ports: Vec<flash::PortInfo>,
+}
+
+/// Everything the flash panel needs to decide whether it can offer the button.
+#[tauri::command]
+fn flash_ready(state: State<'_, App>) -> FlashReady {
+    let settings = state.settings.lock().unwrap().clone();
+    let (esptool, problem) = match flash::Flasher::esptool_available(&settings) {
+        Ok(v) => (Some(v), None),
+        Err(e) => (None, Some(e)),
+    };
+    FlashReady {
+        esptool,
+        problem,
+        firmware_dir: flash::Flasher::firmware_dir(&settings).map(|p| p.display().to_string()),
+        ports: flash::Flasher::ports(),
+    }
+}
+
+#[tauri::command]
+fn flash_start(
+    state: State<'_, App>,
+    merged: bool,
+    port: Option<String>,
+    image: Option<String>,
+) -> Result<String, String> {
+    let settings = state.settings.lock().unwrap().clone();
+    let target = if merged { flash::Target::Merged } else { flash::Target::AppOnly };
+    state.flash.start(&settings, target, port, image.map(std::path::PathBuf::from))
+}
+
+#[tauri::command]
+fn flash_cancel(state: State<'_, App>) {
+    state.flash.cancel();
+}
+
+#[tauri::command]
+fn flash_state(state: State<'_, App>) -> flash::View {
+    state.flash.view()
+}
+
+#[derive(Serialize)]
+struct FlashLog {
+    lines: Vec<String>,
+    last: usize,
+}
+
+#[tauri::command]
+fn flash_log(state: State<'_, App>, after: usize) -> FlashLog {
+    let (lines, last) = state.flash.log_since(after);
+    FlashLog { lines, last }
+}
+
+/// Pick a firmware image by hand, for a build that is not the one beside the app.
+#[tauri::command]
+async fn flash_pick_image(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .set_title("a firmware image to write")
+        .add_filter("firmware", &["bin"])
+        .blocking_pick_file()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string())
+}
+
+// --- provisioning the tablet's card -----------------------------------------------------------------
+
+#[tauri::command]
+async fn provision_pick_card(app: AppHandle) -> Option<String> {
+    use tauri_plugin_dialog::DialogExt;
+    app.dialog()
+        .file()
+        .set_title("the tablet's microSD card")
+        .blocking_pick_folder()
+        .and_then(|p| p.into_path().ok())
+        .map(|p| p.display().to_string())
+}
+
+#[tauri::command]
+fn provision_write(
+    card: String,
+    fields: provision::Fields,
+    in_catos: bool,
+) -> Result<provision::Written, String> {
+    provision::write(std::path::Path::new(&card), &fields, in_catos)
+}
+
+/// Whether a card already carries a KEYS.ENV the tablet has not consumed.
+#[tauri::command]
+fn provision_pending(card: String) -> Option<String> {
+    provision::pending(std::path::Path::new(&card))
+}
+
+// --- the runs the tablet uploaded -------------------------------------------------------------------
+
+#[tauri::command]
+fn runs_list() -> Vec<recordings::FileEntry> {
+    recordings::list()
+}
+
+#[tauri::command]
+fn runs_summary(name: String) -> Result<recordings::RunSummary, String> {
+    recordings::summary(&name)
+}
+
+/// Open an uploaded file in whatever the PC uses for it. Only files inside the Link's own folder.
+#[tauri::command]
+fn runs_open(app: AppHandle, name: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let path = recordings::path_of(&name)?;
+    app.opener().open_path(path, None::<&str>).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn quit(app: AppHandle) {
     QUITTING.store(true, Ordering::SeqCst);
@@ -296,12 +421,13 @@ fn main() {
     let force_minimized = args.iter().any(|a| a == "--minimized");
     let initial = settings::load();
     let link = Supervisor::new(initial.clone());
+    let flasher = flash::Flasher::new();
 
     let app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| show_main(app)))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .manage(App { link: Arc::clone(&link), settings: Mutex::new(initial.clone()) })
+        .manage(App { link: Arc::clone(&link), flash: Arc::clone(&flasher), settings: Mutex::new(initial.clone()) })
         .invoke_handler(tauri::generate_handler![
             app_info,
             link_state,
@@ -314,6 +440,18 @@ fn main() {
             save_settings,
             pick_folder,
             open_work_order,
+            flash_ready,
+            flash_start,
+            flash_cancel,
+            flash_state,
+            flash_log,
+            flash_pick_image,
+            provision_pick_card,
+            provision_write,
+            provision_pending,
+            runs_list,
+            runs_summary,
+            runs_open,
             quit
         ])
         .on_window_event(|window, event| {
@@ -334,6 +472,13 @@ fn main() {
                 }
                 let _ = handle.emit("link-state", v.clone());
             }));
+            // The flash panel is pushed, not polled: a write takes about a minute and esptool's
+            // progress arrives many times a second, which a one-second poll would render as a bar
+            // that lurches. The same mechanism as link-state, for the same reason.
+            let flash_handle = app.handle().clone();
+            flasher.on_change(move |v: flash::View| {
+                let _ = flash_handle.emit("flash-state", v);
+            });
             // Started at login (--autostart) or by hand, "start minimized" means the tray only.
             let hidden = force_minimized || initial.start_minimized;
             if !hidden {

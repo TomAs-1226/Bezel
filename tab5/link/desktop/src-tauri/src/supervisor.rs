@@ -440,6 +440,15 @@ impl Supervisor {
     }
 }
 
+/// The job object, for another module that spawns a child that must die with the app.
+///
+/// `flash.rs` needs exactly this: an esptool left running against the tablet's serial port after the
+/// app is killed is worse than no flash at all, because the port stays held and the next attempt
+/// cannot open it. Re-exported rather than copied so there is one description of the Windows
+/// behaviour, in one place.
+#[cfg(windows)]
+pub use job::Job as JobHandle;
+
 #[cfg(windows)]
 mod job {
     //! A job object with "kill on close": the app holds the only handle, so when the app goes away, by

@@ -81,9 +81,290 @@ const S = {
   forgetArmed: null,
 };
 
+// --- firmware -----------------------------------------------------------------------------------
+//
+// One esptool run, pushed rather than polled: a write takes about a minute and esptool reports
+// progress many times a second, which a one-second poll renders as a bar that lurches.
+
+const F = { logLast: 0, ready: null, running: false };
+
+async function refreshFlashReady() {
+  try {
+    F.ready = await invoke("flash_ready");
+  } catch {
+    F.ready = null;
+  }
+  const problem = F.ready?.problem || null;
+  $("flashProblem").hidden = !problem;
+  if (problem) $("flashProblemText").textContent = problem;
+
+  const dir = F.ready?.firmware_dir;
+  $("flashFirmwareDir").textContent = dir
+    ? `the build beside this app: ${dir}`
+    : "no firmware folder found beside this app \u2014 choose an image";
+
+  const sel = $("flashPort");
+  const chosen = sel.value;
+  sel.innerHTML = "";
+  const auto = document.createElement("option");
+  auto.value = "";
+  auto.textContent = "find it automatically";
+  sel.append(auto);
+  for (const port of F.ready?.ports || []) {
+    const o = document.createElement("option");
+    o.value = port.name;
+    o.textContent = port.likely_tablet
+      ? `${port.name} \u2014 ${port.description} (looks like the tablet)`
+      : `${port.name} \u2014 ${port.description}`;
+    sel.append(o);
+  }
+  if (chosen) sel.value = chosen;
+  // Nothing preselects a port: writing firmware to the wrong device is not a mistake worth
+  // defaulting into, so "find it automatically" stays the default and esptool decides.
+  $("btnFlashStart").disabled = !!problem || F.running;
+}
+
+function paintFlash(view) {
+  if (!view) return;
+  F.running = !!view.running;
+  $("flashStatus").textContent = view.message || view.phase || "";
+  $("btnFlashStart").disabled = F.running || !!F.ready?.problem;
+  $("btnFlashCancel").hidden = !F.running;
+  const bar = $("flashBar");
+  if (view.percent >= 0) {
+    bar.style.width = `${view.percent}%`;
+  } else if (!F.running) {
+    bar.style.width = view.phase === "verified" ? "100%" : "0%";
+  }
+}
+
+async function refreshFlashLog() {
+  try {
+    const page = await invoke("flash_log", { after: F.logLast });
+    if (!page.lines.length) return;
+    F.logLast = page.last;
+    const box = $("flashLog");
+    const stuck = box.scrollTop + box.clientHeight >= box.scrollHeight - 8;
+    for (const line of page.lines) {
+      const row = document.createElement("div");
+      row.className = "log__line";
+      row.textContent = line;
+      box.append(row);
+    }
+    while (box.childElementCount > 400) box.firstElementChild.remove();
+    if (stuck) box.scrollTop = box.scrollHeight;
+  } catch {
+    /* the log is a convenience; losing it must not take the panel down */
+  }
+}
+
+async function startFlash() {
+  const merged = document.querySelector('input[name="flashTarget"]:checked')?.value === "merged";
+  if (merged) {
+    const ok = window.confirm(
+      "Writing the merged image erases the tablet's pairing, wi-fi and settings.\n\n" +
+        "It will have to be paired with this PC again. Continue?"
+    );
+    if (!ok) return;
+  }
+  const image = $("flashImage").value.trim();
+  const port = $("flashPort").value;
+  try {
+    await invoke("flash_start", { merged, port: port || null, image: image || null });
+    $("flashLog").innerHTML = "";
+    F.logLast = 0;
+  } catch (e) {
+    $("flashStatus").textContent = String(e);
+  }
+}
+
+// --- card ---------------------------------------------------------------------------------------
+
+const PROV_FIELDS = [
+  "team", "wifi_ssid", "wifi_pass",
+  "anthropic_api_key", "openai_api_key", "tba_api_key", "nexus_api_key",
+  "ha_url", "ha_token", "frc_events_user", "frc_events_token",
+];
+
+function provFields() {
+  const form = $("provForm");
+  const out = {};
+  for (const name of PROV_FIELDS) {
+    out[name] = form.elements[name]?.value ?? "";
+  }
+  return out;
+}
+
+async function refreshProvision() {
+  const card = $("provCard").value.trim();
+  if (!card) {
+    $("provPending").textContent = "";
+    return;
+  }
+  try {
+    const pending = await invoke("provision_pending", { card });
+    $("provPending").textContent = pending
+      ? `a KEYS.ENV is already on this card (${pending}) \u2014 the tablet has not read it yet`
+      : "no KEYS.ENV on this card";
+  } catch {
+    $("provPending").textContent = "";
+  }
+}
+
+async function writeProvision() {
+  const card = $("provCard").value.trim();
+  if (!card) {
+    $("provStatus").textContent = "choose the card first";
+    return;
+  }
+  try {
+    const written = await invoke("provision_write", {
+      card,
+      fields: provFields(),
+      inCatos: $("provCatos").checked,
+    });
+    $("provStatus").textContent = `wrote ${written.keys.length} setting(s) to ${written.path}`;
+    toast("written \u2014 put the card back in the tablet");
+    // Cleared after a successful write: these are credentials, and leaving a wi-fi password sitting
+    // in a form on a shared pit laptop is the kind of thing this panel should not encourage.
+    for (const name of PROV_FIELDS) {
+      const el = $("provForm").elements[name];
+      if (el && el.type === "password") el.value = "";
+    }
+    await refreshProvision();
+  } catch (e) {
+    $("provStatus").textContent = String(e);
+  }
+}
+
+// --- runs ---------------------------------------------------------------------------------------
+
+const R = { sel: null, summary: null };
+
+async function refreshRuns() {
+  let files = [];
+  try {
+    files = await invoke("runs_list");
+  } catch {
+    files = [];
+  }
+  const list = $("runsList");
+  list.innerHTML = "";
+  $("runsStatus").textContent = files.length ? `${files.length} file(s)` : "nothing uploaded yet";
+  for (const f of files) {
+    const row = document.createElement("button");
+    row.className = "row row--button";
+    row.type = "button";
+    if (f.name === R.sel) row.setAttribute("aria-current", "true");
+    const when = f.modified ? new Date(f.modified * 1000).toLocaleString() : "";
+    row.innerHTML = "";
+    const title = document.createElement("b");
+    title.textContent = f.name;
+    const meta = document.createElement("small");
+    meta.textContent = `${fmtBytes(f.bytes)}${when ? " \u00b7 " + when : ""}${f.is_run ? "" : " \u00b7 not a run"}`;
+    row.append(title, meta);
+    row.addEventListener("click", () => openRun(f));
+    list.append(row);
+  }
+}
+
+function fmtBytes(n) {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} kB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function openRun(file) {
+  R.sel = file.name;
+  R.summary = null;
+  $("btnRunsOpen").hidden = false;
+  await refreshRuns();
+  const detail = $("runsDetail");
+  if (!file.is_run) {
+    detail.textContent = "not a recorded run \u2014 open it to see it in whatever this PC uses.";
+    return;
+  }
+  detail.textContent = "reading\u2026";
+  try {
+    R.summary = await invoke("runs_summary", { name: file.name });
+  } catch (e) {
+    detail.textContent = String(e);
+    return;
+  }
+  paintRun();
+}
+
+function paintRun() {
+  const s = R.summary;
+  const detail = $("runsDetail");
+  if (!s) return;
+  detail.innerHTML = "";
+
+  const head = document.createElement("div");
+  head.className = "cat-card";
+  const mins = Math.floor(s.duration_s / 60);
+  const secs = (s.duration_s % 60).toFixed(1);
+  head.innerHTML = "";
+  const h = document.createElement("div");
+  h.className = "cat-card__head";
+  const t = document.createElement("span");
+  t.className = "cat-card__title";
+  t.textContent = s.name;
+  h.append(t);
+  const body = document.createElement("p");
+  body.className = "quiet";
+  body.textContent =
+    `${mins ? mins + " min " : ""}${secs} s \u00b7 ${s.rows} rows \u00b7 ` +
+    `${s.channels.length} channel(s) \u00b7 ${fmtBytes(s.bytes)}` +
+    (s.marks.length ? ` \u00b7 ${s.marks.length} mark(s)` : "");
+  head.append(h, body);
+  detail.append(head);
+
+  const card = document.createElement("div");
+  card.className = "cat-card";
+  const ch = document.createElement("div");
+  ch.className = "cat-card__head";
+  const ct = document.createElement("span");
+  ct.className = "cat-card__title";
+  ct.textContent = "channels";
+  ch.append(ct);
+  card.append(ch);
+
+  for (let i = 0; i < s.channels.length; i++) {
+    const values = s.series[i] || [];
+    const present = values.filter((v) => v !== null && v !== undefined);
+    const row = document.createElement("div");
+    row.className = "row";
+    const name = document.createElement("b");
+    name.textContent = s.channels[i];
+    const meta = document.createElement("small");
+    if (!present.length) {
+      // A channel the robot never published reads as absent, never as zero: that is the recorder's
+      // own rule and the panel keeps it.
+      meta.textContent = "never published";
+    } else {
+      const min = Math.min(...present);
+      const max = Math.max(...present);
+      const last = present[present.length - 1];
+      meta.textContent = `${fmtNum(min)} \u2026 ${fmtNum(max)} \u00b7 last ${fmtNum(last)}` +
+        (present.length < values.length ? ` \u00b7 ${values.length - present.length} gap(s)` : "");
+    }
+    row.append(name, meta);
+    card.append(row);
+  }
+  detail.append(card);
+}
+
+function fmtNum(v) {
+  if (!isFinite(v)) return "\u2014";
+  const a = Math.abs(v);
+  if (a >= 1000 || (a < 0.01 && a > 0)) return v.toExponential(2);
+  return v.toFixed(a >= 100 ? 0 : a >= 1 ? 2 : 3);
+}
+
 // --- navigation ---------------------------------------------------------------------------------------
 
-const PANELS = ["status", "pairing", "media", "claude", "inbox", "log", "settings"];
+const PANELS = ["status", "pairing", "media", "claude", "inbox", "flash", "provision", "runs", "log", "settings"];
 
 function show(panel) {
   if (!PANELS.includes(panel)) return;
@@ -679,6 +960,9 @@ async function refreshPanel(now = false) {
   if (p === "claude") { if (now || tickN % 10 === 0) await refreshHooks(); await refreshSessions(); }
   if (p === "inbox") { await refreshInbox(); if (now && S.inboxSel) paintItem(); }
   if (p === "log") { if (now) paintLog(); }
+  if (p === "flash") { if (now) await refreshFlashReady(); await refreshFlashLog(); }
+  if (p === "provision" && now) await refreshProvision();
+  if (p === "runs" && now) await refreshRuns();
   if (p === "settings" && now) await loadSettings();
 }
 
@@ -690,7 +974,7 @@ async function tick() {
     const wasUp = S.view?.up;
     await refreshView();
     await refreshLog();
-    const everyN = { status: 2, pairing: 1, media: 1, claude: 2, inbox: 5, log: 1, settings: 0 }[S.panel];
+    const everyN = { status: 2, pairing: 1, media: 1, claude: 2, inbox: 5, flash: 1, provision: 0, runs: 0, log: 1, settings: 0 }[S.panel];
     if (tickN % 3 === 0 || wasUp !== S.view?.up) await refreshOverview();
     if (everyN && tickN % everyN === 0) await refreshPanel(false);
     else if (wasUp !== S.view?.up) await refreshPanel(true);
@@ -707,6 +991,26 @@ async function boot() {
   listen("navigate", (e) => show(String(e.payload)));
   listen("pairing-request", (e) => toast(`${e.payload} wants to pair`));
   listen("link-state", (e) => { S.view = e.payload; paintLink(); });
+  listen("flash-state", (e) => { paintFlash(e.payload); refreshFlashLog(); });
+
+  $("btnFlashStart").addEventListener("click", startFlash);
+  $("btnFlashCancel").addEventListener("click", () => invoke("flash_cancel"));
+  $("btnFlashPorts").addEventListener("click", refreshFlashReady);
+  $("btnFlashPick").addEventListener("click", async () => {
+    const picked = await invoke("flash_pick_image");
+    if (picked) $("flashImage").value = picked;
+  });
+
+  $("btnProvWrite").addEventListener("click", writeProvision);
+  $("btnProvPick").addEventListener("click", async () => {
+    const picked = await invoke("provision_pick_card");
+    if (picked) { $("provCard").value = picked; await refreshProvision(); }
+  });
+  $("provCard").addEventListener("change", refreshProvision);
+
+  $("btnRunsOpen").addEventListener("click", () => {
+    if (R.sel) invoke("runs_open", { name: R.sel }).catch((e) => { $("runsStatus").textContent = String(e); });
+  });
   await refreshView();
   await refreshOverview();
   await loadSettings();

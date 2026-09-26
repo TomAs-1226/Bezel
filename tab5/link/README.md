@@ -58,6 +58,7 @@ cd tab5/link
 python -m pip install .            # the catalyst-link command, with the anthropic SDK and claude-agent-sdk
 python -m pip install zeroconf     # optional: lets the tablet find the Link by mDNS
 python -m pip install ".[media]"   # optional, Windows: the media remote for the tablet's home mode
+python -m pip install ".[flash]"   # optional: esptool, for the desktop app's firmware panel
 ```
 
 The media remote shows the tablet what this PC is playing (Spotify, YouTube Music, anything in Windows'
@@ -249,6 +250,9 @@ to the tray; the tablet keeps its Link until **quit** in the tray menu.
 | panel | |
 |---|---|
 | **status** | running / starting / stopped / attached, the address the tablet uses, version, port, pid, robot project and branch, pairing, mDNS, media, Claude and inbox at a glance; restart, stop, start |
+| **firmware** | write a tablet's firmware over USB-C, instead of typing an `esptool` command with four addresses in it. Choose **the app only** (keeps pairing, Wi-Fi and settings — the right choice for an update) or **everything, merged** (which erases them, and says so before it starts). The port list marks the device whose USB vendor id is Espressif's rather than leaving you to guess which COM port. Progress and esptool's own output as it goes; a flash counts as done only when esptool says it verified what it wrote. Needs `esptool` in the Python that runs the Link: `python -m pip install ".[flash]"` |
+| **card** | write the tablet's `KEYS.ENV` — team number, Wi-Fi, and any API keys — onto its microSD in a reader. There is no network route for this and the panel says so: the Link's API only ever receives from the tablet, the tablet has no USB disk mode, and Wi-Fi cannot be the channel when the Wi-Fi password is the thing being set. It also cannot confirm the tablet read the file; the tablet's own "from the card" message is the confirmation. A field left blank is not written at all, because the firmware reads an empty value as "leave this alone" |
+| **runs** | the recordings, clips and logs the tablet has uploaded, newest first, and for a recorded run: its length, its channels, and each channel's range and last value. A channel the robot never published reads as *never published*, not as zero — the recorder's own rule, kept here |
 | **pairing** | **pair a tablet** walks you through it; when a tablet asks, the window comes forward (from the tray too) with the six-digit code large, a two-minute countdown and tries left; cancel it, or see "paired". Below: the paired tablets (name, address, last seen) with **forget**, and machines using the main token by hand |
 | **now playing** | what `media.py` sees (title, artist, app, album art, progress) with previous / play-pause / next, mute, volume keys and a volume slider: the same calls the tablet makes |
 | **claude code** | the sessions the hooks report (running, waiting on you, done, error; for how long; the finish estimate) and **install / update / remove the hooks** |

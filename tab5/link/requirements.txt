@@ -9,3 +9,6 @@ winrt-Windows.Storage.Streams>=2.0; sys_platform == "win32"
 winrt-Windows.Foundation>=2.0; sys_platform == "win32"
 pycaw>=20240210; sys_platform == "win32"   # a volume level; without it the volume keys still work
 pillow>=10                                   # album art the tablet can show
+# Optional: the desktop app's firmware panel. It runs `python -m esptool` in the same interpreter it
+# runs the Link with, so this has to be in that interpreter, not just on PATH.
+esptool>=4.7

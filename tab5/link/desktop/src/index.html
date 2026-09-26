@@ -41,6 +41,18 @@
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13l2.5-7.5h11L20 13v5.5H4z"/><path d="M4 13h4.5l1 2h5l1-2H20"/></svg>
           <span>inbox</span><i class="nav__count" id="countInbox" hidden></i>
         </button>
+        <button class="nav__item" role="tab" data-panel="flash">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3l-7 10h5l-1 8 7-10h-5z"/></svg>
+          <span>firmware</span>
+        </button>
+        <button class="nav__item" role="tab" data-panel="provision">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M9 4v5h6V4M8 14h8M8 17h5"/></svg>
+          <span>card</span>
+        </button>
+        <button class="nav__item" role="tab" data-panel="runs">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 18V6M4 18h16"/><path d="M7 15l3-5 3 3 4-7"/></svg>
+          <span>runs</span>
+        </button>
         <button class="nav__item" role="tab" data-panel="log">
           <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 10h14M5 14h9M5 18h6"/></svg>
           <span>log</span>
@@ -302,6 +314,119 @@
             <div class="field__hint" id="setPaths"></div>
           </div>
         </form>
+      </section>
+
+      <section class="panel" data-panel="flash" hidden>
+        <header class="panel__head">
+          <div><h1>firmware</h1><p class="quiet">write a catalyst tab&rsquo;s firmware over usb-c</p></div>
+          <div class="panel__actions">
+            <span class="quiet" id="flashStatus"></span>
+            <button class="cat-btn" id="btnFlashCancel" hidden>stop</button>
+            <button class="cat-btn cat-btn--primary" id="btnFlashStart">write</button>
+          </div>
+        </header>
+
+        <div class="cat-card" id="flashProblem" hidden>
+          <div class="cat-card__head"><span class="cat-card__title">esptool is missing</span></div>
+          <p class="quiet" id="flashProblemText"></p>
+        </div>
+
+        <div class="cat-card">
+          <div class="cat-card__head"><span class="cat-card__title">what to write</span></div>
+          <label class="toggle"><input type="radio" name="flashTarget" value="app" checked /><span><b>the app only</b><small>keeps the tablet&rsquo;s pairing, wi-fi and settings. the right choice for an update</small></span></label>
+          <label class="toggle"><input type="radio" name="flashTarget" value="merged" /><span><b>everything, merged</b><small>bootloader, partition table and app. <b>erases pairing, wi-fi and settings</b> &mdash; the tablet must be paired again</small></span></label>
+          <label class="field">
+            <span class="field__label">image</span>
+            <span class="field__row"><input type="text" id="flashImage" placeholder="the build beside this app" spellcheck="false" /><button type="button" class="cat-btn" id="btnFlashPick">choose&hellip;</button></span>
+            <span class="field__hint" id="flashFirmwareDir"></span>
+          </label>
+          <label class="field">
+            <span class="field__label">port</span>
+            <span class="field__row"><select id="flashPort"></select><button type="button" class="cat-btn" id="btnFlashPorts">rescan</button></span>
+            <span class="field__hint">the <b>usb-c</b> port. usb-a is the robot tether and cannot flash.</span>
+          </label>
+        </div>
+
+        <div class="cat-card">
+          <div class="cat-card__head"><span class="cat-card__title">progress</span></div>
+          <div class="media__progress"><div class="track"><i id="flashBar"></i></div></div>
+          <div class="log" id="flashLog"></div>
+        </div>
+      </section>
+
+      <section class="panel" data-panel="provision" hidden>
+        <header class="panel__head">
+          <div><h1>card</h1><p class="quiet">write the tablet&rsquo;s settings onto its microsd</p></div>
+          <div class="panel__actions">
+            <span class="quiet" id="provStatus"></span>
+            <button class="cat-btn cat-btn--primary" id="btnProvWrite">write</button>
+          </div>
+        </header>
+
+        <div class="cat-card">
+          <div class="cat-card__head"><span class="cat-card__title">why the card</span></div>
+          <p class="quiet">the tablet has no way to be configured over the network: the link&rsquo;s api only ever
+            receives from the tablet, there is no usb disk mode, and wi-fi cannot be the channel because the wi-fi
+            password is one of the things being set. so the card goes in a reader and this writes
+            <code>KEYS.ENV</code> to it. the tablet reads that file once, applies it, then wipes and deletes it.</p>
+          <p class="quiet"><b>this cannot confirm the tablet read it.</b> put the card back in and look for the
+            tablet&rsquo;s own &ldquo;from the card&rdquo; message.</p>
+        </div>
+
+        <form class="settings" id="provForm" autocomplete="off">
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">the card</span></div>
+            <label class="field">
+              <span class="field__label">where it is mounted</span>
+              <span class="field__row"><input type="text" id="provCard" placeholder="the card&rsquo;s drive" spellcheck="false" /><button type="button" class="cat-btn" id="btnProvPick">choose&hellip;</button></span>
+              <span class="field__hint" id="provPending"></span>
+            </label>
+            <label class="toggle"><input type="checkbox" id="provCatos" checked /><span><b>into CATOS/</b><small>off: at the card&rsquo;s root. the tablet reads both</small></span></label>
+          </div>
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">the robot</span></div>
+            <div class="field2">
+              <label class="field"><span class="field__label">team number</span><input type="text" name="team" inputmode="numeric" placeholder="1-99999" /></label>
+              <label class="field"><span class="field__label">wi-fi network</span><input type="text" name="wifi_ssid" spellcheck="false" /></label>
+            </div>
+            <label class="field"><span class="field__label">wi-fi password</span><input type="password" name="wifi_pass" /></label>
+            <span class="field__hint">the robot&rsquo;s address comes from the team number; there is nothing else to set.</span>
+          </div>
+          <div class="cat-card">
+            <div class="cat-card__head"><span class="cat-card__title">keys, if you use them</span></div>
+            <span class="field__hint">left blank, a key is not written at all, and whatever the tablet already has stays.</span>
+            <div class="field2">
+              <label class="field"><span class="field__label">anthropic</span><input type="password" name="anthropic_api_key" /></label>
+              <label class="field"><span class="field__label">openai</span><input type="password" name="openai_api_key" /></label>
+            </div>
+            <div class="field2">
+              <label class="field"><span class="field__label">the blue alliance</span><input type="password" name="tba_api_key" /></label>
+              <label class="field"><span class="field__label">nexus</span><input type="password" name="nexus_api_key" /></label>
+            </div>
+            <div class="field2">
+              <label class="field"><span class="field__label">home assistant url</span><input type="text" name="ha_url" spellcheck="false" /></label>
+              <label class="field"><span class="field__label">home assistant token</span><input type="password" name="ha_token" /></label>
+            </div>
+            <div class="field2">
+              <label class="field"><span class="field__label">frc events user</span><input type="text" name="frc_events_user" spellcheck="false" /></label>
+              <label class="field"><span class="field__label">frc events token</span><input type="password" name="frc_events_token" /></label>
+            </div>
+          </div>
+        </form>
+      </section>
+
+      <section class="panel" data-panel="runs" hidden>
+        <header class="panel__head">
+          <div><h1>runs</h1><p class="quiet">what the tablet has sent over</p></div>
+          <div class="panel__actions">
+            <span class="quiet" id="runsStatus"></span>
+            <button class="cat-btn" id="btnRunsOpen" hidden>open</button>
+          </div>
+        </header>
+        <div class="split">
+          <div class="split__list rows" id="runsList"></div>
+          <div class="split__detail" id="runsDetail"></div>
+        </div>
       </section>
     </main>
   </div>
