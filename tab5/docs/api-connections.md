@@ -567,7 +567,7 @@ answers `ESP_ERR_WIFI_STATE` to anything asked while a connect is in flight) and
 | `pmf_cfg.capable` | false | true | Deprecated (the C6 turns PMF on whenever the AP offers it) but free to state, and WPA3 needs it. |
 | `bssid_set`, `channel` | 0 | 0, explicitly | Either would pin the station to one AP, which is the fault above. |
 | `rm_enabled`, `btm_enabled`, `mbo_enabled`, `ft_enabled` | 0 | 0, **deliberately** | 802.11k/v make the station honour the AP's request to move to another BSS, and acting on one needs a slave built with the roaming app (`CONFIG_ESP_WIFI_ENABLE_ROAMING_APP`); `firmware/c6`'s slave is not. Advertising the capability and then not moving invites an AP to deauthenticate it (reason **12**) — worse than not claiming it. 11r (`ft`) is for WPA2-Enterprise. |
-| beacon-loss window | 6 s (the C6's default) | 30 s, `esp_wifi_set_inactive_time()` | Miss six seconds of the AP's beacons — trivial on a crowded 2.4 GHz channel, a pit full of radios, or a phone hotspot that stutters — and the C6 sends five probe requests and throws the connection away (reason **200**, `BEACON_TIMEOUT`). Nothing is lost by waiting: a genuinely dead AP is caught meanwhile by the gateway probe below, which acts in 15 s and doesn't need the radio's opinion. |
+| beacon-loss window | 6 s (the C6's default) | 30 s, `esp_wifi_set_inactive_time()` | Miss six seconds of the AP's beacons — trivial on a crowded 2.4 GHz channel, a pit full of radios, or a phone hotspot that stutters — and the C6 sends five probe requests and throws the connection away (reason **200**, `BEACON_TIMEOUT`). Nothing is lost by waiting: a genuinely dead AP is caught meanwhile by the gateway probe below, which acts in 15 s and doesn't need the radio's opinion. Espressif documents the default and the mechanism but does **not** recommend raising it — 30 s is this firmware's judgement, made because it has a better detector of a dead AP than the radio does. |
 | `esp_wifi_set_ps` | `WIFI_PS_NONE` | unchanged | Right for latency, and right for staying joined: an always-awake station answers every poll, and what an AP throws a client off for is silence (reason **4**), never wakefulness. It does mean the C6 forwards every broadcast frame over SDIO, which is load the link has to carry. |
 | TX power, `esp_wifi_set_protocol` | default (20 dBm, 11b/g/n/ax) | unchanged, but **reported** | Both are real levers — a too-high TX power into a small antenna, or an AP that mishandles HE, can each cause drops — and neither should be moved on a guess. `net` prints what is actually in force so a change can be judged against a measurement. |
 
@@ -608,6 +608,61 @@ version, the saved network and the settings it actually holds, the beacon window
 bitmap, country and channel range, which antenna the RF switch is on, the joined AP's channel/RSSI/BSSID,
 and the drop count with the last reason. `antcmp` measures the two antennas rather than trusting the pin
 (see `docs/tab5-hardware.md`).
+
+### What is known upstream, and what is not
+
+Worth having alongside the above, because two of these are the exact symptom this tablet shows and
+neither has a fix in the 1.4.7 this firmware is on:
+
+- **`esp-hosted-mcu` #197** — the SDIO data path wedges under sustained outbound TCP load while the
+  station still reports "connected", `send()` returns `EAGAIN` for good, and only a host reset clears it.
+  The reporter traced it to the host's SDIO RX buffer pool, which lives in internal SRAM and fills
+  permanently at a few thousand frames a second. The fix moves that pool to PSRAM and is in esp-hosted
+  2.x; **1.4.7 has no option for it** (its `Kconfig` has only `ESP_HOSTED_USE_MEMPOOL`). This is the
+  "connected, but nothing gets through" fault `gw_alive()` and `wifi_heal()` exist to catch, described
+  from the other end.
+- **`esp-hosted-mcu` #167, #184, #121, #66, #244** — intermittent SDIO timeouts (`0x107`) ending in
+  `Unrecoverable host sdio state`, reported on P4 + C6 boards from several makers, sometimes after hours
+  and sometimes at boot, open and without a root cause. Also seen on Waveshare P4 boards through ESPHome
+  (`esphome/esphome` #10956, #16692). So the C6 restart below is not this firmware working around its own
+  mistake: the transport is known to be fragile on this pairing.
+- **The SDIO pins are right.** M5Unified PR #358 sets CLK 12, CMD 13, D0 11, D1 10, D2 9, D3 8, reset 15
+  for the Tab5, which is exactly what `sdkconfig.defaults` has. A mismatch here is the other common Tab5
+  Wi-Fi complaint (the Arduino core's generic P4 defaults don't reach the Tab5's C6) and is not this one.
+- **Not established, and so not acted on:** that dropping 802.11ax from the protocol bitmap helps
+  association (the C6's default mask includes HE and Espressif says nothing either way), and that a lower
+  max TX power helps stability (community advice; Espressif's own pages note only that TX power
+  "influences ... Wi-Fi signal stability" without saying in which direction). Both are reported by `net`
+  so either can be tried against a measurement.
+
+### If the C6 turns out to be on 1.4.1
+
+The boot log's `wi-fi: the C6 runs esp-hosted <v>` settles it. **1.4.7** is the slave this repository
+builds (`firmware/c6/`, packet mode); **1.4.1** is M5Stack's factory image, and on that one the SDIO
+streaming-mode fault of 2026-09-25 is still present — the C6 stops sending within minutes of steady
+traffic while reporting "connected", which on its own accounts for a tablet that keeps dropping off.
+
+The procedure, which is `firmware/c6/README.md`'s, is two dev-console commands and needs no cable beyond
+the USB-C one:
+
+```sh
+python tools/tab5_dev.py COM9 "put firmware/c6/network_adapter.bin /sdcard/CATOS/DATA/C6.BIN"
+python tools/tab5_dev.py COM9 "c6ota /sdcard/CATOS/DATA/C6.BIN"
+```
+
+What it risks, stated plainly, because it should not be run without the owner's say-so:
+
+- `put` is checked by CRC-32 and `c6ota` writes the C6's **other** OTA slot and only switches to it once
+  the whole image has checked out, so a failure part-way through leaves the C6 running exactly what it was
+  running. Nothing is lost.
+- The real exposure is a new image that is written and verified and then does not boot. The OTA path
+  itself goes over SDIO and needs a slave that answers, so there is no second try from the tablet:
+  recovery then means a **USB-TTL adapter on the C6's reserved download header** on the PCB and M5Burner
+  (M5Stack's "Tab5 ESP32-C6 Wi-Fi Module Factory Firmware Restoration" page). The USB-C port cannot do it.
+  Until that is done the tablet has no Wi-Fi — the USB-A tether still works.
+- The C6's **NVS is not touched**: an OTA writes an app partition, so the saved network stays. (This is
+  unlike `firmware/catalyst-tab-merged.bin`, which erases the *host's* NVS and takes the tablet's settings,
+  its saved network and its Catalyst Link pairing with it. Never flash that one to a tablet in use.)
 
 ### The link to the C6
 

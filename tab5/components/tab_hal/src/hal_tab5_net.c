@@ -464,8 +464,19 @@ static void wifi_init(void)
     wifi_config_t wc = { 0 };
     esp_err_t t = ESP_ERR_NOT_FOUND;
     if (esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK && wc.sta.ssid[0]) {
-        sta_tune(&wc.sta);
-        t = esp_wifi_set_config(WIFI_IF_STA, &wc);
+        /* Writing the config back writes the whole struct, password included — so the password has to have
+         * come back. It does here (esp-hosted's wifi_sta_config carries it and rpc_rsp.c copies it), but if
+         * a slave ever withheld it, writing an empty one would take the tablet's saved network with it.
+         * A stored threshold above open says the network has a password: if one didn't come back with it,
+         * leave the whole thing alone. The settings screen's next join tunes it instead. */
+        if (!wc.sta.password[0] && wc.sta.threshold.authmode > WIFI_AUTH_OPEN) {
+            t = ESP_ERR_INVALID_STATE;
+            ESP_LOGW(TAG, "wi-fi: the C6 didn't give back '%.32s''s password: leaving its settings as they are",
+                     (const char *)wc.sta.ssid);
+        } else {
+            sta_tune(&wc.sta);
+            t = esp_wifi_set_config(WIFI_IF_STA, &wc);
+        }
     }
     esp_wifi_set_ps(WIFI_PS_NONE); /* latency over battery: a dashboard wants its packets now. It is also the
                                     * right way round for staying joined — an always-awake station answers
