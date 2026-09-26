@@ -48,6 +48,11 @@ pub struct FileEntry {
     pub modified: u64,
     /// True for something this module can summarise; false for a clip or a log, which only open.
     pub is_run: bool,
+    /// A run's length in seconds, read from the file's tail; `None` for anything else.
+    ///
+    /// Read for every run in the list, which is only affordable because it is a tail read: the
+    /// alternative is parsing megabytes per row to print one number.
+    pub duration_s: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -105,12 +110,9 @@ pub fn list() -> Vec<FileEntry> {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        out.push(FileEntry {
-            is_run: name.starts_with("run-") && name.ends_with(".csv"),
-            name,
-            bytes: meta.len(),
-            modified,
-        });
+        let is_run = name.starts_with("run-") && name.ends_with(".csv");
+        let duration_s = if is_run { quick_duration(&entry.path()) } else { None };
+        out.push(FileEntry { is_run, name, bytes: meta.len(), modified, duration_s });
     }
     out.sort_by(|a, b| b.modified.cmp(&a.modified).then(a.name.cmp(&b.name)));
     out

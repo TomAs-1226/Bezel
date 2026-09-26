@@ -261,11 +261,19 @@ async function refreshRuns() {
     const title = document.createElement("b");
     title.textContent = f.name;
     const meta = document.createElement("small");
-    meta.textContent = `${fmtBytes(f.bytes)}${when ? " \u00b7 " + when : ""}${f.is_run ? "" : " \u00b7 not a run"}`;
+    const len = f.duration_s != null ? ` \u00b7 ${fmtDuration(f.duration_s)}` : "";
+    meta.textContent = `${fmtBytes(f.bytes)}${len}${when ? " \u00b7 " + when : ""}${f.is_run ? "" : " \u00b7 not a run"}`;
     row.append(title, meta);
     row.addEventListener("click", () => openRun(f));
     list.append(row);
   }
+}
+
+/** Seconds as a person reads them: `2m 14s`, or `9.4s` under a minute. */
+function fmtDuration(seconds) {
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return m ? `${m}m ${s.toFixed(0)}s` : `${s.toFixed(1)}s`;
 }
 
 function fmtBytes(n) {
