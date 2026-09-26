@@ -70,7 +70,11 @@ static struct {
     lv_obj_t *sheet, *title, *ta, *kb;
     ui_kb_t *owner;         /* whose field is up (NULL: none) */
     bool one_line;
-    bz_motion_t lift;       /* the owner's body, px up */
+    bz_motion_t lift;       /* the body's offset, px up */
+    /* The body being lifted, held separately from `owner`: the keyboard stops having an owner the
+     * moment it is dismissed, but the lift still has all the way back to zero to travel, and
+     * something has to be there to receive it. Cleared when the spring lands. */
+    lv_obj_t *lifted;
     float lift_at;          /* what is applied, so a still body is not moved every frame */
     uint32_t last_ms;
     int last_btn;
@@ -145,6 +149,8 @@ static void key_tick(const char *txt)
     hal_tone(hz, ms, S.volume * gain);
 }
 
+#define NOT_APPLIED (-1.0f)   /* the lift is never negative, so this cannot match a real value */
+
 static void lift_to(float px) { bz_motion_to(&K.lift, px, BZ_LAYER); }
 
 static void put_away(void)
@@ -153,7 +159,7 @@ static void put_away(void)
     K.owner = NULL;
     lv_obj_add_flag(K.sheet, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(K.catcher, LV_OBJ_FLAG_HIDDEN);
-    lift_to(0);
+    lift_to(0);   /* K.lifted deliberately stays: the body has to be put back down first */
 }
 
 /* Hand the text back and put the sheet away. */
@@ -171,12 +177,24 @@ static void kb_frame(double now, double dt, void *u)
     (void)now; (void)dt; (void)u;
     if (K.owner && K.owner->body && !lv_obj_is_visible(K.owner->body)) put_away();
     bool moving = bz_motion_tick(&K.lift);
-    lv_obj_t *body = K.owner ? K.owner->body : NULL;
-    if (body) {
+    /* K.lifted, not K.owner->body: after a dismiss there is no owner and the body still has to come
+     * down. An app can also be closed while lifted, so the object is checked before it is written. */
+    if (K.lifted && !lv_obj_is_valid(K.lifted)) {
+        K.lifted = NULL;
+        K.lift_at = NOT_APPLIED;
+    }
+    if (K.lifted) {
         float v = K.lift.value;
         if (v != K.lift_at) {
             K.lift_at = v;
-            lv_obj_set_style_translate_y(body, -(int)(v + 0.5f), 0);
+            lv_obj_set_style_translate_y(K.lifted, -(int)(v + 0.5f), 0);
+        }
+        if (!moving && !K.owner && v < 0.5f) {
+            /* Landed, and nobody is using it: put it back exactly, then let go. Rounding the spring's
+             * tail could otherwise leave the app a pixel high for as long as it is open. */
+            lv_obj_set_style_translate_y(K.lifted, 0, 0);
+            K.lifted = NULL;
+            K.lift_at = NOT_APPLIED;
         }
     }
     if (moving) bz_ui_keep_alive();
@@ -344,6 +362,13 @@ void ui_kb_show(ui_kb_t *k, const char *title, const char *text, bool secret, bo
     lv_obj_move_foreground(K.catcher);
     lv_obj_move_foreground(K.sheet); /* above every other overlay: the keyboard is the top layer */
     K.last_btn = -1;
+    /* A different body than last time, or the same one after it was let go: either way the next
+     * frame must write, so lift_at starts at a value no spring produces. */
+    if (K.lifted != k->body) {
+        if (K.lifted && lv_obj_is_valid(K.lifted)) lv_obj_set_style_translate_y(K.lifted, 0, 0);
+        K.lifted = k->body;
+        K.lift_at = NOT_APPLIED;
+    }
     lift_to(KB_LIFT);
 }
 
