@@ -478,7 +478,7 @@ static void wifi_init(void)
          * leave the whole thing alone. The settings screen's next join tunes it instead. */
         if (!wc.sta.password[0] && wc.sta.threshold.authmode > WIFI_AUTH_OPEN) {
             t = ESP_ERR_INVALID_STATE;
-            ESP_LOGW(TAG, "wi-fi: the C6 didn't give back '%.32s''s password: leaving its settings as they are",
+            ESP_LOGW(TAG, "wi-fi: the C6 didn't give back the password for '%.32s': leaving its settings as they are",
                      (const char *)wc.sta.ssid);
         } else {
             sta_tune(&wc.sta);
