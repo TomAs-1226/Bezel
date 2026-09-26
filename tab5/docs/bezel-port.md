@@ -101,6 +101,44 @@ cascade in at once, so every frame pays for their edges and shadows (~450k glass
 redrawing their labels as they move and fade (~270k), and composing ~600k pixels over the blind. Making
 it fit means caching each module's ink while it slides and a cheaper edge while strength is below 1.
 
+### Measured on the tablet
+
+The table above is the simulator's model of the full compositor. The tablet runs the **lean** renderer
+(`BZ_LEAN`, `bz_ui.h`): one RGB565 display, no glass compositing, and every spring instant except the
+handful marked `keep`. Its costs are different, and the dev console's `perf` prints them — frame gaps
+in vsyncs, the UI loop's work histogram, the worst single hook and `lv_timer_handler`, what a composed
+slide frame costs, what a band of the neighbour costs split three ways, and how many frames asked for
+(nearly) the whole screen. `inv N` names the objects that ask.
+
+Measured 2026-09-26 on the Tab5, four of each gesture injected over the console:
+
+| | hand-overs late | worst UI loop | worst LVGL | whole-screen redraws |
+|---|---|---|---|---|
+| swipe between pages | 22 % | 33 ms | 14 ms | 0 |
+| jump pages from the dock | 8 % | 34 ms | 11 ms | 0 |
+| open and close the control center | 6 % | 53 ms | 1.5 ms | 0 |
+| open and close an app | 20 % | 74 ms | 13 ms | 2 |
+| scroll a list | 9–13 % | 30 ms | 12 ms | 0 |
+| idle | — | — | — | 0 |
+
+Three numbers set everything here, and all three are the panel's, not LVGL's:
+
+- **A full-screen redraw costs ~90 ms**: ~45 ms for LVGL to draw 1280 × 720 and ~45 ms for the PPA to
+  turn it into the portrait buffer (measured: 921 600 px at 20.3 Mpx/s). Anything that asks for the
+  whole screen freezes the interface for three vsyncs at best. That is why `perf` counts them.
+- **A composed frame costs ~16–18 ms.** A slide or a sheet turns nothing: it is block copies of a whole
+  panel on the DMA2D, and the DMA2D moves ~62 Mpx/s with ~0.2 ms of setup per transaction while the DPI
+  controller is already reading the front buffer at 111 MB/s. A whole panel is 921 600 px, so a slide
+  frame cannot fit in one 16.5 ms vsync no matter how it is arranged — hence a few frames in five
+  landing on the second vsync. Fewer, larger copies beat fewer pixels: the transaction cost is real.
+- **A band of the neighbour costs ~8 ms** (1280 × 90 drawn offscreen), and the page slide draws eight.
+
+What remains: a swipe is 22 % late where the same slide driven by the dock, with the bands already
+done, is 8 %. The difference is the bands competing with the copies for PSRAM while the finger moves.
+Drawing the neighbours ahead, while nothing moves — what the full renderer does with its strip — would
+take it to the dock's figure. It needs a second neighbour picture (1.8 MB) and a flag saying whether a
+sheet has since overwritten it.
+
 ## Motion (`components/bezel/src/bz_motion.c`)
 
 Closed-form springs sampled at the frame time, retargeted from the current value and velocity.

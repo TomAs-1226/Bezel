@@ -48,6 +48,9 @@ void hal_loop_prof(double out[4]); /* perf: busy loops, their mean and max work 
 void hal_loop_hist(int out[5]);    /* perf: busy loops under 5, 10, 16.7, 25 ms, more */
 void hal_frame_gaps(int out[4]); /* perf: frame gaps of 1, 2, 3, more vsyncs since the last call */
 void hal_present_prof(double out[6]); /* perf: s per stage (pick, catch-up, scroll, rotate, hand-over), count */
+/* perf: frames a slide or a sheet composed by DMA (no rotation): count, total s, the worst one, and of
+ * the total the part that was the chrome's rectangles */
+void hal_slide_prof(double out[4]);
 bool hal_flip(void);
 /* The development console on the USB-C port (tools/tab5_dev.py): screenshots and injected touches. */
 void hal_dev_init(void);

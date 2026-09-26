@@ -1216,6 +1216,75 @@ static void slide_patch(const bz_present_t *p, bool neighbour)
     s_rot_nowait = false;
 }
 
+/* dev console "perf": what a composed frame (a slide's or a sheet's) costs — the DMA2D block copies that
+ * make it, with no rotation anywhere. Count, total, the worst one, and of the total the chrome's rects. */
+static double s_sl[3];
+static double s_sl_chrome;
+static int s_sln;
+void hal_slide_prof(double out[4])
+{
+    out[0] = s_sln;
+    out[1] = s_sl[0];
+    out[2] = s_sl[1];
+    out[3] = s_sl_chrome;
+    s_sl[0] = s_sl[1] = s_sl_chrome = 0;
+    s_sln = 0;
+}
+
+static void slide_note(double t0, double tc)
+{
+    double d = hal_seconds() - t0;
+    s_sl[0] += d;
+    if (d > s_sl[1]) s_sl[1] = d;
+    s_sl_chrome += tc;
+    s_sln++;
+}
+
+/* One run of panel rows taken from one picture, minus the rectangles the chrome is copied over a moment
+ * later. A slide's frame is a whole panel of block copies and nothing else, and at 18 ms it was the one
+ * thing that couldn't fit in a frame: the page was being copied under the dock, the island and the orb
+ * and then thrown away. Skipping those is safe by construction — every rectangle left out here is one
+ * the chrome writes next, in exactly the same place. */
+#define SLD_PIECES 10
+
+typedef struct {
+    int x, y, w, h;
+} rc_t;
+
+static void run_copy(uint16_t *fb, const uint16_t *src, int src_dy, int y0, int n, const bz_area_t *chrome,
+                     int nchrome)
+{
+    if (n <= 0) return;
+    rc_t r[SLD_PIECES] = { { 0, y0, PANEL_W, n } }, q[SLD_PIECES];
+    int nr = 1;
+    for (int c = 0; c < nchrome; c++) {
+        int cx, cy, cw, ch;
+        portrait_rect(&chrome[c], &cx, &cy, &cw, &ch);
+        /* a small piece isn't worth the transactions its hole costs */
+        if (cw * ch < 16384) continue;
+        int out = 0;
+        for (int i = 0; i < nr; i++) {
+            int x1 = r[i].x, y1 = r[i].y, x2 = x1 + r[i].w, y2 = y1 + r[i].h;
+            int ix1 = cx > x1 ? cx : x1, iy1 = cy > y1 ? cy : y1;
+            int ix2 = cx + cw < x2 ? cx + cw : x2, iy2 = cy + ch < y2 ? cy + ch : y2;
+            int need = ix1 < ix2 && iy1 < iy2 ? (iy1 > y1) + (iy2 < y2) + (ix1 > x1) + (ix2 < x2) : 0;
+            if (!need || out + need > SLD_PIECES) { /* no overlap, or no room: kept whole */
+                if (out < SLD_PIECES) q[out++] = r[i];
+                continue;
+            }
+            if (iy1 > y1) q[out++] = (rc_t){ x1, y1, x2 - x1, iy1 - y1 };
+            if (iy2 < y2) q[out++] = (rc_t){ x1, iy2, x2 - x1, y2 - iy2 };
+            if (ix1 > x1) q[out++] = (rc_t){ x1, iy1, ix1 - x1, iy2 - iy1 };
+            if (ix2 < x2) q[out++] = (rc_t){ ix2, iy1, x2 - ix2, iy2 - iy1 };
+        }
+        nr = out;
+        for (int i = 0; i < nr; i++) r[i] = q[i];
+    }
+    for (int i = 0; i < nr; i++)
+        blk_copy_async(fb, r[i].x, r[i].y, src, r[i].x, r[i].y + src_dy, r[i].w, r[i].h);
+    fbcpy_wait();
+}
+
 static void slide_frame_do(int dx, int side, const bz_area_t *chrome, int nchrome)
 {
     int b = fb_pick();
@@ -1227,24 +1296,25 @@ static void slide_frame_do(int dx, int side, const bz_area_t *chrome, int nchrom
     /* back row r shows landscape x; the page's pixel came from x - dx, which is row r + s·dx */
     int s = s_flip ? -1 : 1, sd = s * dx;
     int r0 = sd < 0 ? -sd : 0, r1 = sd > 0 ? W - sd : W;
-    rows_copy(fb, r0, SLD.snap, r0 + sd, r1 - r0);
+    run_copy(fb, SLD.snap, sd, r0, r1 - r0, chrome, nchrome);
     /* the gap: the neighbour where it's drawn and on that side, else ground. dx > 0 opens the left
      * (the previous page), dx < 0 the right (the next) */
     int need = dx > 0 ? -1 : 1;
     if (sd > 0) {
-        if (side == need) rows_copy(fb, W - sd, SLD.nb, 0, sd);
+        if (side == need) run_copy(fb, SLD.nb, -(W - sd), W - sd, sd, chrome, nchrome);
         else rows_fill(fb, W - sd, sd, SLD.ground);
     } else if (sd < 0) {
-        if (side == need) rows_copy(fb, 0, SLD.nb, W + sd, -sd);
+        if (side == need) run_copy(fb, SLD.nb, W + sd, 0, -sd, chrome, nchrome);
         else rows_fill(fb, 0, -sd, SLD.ground);
     }
     /* the chrome stays where it is: straight from the glass as it was */
+    double tc0 = hal_seconds();
     for (int i = 0; i < nchrome; i++) {
         int x, y, w, h;
         portrait_rect(&chrome[i], &x, &y, &w, &h);
         rect_copy(fb, SLD.chrome, x, y, w, h);
     }
-    (void)tf0;
+    slide_note(tf0, hal_seconds() - tc0);
     present_end(b);
 }
 
@@ -1332,6 +1402,7 @@ static void sheet_frame_do(int h, int sh, bool swapped, bool bottom)
     /* the sheet's picture, and the page's rows it has uncovered; past the sheet, the glass as it was */
     const uint16_t *sheet = swapped ? SLD.snap : SLD.nb, *under = swapped ? SLD.nb : SLD.snap;
     int b = fb_pick();
+    double tf0 = hal_seconds();
     uint16_t *fb = T.fb[b];
     fbcpy_wait();
     if (!bottom) {
@@ -1343,6 +1414,7 @@ static void sheet_frame_do(int h, int sh, bool swapped, bool bottom)
         lrows_copy(fb, H - h, sheet, 0, h);
     }
     fbcpy_wait();
+    slide_note(tf0, 0);
     present_end(b);
 }
 

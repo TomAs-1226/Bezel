@@ -101,6 +101,8 @@ static void cc_show(bool on)
     }
 }
 
+static void cc_show_quiet(void *u) { cc_show((intptr_t)u != 0); }
+
 /* drawing the sheet's other picture, a band at a time: opening, the sheet itself; closing, the page */
 static void cc_prep(bool before, void *u)
 {
@@ -266,7 +268,17 @@ static void cc_frame(double now, double dt, void *user)
             return;
         }
         C.open = rest > 0;
-        cc_show(C.open);
+        /* The glass already shows this, drawn band by band into the sheet's picture (cc_prep did the same
+         * cc_show before each band). Showing it for real invalidated the whole screen, and LVGL redrew all
+         * 1280x720 (measured 84 ms) and the PPA turned all of it, right as the sheet came to rest: the one
+         * hitch left in opening or closing the control center. It is moved in quietly instead, the way a
+         * page slide lands (place_track), and the refresh after it redraws any number that has moved on
+         * since the bands were drawn. */
+        bz_ui_quiet(cc_show_quiet, (void *)(intptr_t)C.open);
+        if (C.open) {
+            C.notes_gen = ~0u;
+            cc_refresh(NULL);
+        }
         bz_ui_sheet_end();
         C.sheet = false;
         return;

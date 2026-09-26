@@ -84,6 +84,14 @@ void bz_ui_lean_light(float dx, float dy);
  * moved or hidden in prepare don't cause redraws. */
 void bz_ui_render_offscreen(uint16_t *buf, int stride, const lv_area_t *area, void (*prepare)(bool before, void *u),
                             void *u);
+/* The same, for several bands of one picture drawn over several frames: prepare once, draw each band,
+ * put the tree back once. Getting ready and putting back is most of a small band's cost, so a page
+ * slide's eight bands pay it once. While a run is open LVGL draws nothing to the screen: only open one
+ * where it is already held off (a slide, a sheet), and always close it before the glass comes back. */
+void bz_ui_offscreen_begin(void (*prepare)(bool before, void *u), void *u);
+void bz_ui_offscreen_band(uint16_t *buf, int stride, const lv_area_t *area);
+void bz_ui_offscreen_end(void);
+bool bz_ui_offscreen_open(void);
 /* Frozen: LVGL stops drawing the content layer; the compositor shows whatever layers say. Thawing
  * redraws the whole content layer, a band per frame over the next few frames: keep the layers that hid
  * it up until bz_ui_thawing() is false. Counted: each freeze(true) needs its freeze(false). */
@@ -146,10 +154,16 @@ void bz_ui_sheet(int h);
 int bz_ui_sheet_shown(void); /* the height on the panel now (-1: none yet) */
 bool bz_ui_sheeting(void);
 bool bz_ui_can_sheet(void); /* the platform composes sheets (bz_ui_sheet_begin can succeed at all) */
+bool bz_ui_sliding(void);   /* a slide holds the glass: bz_ui_slide_begin took */
 void bz_ui_sheet_end(void);
 double bz_ui_clock(void);    /* monotonic seconds, for timing */
 void bz_ui_hooks_report(void);
 void bz_ui_trace_inv(int frames); /* log every invalidated area for this many frames */ /* logs each frame hook's time since the last call */
+/* Near-whole-screen invalidations since the last call, and the pixels they asked for: each one costs a
+ * full LVGL redraw and a full-frame rotation (~90 ms together), so this is the number to watch. */
+int bz_ui_big_inv(uint32_t *px);
+/* perf: seconds an offscreen band spent getting the tree ready, drawing, and putting it back */
+void bz_ui_offscreen_prof(double out[3]);
 /* Per-frame averages since the last call: frame hooks, lv_timer_handler, display refreshes, renders. */
 void bz_ui_split(float *hooks_ms, float *lvgl_ms, float *refr_ms, float *render_ms);
 /* the slowest frame's hooks and LVGL since the last bz_ui_split (which resets both) */

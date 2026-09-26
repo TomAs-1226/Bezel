@@ -136,6 +136,19 @@ static double s_hook_ms[16];
 static int s_trace_inv; /* frames left to log every invalidated area (the dev console's "inv") */
 void bz_ui_trace_inv(int frames) { s_trace_inv = frames; }
 
+static int s_big_inv;
+static uint32_t s_big_inv_px;
+static bool s_big_inv_frame;
+
+int bz_ui_big_inv(uint32_t *px)
+{
+    int n = s_big_inv;
+    if (px) *px = s_big_inv_px;
+    s_big_inv = 0;
+    s_big_inv_px = 0;
+    return n;
+}
+
 static void big_inv(lv_event_t *e)
 {
     const lv_area_t *a = lv_event_get_param(e);
@@ -145,6 +158,13 @@ static void big_inv(lv_event_t *e)
 #endif
     static double last;
     if (!a || lv_area_get_size(a) < 300000 || U.offscreen) return;
+    /* LVGL sends the event once per object that asks and then joins the areas: counted once a frame, so
+     * the number is frames that redrew (nearly) everything, not how many objects said so */
+    if (!s_big_inv_frame) {
+        s_big_inv_frame = true;
+        s_big_inv++;
+        s_big_inv_px += (uint32_t)lv_area_get_size(a);
+    }
     double t = prof_wall();
     if (t - last < 3) return;
     last = t;
@@ -784,6 +804,7 @@ bool bz_ui_frame(double now_s)
     bz_motion_clock(now_s);
     U.keep_alive = false;
     U.lvgl_px = U.shift_px = 0;
+    s_big_inv_frame = false;
 #if BZ_LEAN
     U.nlean = 0; /* before the hooks and touch: a list scroll records its move here */
 #endif
@@ -1000,6 +1021,7 @@ void bz_ui_slide_begin(void)
 {
 #if BZ_LEAN
     if (U.sheeting) return; /* the sheet owns the glass until it ends */
+    bz_ui_offscreen_end(); /* nothing half-prepared from a slide that didn't finish its bands */
     double tb = wall();
     size_t px = (size_t)U.cfg.w * U.cfg.h;
     if (!U.cfg.slide) {
@@ -1063,7 +1085,14 @@ void bz_ui_slide_begin(void)
     static uint32_t said_nc;
     if (nc != said_nc) {
         said_nc = nc;
-        ESP_LOGI("bz_ui", "slide: %u top-layer pieces, %d held still", (unsigned)nc, U.nchrome);
+        uint32_t cpx = 0;
+        for (int i = 0; i < U.nchrome; i++)
+            cpx += (uint32_t)(U.chrome[i].x2 - U.chrome[i].x1 + 1) * (uint32_t)(U.chrome[i].y2 - U.chrome[i].y1 + 1);
+        ESP_LOGI("bz_ui", "slide: %u top-layer pieces, %d held still, %u px of them (%u%% of the screen)",
+                 (unsigned)nc, U.nchrome, (unsigned)cpx, (unsigned)(cpx * 100 / ((uint32_t)U.cfg.w * U.cfg.h)));
+        for (int i = 0; i < U.nchrome; i++)
+            ESP_LOGI("bz_ui", "slide: chrome %d,%d-%d,%d", U.chrome[i].x1, U.chrome[i].y1, U.chrome[i].x2,
+                     U.chrome[i].y2);
     }
 #endif
     /* the snapshot is the page alone: under each piece of chrome, the page is drawn again without it (small
@@ -1167,6 +1196,7 @@ void bz_ui_slide(int dx)
 void bz_ui_slide_end(void)
 {
 #if BZ_LEAN
+    bz_ui_offscreen_end(); /* a band run the caller left open (a slide cut short) */
     if (!U.sliding) return;
     U.sliding = false;
     if (U.cfg.slide) U.cfg.slide->end();
@@ -1178,7 +1208,22 @@ void bz_ui_slide_end(void)
         lv_obj_invalidate(lv_display_get_screen_active(U.disp_content));
         lv_obj_invalidate(lv_display_get_layer_top(U.disp_content));
     }
+    /* Every piece of chrome stood still through the slide, shown from the picture taken of it before the
+     * slide began — over the page the slide started on. Where a piece is transparent, its rounded corners
+     * above all, those pixels are the old page's. Measured against a forced redraw after a dock jump:
+     * ~800 px of the dock's top edge blended with the page that had left. The pieces are small (10 % of
+     * the screen, and joined into a few boxes), so they are drawn again with everything else that is late. */
+    for (int i = 0; i < U.nchrome; i++) late_add(&U.chrome[i]);
     late_redraw();
+#endif
+}
+
+bool bz_ui_sliding(void)
+{
+#if BZ_LEAN
+    return U.sliding;
+#else
+    return false;
 #endif
 }
 
@@ -1295,18 +1340,69 @@ void bz_ui_quiet(void (*fn)(void *u), void *u)
 
 /* ------------------------------------------------------------------ motion caches */
 
-void bz_ui_render_offscreen(uint16_t *buf, int stride, const lv_area_t *area, void (*prepare)(bool before, void *u),
-                            void *u)
+/* dev console "perf": where an offscreen band's time goes — getting the tree ready (the prepare and its
+ * layout pass), the drawing itself, putting the tree back (another layout pass). A slide draws eight
+ * bands, so a costly prepare is paid eight times. */
+static double s_off[3];
+void bz_ui_offscreen_prof(double out[3])
 {
+    for (int i = 0; i < 3; i++) {
+        out[i] = s_off[i];
+        s_off[i] = 0;
+    }
+}
+
+/* A run of bands of the same picture. Getting the tree ready — hiding the chrome, swapping which page
+ * is shown, and the layout pass each of those costs — used to be paid per band: 5.5 ms of the 12.6 ms a
+ * band took, eight times over a page slide, on the very frames whose other core is already copying a
+ * whole frame. Prepared once for the run instead, a band is only its drawing.
+ *
+ * Between bands LVGL's invalidation stays off, as it already was during one: it draws nothing to the
+ * screen while a slide holds the glass anyway (bz_ui_frame pauses its refresh timer), and the page the
+ * bands are drawing is the one the slide lands on, redrawn from the model as it goes. */
+static struct {
+    void (*prep)(bool before, void *u);
+    void *u;
+    bool on;
+} OFF;
+
+void bz_ui_offscreen_begin(void (*prepare)(bool before, void *u), void *u)
+{
+    if (OFF.on) bz_ui_offscreen_end();
     lv_display_t *d = U.disp_content;
-    lv_obj_t *scr = lv_display_get_screen_active(d);
+    double to0 = prof_wall();
     /* anything already pending belongs on screen, not in the picture */
     if (!U.frozen) lv_refr_now(d);
     /* LVGL's invalidation switch is a counter: every disable here is matched by an enable */
     lv_display_enable_invalidation(d, false);
     if (prepare) prepare(true, u);
-    lv_obj_update_layout(scr);
+    lv_obj_update_layout(lv_display_get_screen_active(d));
+    OFF.prep = prepare;
+    OFF.u = u;
+    OFF.on = true;
+    s_off[0] += prof_wall() - to0;
+}
 
+void bz_ui_offscreen_end(void)
+{
+    if (!OFF.on) return;
+    OFF.on = false;
+    lv_display_t *d = U.disp_content;
+    double to2 = prof_wall();
+    if (OFF.prep) OFF.prep(false, OFF.u);
+    lv_obj_update_layout(lv_display_get_screen_active(d));
+    lv_display_enable_invalidation(d, true);
+    s_off[2] += prof_wall() - to2;
+}
+
+bool bz_ui_offscreen_open(void) { return OFF.on; }
+
+void bz_ui_offscreen_band(uint16_t *buf, int stride, const lv_area_t *area)
+{
+    if (!OFF.on) return;
+    lv_display_t *d = U.disp_content;
+    lv_obj_t *scr = lv_display_get_screen_active(d);
+    double to1 = prof_wall();
     /* point the display at the picture: a draw buffer the screen's size whose rows are `stride` apart,
      * starting so that `area` lands on buf */
     static lv_draw_buf_t db;
@@ -1324,10 +1420,15 @@ void bz_ui_render_offscreen(uint16_t *buf, int stride, const lv_area_t *area, vo
     lv_display_enable_invalidation(d, false);
     U.offscreen = false;
     lv_display_set_draw_buffers(d, U.own_buf, NULL);
+    s_off[1] += prof_wall() - to1;
+}
 
-    if (prepare) prepare(false, u);
-    lv_obj_update_layout(scr);
-    lv_display_enable_invalidation(d, true);
+void bz_ui_render_offscreen(uint16_t *buf, int stride, const lv_area_t *area, void (*prepare)(bool before, void *u),
+                            void *u)
+{
+    bz_ui_offscreen_begin(prepare, u);
+    bz_ui_offscreen_band(buf, stride, area);
+    bz_ui_offscreen_end();
 }
 
 void bz_ui_freeze(bool frozen)

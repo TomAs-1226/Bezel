@@ -91,6 +91,7 @@ double ui_now(void) { return g_now; }
 
 #define SL_BANDS 8
 static void slide_band(int page, int band);
+static void slide_bands_end(void);
 
 /* Lean page slide (bz_ui_slide_*): the page under the finger is a snapshot; the one it reveals is drawn
  * offscreen a band per frame while the finger moves; on release a spring carries both into place and
@@ -100,6 +101,8 @@ static struct {
     int side, band;      /* the neighbour being drawn (+1 next, -1 previous, 0 none) and its next band */
     bool ready;
     int aim;
+    int nb_page;         /* the page the bands are drawing: the neighbour, or the one a jump aims at */
+    bool jump;           /* no finger: the spring starts itself once the bands are done */
     bz_motion_t x;
 } SL;
 
@@ -404,6 +407,63 @@ void ui_go(int page)
     bz_ui_keep_alive();
 }
 
+#if BZ_LEAN
+/* A page asked for with no finger on the screen: the dock, the droplet.
+ *
+ * It used to be ui_go straight away, which in the lean renderer means hiding one page and showing
+ * another: LVGL redraws all 1280x720 (62 ms) and the PPA turns all of it into the panel (45 ms), and
+ * measured on the tablet a dock tap froze the interface for 116 ms — a tap that feels broken, and the
+ * only thing on any screen that took over 100 ms. The slide already knows how to change page without
+ * either: the page it's going to is drawn a band of 90 rows per frame into the picture beside the one
+ * on the glass, and then both are moved by block copies with nothing turned. So a tap takes the same
+ * road a swipe does, minus the finger: the bands go down over eight live frames, and when the picture
+ * is ready the page spring carries it in.
+ *
+ * Asked for from an LVGL event (a dock item's click), so it is only noted here: starting a slide takes
+ * a picture of the glass, which must not happen inside lv_timer_handler. shell_frame picks it up. */
+static int s_go_want = -1;
+
+static void go_page(int page)
+{
+    if (page < 0) page = 0;
+    if (page >= NPAGES) page = NPAGES - 1;
+    s_go_want = page;
+}
+
+static void go_step(void)
+{
+    if (s_go_want < 0) return;
+    int want = s_go_want;
+    s_go_want = -1;
+    if (want == U.page) return;
+    /* a finger on the pages, a sheet or home mode owns the glass; so does a slide already running */
+    if (SL.active || bz_drag_active() || bz_ui_sheeting() || ui_home_mode_active() || !bz_ui_can_sheet()) {
+        ui_go(want);
+        return;
+    }
+    slide_bands_end();
+    bz_ui_slide_begin();
+    if (!bz_ui_sliding()) { /* no memory for the pictures, or it refused: the old way */
+        ui_go(want);
+        return;
+    }
+    SL.active = true;
+    SL.settling = false;
+    SL.ready = false;
+    SL.jump = true;
+    SL.band = 0;
+    SL.side = want > U.page ? 1 : -1; /* several pages along still comes in from its own side */
+    SL.nb_page = want;
+    SL.aim = want;
+    bz_motion_init(&SL.x, 0, 0.5f);
+    SL.x.keep = true; /* animates though the lean renderer makes other motion instant */
+    bz_ui_keep_alive();
+}
+#else
+static void go_page(int page) { ui_go(page); }
+static void go_step(void) {}
+#endif
+
 int ui_page(void) { return U.page; }
 lv_obj_t *ui_page_body(int page) { return U.pages[page]; }
 
@@ -445,7 +505,8 @@ static void pg_begin(lv_obj_t *o, lv_point_t p, void *u)
 #if BZ_LEAN
     /* a catch mid-settle lets it land (a moment); a sheet still moving (an app closing) owns the glass:
      * a slide begun under it took its chrome from a half-drawn picture and lost it */
-    if (SL.settling || ui_home_mode_active() || bz_ui_sheeting()) return;
+    if (SL.active || ui_home_mode_active() || bz_ui_sheeting()) return;
+    slide_bands_end(); /* nothing prepared from a slide that didn't finish */
     bz_ui_slide_begin();
     SL.active = true;
     SL.side = 0;
@@ -468,6 +529,7 @@ static void pg_move(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
     int side = edge || dx == 0 ? 0 : dx < 0 ? 1 : -1;
     if (side != SL.side) {
         SL.side = side;
+        SL.nb_page = U.page + side;
         SL.band = 0;
         SL.ready = false;
         bz_ui_slide_nb(0);
@@ -497,13 +559,15 @@ static void pg_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
          * page in the top bands, and the slide came to rest on the two pages spliced. */
         if (SL.side != aim - U.page) {
             SL.side = aim - U.page;
+            SL.nb_page = U.page + SL.side;
             SL.band = 0;
             SL.ready = false;
         }
         if (!SL.ready) {
-            for (; SL.band < SL_BANDS; SL.band++) slide_band(U.page + SL.side, SL.band);
+            for (; SL.band < SL_BANDS; SL.band++) slide_band(SL.nb_page, SL.band);
             SL.ready = true;
         }
+        slide_bands_end();
         bz_ui_slide_nb(SL.side);
     }
     SL.aim = aim;
@@ -552,7 +616,7 @@ static void dock_tap(lv_obj_t *o, void *u)
 {
     (void)o;
     bz_ui_wake();
-    ui_go((int)(intptr_t)u);
+    go_page((int)(intptr_t)u);
 }
 
 static void dk_begin(lv_obj_t *o, lv_point_t p, void *u)
@@ -586,7 +650,7 @@ static void dk_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
     for (int i = 0; i < NPAGES; i++) if (targets[i] == x) page = i;
     bz_motion_to_v(&U.drop_x, x, BZ_RELEASE, vx);
     bz_motion_to(&U.drop_lift, 0, BZ_WOBBLE);
-    ui_go(page);
+    go_page(page);
 }
 
 static void build_dock(void)
@@ -740,9 +804,15 @@ static void island_tap(lv_obj_t *o, void *u)
 static char s_dev_cmd[96];
 static volatile bool s_dev_pending;
 
+/* the dev console's "perf": what a band of the neighbour costs, split — refreshing the page's numbers,
+ * drawing the band, turning it into the panel's orientation — and the worst band frame of the three
+ * together. A band frame competes with the slide's own DMA copies for the same PSRAM. */
+static double s_band[4];
+static int s_bandn;
+
 static bool dev_handler(const char *line)
 {
-    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strcmp(line, "inv") && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
+    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9))
         return false;
@@ -795,8 +865,11 @@ static void dev_run(void)
     } else if (!strncmp(s_dev_cmd, "bms", 3)) {
         /* the battery fleet: "bms" ranks it; scan, pick <label>, demo, reset, gpt, json */
         ui_batt_dev(s_dev_cmd + 3);
-    } else if (!strcmp(s_dev_cmd, "inv")) {
-        bz_ui_trace_inv(20);
+    } else if (!strncmp(s_dev_cmd, "inv", 3)) {
+        /* "inv" or "inv N": log every area LVGL invalidates for the next N frames (20 by default). A
+         * gesture is worth 200: the point is to catch what asks for the whole screen. */
+        int n = s_dev_cmd[3] == ' ' ? atoi(s_dev_cmd + 4) : 20;
+        bz_ui_trace_inv(n > 0 ? n : 20);
     } else if (!strncmp(s_dev_cmd, "ask ", 4)) {
         /* a typed question to the companion, as its keyboard would send it */
         voice_ask(s_dev_cmd + 4);
@@ -839,6 +912,23 @@ static void dev_run(void)
             printf("  present x%.0f: pick %.1f catch-up %.1f scroll %.1f rotate %.1f hand-over %.1f ms each\n", pp[5],
                    pp[0] * 1000 / pp[5], pp[1] * 1000 / pp[5], pp[2] * 1000 / pp[5], pp[3] * 1000 / pp[5],
                    pp[4] * 1000 / pp[5]);
+        double sp[4];
+        hal_slide_prof(sp);
+        if (sp[0] > 0)
+            printf("  composed x%.0f: %.1f ms each (chrome %.1f), worst %.1f ms\n", sp[0], sp[1] * 1000 / sp[0],
+                   sp[3] * 1000 / sp[0], sp[2] * 1000);
+        double off[3];
+        bz_ui_offscreen_prof(off);
+        if (s_bandn)
+            printf("  bands x%d: refresh %.0f render %.0f patch %.0f ms (of the render: ready %.0f draw %.0f back"
+                   " %.0f), worst band frame %.1f ms\n",
+                   s_bandn, s_band[0] * 1000, s_band[1] * 1000, s_band[2] * 1000, off[0] * 1000, off[1] * 1000,
+                   off[2] * 1000, s_band[3] * 1000);
+        s_band[0] = s_band[1] = s_band[2] = s_band[3] = 0;
+        s_bandn = 0;
+        uint32_t ipx = 0;
+        int inv = bz_ui_big_inv(&ipx);
+        printf("  whole-screen redraws: %d (%u px)\n", inv, (unsigned)ipx);
     }
     s_dev_pending = false;
 }
@@ -1192,14 +1282,41 @@ static void slide_prep(bool before, void *u)
     }
 }
 
+/* the page the open band run is prepared for, -1 if none is open */
+static int s_band_page = -1;
+
+/* the run closed: the tree goes back to the page on screen (see bz_ui_offscreen_begin) */
+static void slide_bands_end(void)
+{
+    if (s_band_page < 0) return;
+    s_band_page = -1;
+    bz_ui_offscreen_end();
+}
+
 static void slide_band(int page, int band)
 {
     uint16_t *nb = bz_ui_slide_nb_buf();
     if (!nb || page < 0 || page >= NPAGES) return;
-    if (band == 0) page_refresh_now(page); /* its numbers as of now, not as of when it was last shown */
+    double t0 = bz_ui_clock();
+    if (band == 0) {
+        slide_bands_end(); /* a run for the other side, abandoned when the finger turned back */
+        page_refresh_now(page); /* its numbers as of now, not as of when it was last shown */
+    }
+    if (s_band_page != page) {
+        s_band_page = page;
+        bz_ui_offscreen_begin(slide_prep, (void *)(intptr_t)page);
+    }
+    double t1 = bz_ui_clock();
     lv_area_t a = { 0, band * H / SL_BANDS, W - 1, (band + 1) * H / SL_BANDS - 1 };
-    bz_ui_render_offscreen(nb + (size_t)a.y1 * W, W, &a, slide_prep, (void *)(intptr_t)page);
+    bz_ui_offscreen_band(nb + (size_t)a.y1 * W, W, &a);
+    double t2 = bz_ui_clock();
     bz_ui_slide_nb_patch(&a); /* into the panel's orientation, a band at a time (the Tab5's slide) */
+    double t3 = bz_ui_clock();
+    s_band[0] += t1 - t0;
+    s_band[1] += t2 - t1;
+    s_band[2] += t3 - t2;
+    if (t3 - t0 > s_band[3]) s_band[3] = t3 - t0;
+    s_bandn++;
 }
 
 /* Each frame of a slide: the next band of the neighbour, or the settle spring. */
@@ -1209,10 +1326,16 @@ static void slide_frame(void)
     bz_ui_keep_alive();
     if (!SL.settling) {
         if (SL.side && !SL.ready) {
-            slide_band(U.page + SL.side, SL.band);
+            slide_band(SL.nb_page, SL.band);
             if (++SL.band == SL_BANDS) {
                 SL.ready = true;
+                slide_bands_end();
                 bz_ui_slide_nb(SL.side);
+                /* nobody's finger is holding this one: the page spring takes it from here */
+                if (SL.jump) {
+                    SL.settling = true;
+                    bz_motion_to(&SL.x, (float)(-SL.side * W), BZ_PAGE);
+                }
             }
         }
         return;
@@ -1220,7 +1343,8 @@ static void slide_frame(void)
     bool moving = bz_motion_tick(&SL.x);
     bz_ui_slide((int)lroundf(SL.x.value));
     if (moving) return;
-    SL.active = SL.settling = false;
+    SL.active = SL.settling = SL.jump = false;
+    slide_bands_end();
     if (SL.aim != U.page) {
         ui_go(SL.aim);
         s_track_quiet = true; /* the glass already shows the page: place_track moves it in quietly */
@@ -1771,6 +1895,7 @@ static void shell_frame(double now, double dt, void *user)
     double p_ = bz_ui_clock();
     dev_run();
 #if BZ_LEAN
+    go_step(); /* a page asked for by the dock: started here, never inside an LVGL event */
     slide_frame();
     /* instant motion: the offset is already where it's going; move the track there once */
     if (MC.track_page != U.page) {
