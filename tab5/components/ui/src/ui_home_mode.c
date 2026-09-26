@@ -88,13 +88,18 @@ hm_cfg_t *hm_cfg(void)
     if (!CFG) abort();            /* at start-up, with 32 MB of PSRAM: never */
     CFG->start_home = kv_bool("hm_start", false);
     CFG->stand = kv_bool("hm_stand", false);
-    CFG->fahrenheit = kv_bool("hm_fahr", false);
+    /* Fahrenheit and Mission Viejo: this tablet's desk. Defaults, not fixed values -- the settings
+     * screen still changes both, and a place typed there is geocoded as before. Without a default
+     * place the weather card shows "not set" on a first boot, which is a card that does nothing.
+     * Clearing the place in settings brings this one back: the price of a default over a stored value. */
+    CFG->fahrenheit = kv_bool("hm_fahr", true);
     CFG->pc = kv_bool("hm_pc", true);
     char v[8];
     CFG->saver_min = hal_kv_get("hm_saver", v, sizeof v) ? atoi(v) : 0;
     hal_kv_get("hm_tag", CFG->tag, sizeof CFG->tag);
     hal_kv_get("hm_net", CFG->net, sizeof CFG->net);
-    hal_kv_get("hm_place", CFG->place, sizeof CFG->place);
+    if (!hal_kv_get("hm_place", CFG->place, sizeof CFG->place) || !CFG->place[0])
+        snprintf(CFG->place, sizeof CFG->place, "%s", HM_PLACE_DEFAULT);
     hal_kv_get("ha_url", CFG->ha_url, sizeof CFG->ha_url);
     hal_kv_get("ha_token", CFG->ha_token, sizeof CFG->ha_token);
     hal_kv_get("ha_picks", CFG->picks, sizeof CFG->picks);

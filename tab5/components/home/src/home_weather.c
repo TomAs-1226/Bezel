@@ -1,7 +1,8 @@
 /* The weather from Open-Meteo (no key, no account): the temperature now, today's high and low, the WMO code,
  * and the next 24 hours and 7 days for the weather app, in one request every 20 minutes while home mode (or
  * the weather app) shows it. A place typed as a name is resolved once through
- * Open-Meteo's geocoder; "lat,lon" is used as it is. */
+ * Open-Meteo's geocoder, or from KNOWN below when it is a place already baked in; "lat,lon"
+ * is used as it is. */
 #include "home_priv.h"
 
 #include <ctype.h>
@@ -9,6 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define EVERY_S (20 * 60)
 #define RETRY_S 90
@@ -179,6 +181,38 @@ static bool parse_ll(const char *s, double *lat, double *lon)
     return true;
 }
 
+/* Places already known, consulted before the geocoder.
+ *
+ * Open-Meteo's geocoder is a second network dependency for a lookup whose answer never changes, and
+ * when it is the one that fails there is no weather at all — the forecast request itself would have
+ * worked. A name in this table resolves with no round trip and keeps resolving offline-ish (the
+ * forecast still needs the internet, but only the one request). Coordinates are GeoNames', which is
+ * the geocoder's own source, so a baked answer and a looked-up one agree.
+ *
+ * Matched on the part before a comma, case-insensitively: "mission viejo", "Mission Viejo, CA" and
+ * "MISSION VIEJO" are all the same place. */
+static const struct {
+    const char *name, *shown;
+    double lat, lon;
+} KNOWN[] = {
+    { "mission viejo", "Mission Viejo, US", 33.6000, -117.6719 },
+};
+
+static bool known_place(const char *where, double *lat, double *lon, char *place, size_t pn)
+{
+    size_t n = strcspn(where, ",");
+    while (n && where[n - 1] == ' ') n--;
+    for (size_t i = 0; i < sizeof KNOWN / sizeof *KNOWN; i++) {
+        if (strlen(KNOWN[i].name) == n && strncasecmp(where, KNOWN[i].name, n) == 0) {
+            *lat = KNOWN[i].lat;
+            *lon = KNOWN[i].lon;
+            snprintf(place, pn, "%s", KNOWN[i].shown);
+            return true;
+        }
+    }
+    return false;
+}
+
 static int get(const char *url, char *out)
 {
     hal_http_req_t rq = { .url = url, .headers = "Accept: application/json\r\n", .timeout_ms = 10000 };
@@ -241,6 +275,8 @@ void home_wx_work(double now, bool want)
     if (!have_ll) {
         if (parse_ll(where, &lat, &lon)) {
             snprintf(place, sizeof place, "%.2f, %.2f", lat, lon);
+            have_ll = true;
+        } else if (known_place(where, &lat, &lon, place, sizeof place)) {
             have_ll = true;
         } else {
             have_ll = geocode(where, &lat, &lon, place, sizeof place, st.err, sizeof st.err, buf);

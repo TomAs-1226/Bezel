@@ -23,6 +23,10 @@ typedef struct {
     bool tint;             /* "hm_bg": "1" the ground tinted with the accent */
 } hm_cfg_t;
 
+/* Where the weather starts, until the settings screen says otherwise. home_weather.c knows
+ * this one by name (its KNOWN table), so it resolves with no geocoder round trip. */
+#define HM_PLACE_DEFAULT "Mission Viejo"
+
 enum {
     HM_CARD_MUSIC = 1, HM_CARD_COMPANION = 2, HM_CARD_HOME = 4, HM_CARD_WEATHER = 8, HM_CARD_MATCH = 16,
     HM_CARD_ALL = 31
