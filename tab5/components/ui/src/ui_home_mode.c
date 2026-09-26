@@ -26,6 +26,7 @@
 #include "ui_home_priv.h"
 
 #include "ui_companion.h"
+#include "voice.h"
 
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
 
@@ -196,7 +197,7 @@ static struct {
     lv_obj_t *root, *greet, *clock_row, *clock, *secs, *date, *match;
     lv_obj_t *wx, *wx_icon, *wx_temp, *wx_line, *wx_place;
     lv_obj_t *np, *np_img, *np_ph, *np_src, *np_title, *np_artist, *np_meter, *np_time, *np_play;
-    lv_obj_t *eye[2], *face;
+    lv_obj_t *eye[2], *face, *cp_state;
     lv_obj_t *ha_hint, *ha_hint_text;
     ha_tile_t ha[HM_HOME_TILES];
     lv_image_dsc_t art_dsc;
@@ -231,6 +232,7 @@ static struct {
     /* the photos screensaver */
     bool saver_on;
     /* the NFC tag */
+    char cp_state_text[96];        /* the companion card's second line as last written */
     int tag_pairing;               /* 0 no, 1 waiting for a tag, 2 just paired */
     double tag_pair_until;
     bool tag_here;
@@ -238,6 +240,14 @@ static struct {
 } HM = { .hid_page = -1 };
 
 bool ui_home_mode_active(void) { return HM.active; }
+/* Home mode is what a person in front of the tablet is looking at: it is on, its sheet has settled, the
+ * screen is awake, and nothing is open over it — except its own photo screensaver, which is still home
+ * mode wearing a different coat. The microphones follow this, so the wake word is live exactly when the
+ * surface that advertises it is showing. */
+bool ui_home_mode_showing(void)
+{
+    return HM.active && !HM.sheet && !ui_asleep() && (!ui_app_any_open() || HM.saver_on);
+}
 bool ui_home_mode_keeps_awake(void) { return HM.active && HM.power; }
 
 void hm_open_settings(lv_obj_t *from)
@@ -412,6 +422,7 @@ static void build_companion(lv_obj_t *r)
     lv_obj_align(cl, LV_ALIGN_BOTTOM_LEFT, 0, -26);
     lv_obj_t *cc = bz_label_line(cp, "tap to talk", BZ_F_CAPTION, BZ_C_DIM, CP_W - 2 * BZ_PAD_TILE);
     lv_obj_align(cc, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+    HM.cp_state = cc; /* voice_tick() rewrites it: it is how a person can tell the microphones are open */
 }
 
 static void build_home(lv_obj_t *r)
@@ -1154,6 +1165,36 @@ static void eyes_tick(double now)
     if (moving) bz_ui_keep_alive();
 }
 
+/* The companion card's second line says what the voice is doing. It is also the only sign that the
+ * microphones are open: home mode listens for "Hi ESP" the whole time it is showing, and someone standing in
+ * front of the tablet has a right to know that. */
+static void voice_tick(double now)
+{
+    if (!ui_home_mode_showing() || !HM.cp_state) return;
+    if (!(hm_cfg()->cards & HM_CARD_COMPANION)) return;
+    static double next;
+    if (now < next) return;
+    next = now + 0.25;
+    char line[96];
+    vo_state_t st = voice_state();
+    char note[160];
+    bool nerr = false;
+    double at = voice_note(note, sizeof note, &nerr);
+    if (note[0] && now - at < (nerr ? 10.0 : 5.0)) snprintf(line, sizeof line, "%s", note);
+    else if (st == VO_LISTEN) snprintf(line, sizeof line, "listening...");
+    else if (st == VO_HEARING) snprintf(line, sizeof line, "hearing you...");
+    else if (st == VO_THINKING) snprintf(line, sizeof line, "thinking...");
+    else if (st == VO_SPEAKING) snprintf(line, sizeof line, "talking...");
+    else {
+        const char *w = voice_mics_on() ? voice_wake_word() : NULL;
+        if (w) snprintf(line, sizeof line, "\"%s\" or tap", w);
+        else snprintf(line, sizeof line, "tap to talk");
+    }
+    if (!strcmp(line, HM.cp_state_text)) return;
+    snprintf(HM.cp_state_text, sizeof HM.cp_state_text, "%s", line);
+    lv_label_set_text(HM.cp_state, line);
+}
+
 /* A new minute rolls up into place */
 static void roll_tick(void)
 {
@@ -1227,6 +1268,7 @@ static void hm_frame(double now, double dt, void *user)
     }
     saver_tick();
     eyes_tick(now);
+    voice_tick(now);
     roll_tick();
     press_tick();
 }

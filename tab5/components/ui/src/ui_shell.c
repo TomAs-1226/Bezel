@@ -814,7 +814,7 @@ static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
-        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9))
+        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -873,6 +873,48 @@ static void dev_run(void)
     } else if (!strncmp(s_dev_cmd, "ask ", 4)) {
         /* a typed question to the companion, as its keyboard would send it */
         voice_ask(s_dev_cmd + 4);
+    } else if (!strncmp(s_dev_cmd, "voice", 5)) {
+        /* The companion's voice, from the cable. The spoken path is the one that is hard to reproduce at a
+         * desk, and it is where it was failing: "voice" reports the state, the note and the last reply,
+         * "voice talk" records as a tap on the face would, "voice stop" cancels, "voice new" forgets. */
+        const char *a = s_dev_cmd[5] == ' ' ? s_dev_cmd + 6 : "";
+        if (!strncmp(a, "talk", 4)) {
+            voice_listen();
+            printf("voice: listening (as a tap)\n");
+        } else if (!strncmp(a, "stop", 4)) {
+            voice_cancel();
+            printf("voice: cancelled\n");
+        } else if (!strncmp(a, "new", 3)) {
+            voice_reset();
+            printf("voice: a new conversation\n");
+        } else {
+            static const char *const STATE[] = { "off", "idle", "listening", "hearing", "thinking", "speaking" };
+            vo_state_t st = voice_state();
+            char why[96] = "";
+            bool ready = voice_ready(why, sizeof why);
+            char note[160];
+            bool nerr = false;
+            double at = voice_note(note, sizeof note, &nerr);
+            voice_config_t c;
+            voice_config(&c);
+            const char *w = voice_wake_word();
+            printf("voice: %s, microphones %s, wake word %s (setting %s), ready %s%s%s\n",
+                   STATE[st < 6 ? st : 0], voice_mics_on() ? "on" : "off", w ? w : "not loaded",
+                   c.wake ? "on" : "off", ready ? "yes" : "no", ready ? "" : ": ", ready ? "" : why);
+            printf("voice: level %.2f, out %s, follow %s, stt %s, chat %s, tts %s\n", voice_mic_level(),
+                   c.out == VO_OUT_SPEAK ? "speak" : c.out == VO_OUT_SHOW ? "show" : "both", c.follow ? "on" : "off",
+                   c.stt_model[0] ? c.stt_model : VO_STT_DEFAULT, c.chat_model[0] ? c.chat_model : "the assistant's",
+                   c.tts_model[0] ? c.tts_model : VO_TTS_DEFAULT);
+            if (note[0])
+                printf("voice: note %.0f s ago%s: %s\n", hal_seconds() - at, nerr ? " (a failure)" : "", note);
+            vo_reply_t *r = malloc(sizeof *r);
+            if (r) {
+                if (voice_reply(r) && r->seq)
+                    printf("voice: reply #%u%s: you said \"%s\" -> \"%.120s\"\n", (unsigned)r->seq,
+                           r->failed ? " (failed)" : "", r->heard, r->say);
+                free(r);
+            }
+        }
     } else if (!strcmp(s_dev_cmd, "home")) {
         if (ui_home_mode_active()) ui_home_mode_exit();
         else ui_home_mode_enter();

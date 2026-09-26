@@ -233,6 +233,7 @@ static struct {
     int cap_h;                 /* the caption's height as set: shorter while the controls are up */
     /* the conversation */
     uint32_t vrev, arev, reply_seq;
+    uint32_t bg_seq;               /* the last reply said out of the island while the face was closed */
     double err_at;             /* the voice's last failure note, as already shown */
     bool talk_on_open;         /* opened by "tap to talk": listen as soon as it's up */
     double cap_at;             /* when the caption last changed; it hides CAPTION_S after its answer is done */
@@ -587,7 +588,9 @@ static void voice_sync(double now)
         voice_config_t c;
         voice_config(&c);
         char asked[300];
-        snprintf(asked, sizeof asked, "you: %s", r->heard);
+        /* a failure before the words were ever transcribed has nothing to quote back: no empty "you:" */
+        if (r->heard[0]) snprintf(asked, sizeof asked, "you: %s", r->heard);
+        else asked[0] = 0;
         if (r->failed) {
             /* no answer: why, where it would have been, and a face and a sound that say so */
             caption(asked, r->say, now);
@@ -1570,6 +1573,7 @@ static void comp_open(void)
     if (r) {
         voice_reply(r);
         CP.reply_seq = r->seq; /* likewise */
+        CP.bg_seq = r->seq;
         free(r);
     }
     layout();
@@ -1592,7 +1596,8 @@ static void comp_close(void)
     CP.open = false;
     ui_kb_hide(CP.kb);
     CP.last_seen = hal_seconds();
-    voice_enable(false); /* the microphones go off with the face */
+    CP.bg_seq = CP.reply_seq; /* what the face already showed is not announced again from home mode */
+    voice_enable(false); /* the microphones go off with the face (home mode turns them back on next tick) */
     CP.voice_on = false;
 }
 
@@ -1759,11 +1764,33 @@ void ui_companion_tick(double now, double dt)
     chime_tick(now);
     const char *imported = assist_import_note(); /* keys found on the card at boot: say so, once */
     if (imported) ui_island_say(BZ_I_AUTO_AWESOME, imported);
-    /* the microphones follow the face: off while the screen sleeps or the lock screen covers it */
-    bool want = CP.open && !ui_asleep() && !ui_locked();
+    /* The microphones follow the face: off while the screen sleeps or the lock screen covers it.
+     *
+     * Home mode listens too. The tablet on its stand is meant to answer "Hi ESP" from across the room with
+     * nothing touched, so while home mode is the thing on screen the wake word stays live — behind the same
+     * `v_wake` setting, so it can be turned off, and only while nothing else is open over it. Anything that
+     * hides home mode (an app, the lock screen, sleep) closes the microphones again, so the ES7210 is never
+     * left powered with neither face on screen. */
+    voice_config_t vc;
+    voice_config(&vc);
+    bool home_ears = ui_home_mode_showing() && vc.wake;
+    bool want = (CP.open || home_ears) && !ui_asleep() && !ui_locked();
     if (want != CP.voice_on) {
         CP.voice_on = want;
         voice_enable(want);
+    }
+    /* With the face closed nothing draws the answer, so home mode's own message strip carries it: every
+     * reply, and above all every failure, is said out of the island instead of vanishing. */
+    if (!CP.open && CP.voice_on) {
+        vo_reply_t *br = malloc(sizeof *br);
+        if (br) {
+            if (voice_reply(br) && br->seq != CP.bg_seq) {
+                CP.bg_seq = br->seq;
+                if (br->failed && br->say[0]) ui_island_say(BZ_I_ERROR, br->say);
+                else if (br->say[0] && !br->spoken) ui_island_say(BZ_I_AUTO_AWESOME, br->say);
+            }
+            free(br);
+        }
     }
     ccw_event_t e;
     while (ccw_next_event(&e)) {

@@ -39,6 +39,9 @@ void ui_home_mode_init(ui_home_mode_fn on_change);
 void ui_home_mode_enter(void);
 void ui_home_mode_exit(void);
 bool ui_home_mode_active(void);
+/* Home mode is the surface on screen right now (its own screensaver counts, an app over it does not):
+ * what decides whether the microphones listen for the wake word. */
+bool ui_home_mode_showing(void);
 bool ui_home_mode_keeps_awake(void);
 /* An automatic trigger: `present` true asks for home mode, false says the reason went away (home mode then
  * leaves only if that same trigger brought it). UI thread only. */
