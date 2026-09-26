@@ -1077,7 +1077,7 @@ const ui_app_t APP_LOGS = { .name = "logs", .icon = BZ_I_RECEIPT_LONG, .build = 
 static struct {
     lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *calm_chip, *flip_chip, *perf_chip, *about, *wifi_list,
         *wifi_state, *usb_state;
-    lv_obj_t *kb, *ta, *kb_title;
+    ui_kb_t *pwkb;                 /* the Wi-Fi password: the shell's one keyboard */
     char entry[8];
     char join_ssid[33];
 } ST;
@@ -1190,17 +1190,14 @@ static void st_perf(lv_obj_t *o, void *u)
     ui_settings_save();
 }
 
-static void st_kb_event(lv_event_t *e)
+static void st_pw_done(const char *text, void *u)
 {
-    lv_event_code_t code = lv_event_get_code(e);
-    if (code == LV_EVENT_READY) {
-        hal_wifi_join(ST.join_ssid, lv_textarea_get_text(ST.ta));
-        snprintf(S.wifi_ssid, sizeof S.wifi_ssid, "%s", ST.join_ssid);
-        char msg[64];
-        snprintf(msg, sizeof msg, "joining %s", ST.join_ssid);
-        ui_island_say(BZ_I_WIFI, msg);
-    }
-    if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) lv_obj_add_flag(lv_obj_get_parent(ST.kb), LV_OBJ_FLAG_HIDDEN);
+    (void)u;
+    hal_wifi_join(ST.join_ssid, text);
+    snprintf(S.wifi_ssid, sizeof S.wifi_ssid, "%s", ST.join_ssid);
+    char msg[64];
+    snprintf(msg, sizeof msg, "joining %s", ST.join_ssid);
+    ui_island_say(BZ_I_WIFI, msg);
 }
 
 /* A scan takes ~3 s on the C6: it runs on a worker, and the settings refresh lists what it heard. */
@@ -1240,10 +1237,9 @@ static void st_ap(lv_obj_t *o, void *u)
         ui_island_say(BZ_I_WIFI, "joining the network");
         return;
     }
-    ui_text(ST.kb_title, "password for %s", ST.join_ssid);
-    lv_textarea_set_text(ST.ta, "");
-    lv_obj_remove_flag(lv_obj_get_parent(ST.kb), LV_OBJ_FLAG_HIDDEN);
-    lv_obj_move_foreground(lv_obj_get_parent(ST.kb));
+    char title[80];
+    snprintf(title, sizeof title, "password for %s", ST.join_ssid);
+    ui_kb_show(ST.pwkb, title, "", true, true, st_pw_done, NULL);
 }
 
 static void st_scan(lv_obj_t *o, void *u)
@@ -1737,36 +1733,10 @@ static void settings_build(lv_obj_t *b)
     lv_label_set_long_mode(ST.about, LV_LABEL_LONG_WRAP);
     ui_button(t, BZ_I_MONITORING, "system monitor", sx_open_app, (void *)&APP_SYSMON);
 
-    /* the Wi-Fi password sheet: LVGL's keyboard in Bezel's tokens */
-    lv_obj_t *sheet = bz_tile(b, W - 2 * PAD, 420);
-    lv_obj_align(sheet, LV_ALIGN_BOTTOM_MID, 0, -PAD);
-    bz_tile_set_fill(sheet, BZ_C_SURFACE2);
-    ST.kb_title = bz_label(sheet, "", BZ_F_LABEL, BZ_C_DIM);
-    ST.ta = lv_textarea_create(sheet);
-    lv_textarea_set_one_line(ST.ta, true);
-    lv_textarea_set_password_mode(ST.ta, true);
-    lv_obj_set_width(ST.ta, W - 2 * PAD - 2 * BZ_PAD_TILE);
-    lv_obj_set_pos(ST.ta, 0, 28);
-    lv_obj_add_style(ST.ta, bz_style_font(BZ_F_BODY), 0);
-    lv_obj_add_style(ST.ta, bz_style_fill(BZ_C_SURFACE1), 0);
-    lv_obj_add_style(ST.ta, bz_style_color(BZ_C_INK), 0);
-    lv_obj_set_style_radius(ST.ta, 16, 0);
-    lv_obj_set_style_border_width(ST.ta, 0, 0);
-    lv_obj_set_style_pad_all(ST.ta, 12, 0);
-    ST.kb = lv_keyboard_create(sheet);
-    lv_keyboard_set_textarea(ST.kb, ST.ta);
-    lv_obj_set_size(ST.kb, W - 2 * PAD - 2 * BZ_PAD_TILE, 290);
-    lv_obj_align(ST.kb, LV_ALIGN_BOTTOM_MID, 0, 0);
-    lv_obj_add_style(ST.kb, bz_style_plain(), 0);
-    lv_obj_add_style(ST.kb, bz_style_fill(BZ_C_SURFACE3), LV_PART_ITEMS);
-    lv_obj_add_style(ST.kb, bz_style_color(BZ_C_INK), LV_PART_ITEMS);
-    /* the keyboard's control keys are LVGL symbols, which only its own Montserrat carries */
-    lv_obj_set_style_text_font(ST.kb, &lv_font_montserrat_20, LV_PART_ITEMS);
-    lv_obj_set_style_radius(ST.kb, 12, LV_PART_ITEMS);
-    lv_obj_set_style_border_width(ST.kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_shadow_width(ST.kb, 0, LV_PART_ITEMS);
-    lv_obj_add_event_cb(ST.kb, st_kb_event, LV_EVENT_ALL, NULL);
-    lv_obj_add_flag(sheet, LV_OBJ_FLAG_HIDDEN);
+    /* the Wi-Fi password goes through the shell's one keyboard (ui_kb.c), like every other field:
+     * this app used to build a second lv_keyboard of its own inside its body, which put it under
+     * anything the shell drew afterwards and drew its control keys as blank squares */
+    ST.pwkb = ui_kb_create(b, 0);
     sx_show(SS_DISPLAY);
 }
 

@@ -410,6 +410,7 @@ bool ui_cc_is_open(void) { return C.open || C.sheet; }
 void ui_cc_open(void)
 {
     if (C.open || C.sheet) return;
+    ui_kb_dismiss(); /* likewise: nothing sits over the control centre except the keyboard, so it goes */
     sheet_start(true);
     if (C.sheet_mode && !C.sheet) {
         C.want_open = true; /* another sheet is sliding: open once it's done (cc_frame) */

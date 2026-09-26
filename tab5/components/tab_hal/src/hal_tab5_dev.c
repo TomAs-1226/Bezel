@@ -164,10 +164,19 @@ static void swipe(int x0, int y0, int x1, int y1, int ms)
 static void run(char *line)
 {
     int a, b, c, e, f;
-    if (!strcmp(line, "shot")) {
-        shot(false);
-    } else if (!strcmp(line, "pshot")) {
+    if (!strcmp(line, "shot") || !strcmp(line, "pshot")) {
+        /* The panel's own front buffer — what a person standing in front of the tablet can see.
+         *
+         * It used to read LVGL's buffer instead, which is the wrong picture and has cost real time: the
+         * renderer draws in direct mode into two buffers that swap, so that buffer holds this frame's
+         * dirty areas over whatever was in it a frame or two ago. A screen that has just changed reads
+         * back as two or three surfaces at once — an app over the page it opened from, a keyboard behind
+         * a dock, half an animation — and it looks exactly like a z-order bug that is not there. The
+         * panel buffer is never a composite. "lshot" is still the old picture, for when the question is
+         * what LVGL drew rather than what the screen shows. */
         shot(true);
+    } else if (!strcmp(line, "lshot")) {
+        shot(false);
     } else if (sscanf(line, "tap %d %d", &a, &b) == 2) {
         swipe(a, b, a, b, 60);
         say("OK\n");

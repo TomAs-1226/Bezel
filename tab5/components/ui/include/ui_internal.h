@@ -220,3 +220,4 @@ void ui_kb_show(ui_kb_t *k, const char *title, const char *text, bool secret, bo
                 void *user);
 bool ui_kb_open(const ui_kb_t *k);
 void ui_kb_hide(ui_kb_t *k);
+void ui_kb_dismiss(void); /* whoever is typing, put the keyboard away (the screen changed under them) */

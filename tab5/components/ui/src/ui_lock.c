@@ -146,6 +146,7 @@ static void lock_prep(bool before, void *u)
 void ui_lock_show(void)
 {
     if (!S.lock || LK.locked || !LK.root) return;
+    ui_kb_dismiss(); /* the keyboard is the top layer: it would sit over the lock screen */
     LK.locked = true;
     LK.seen_gen = ~0u;
     LK.last_min = -1;
