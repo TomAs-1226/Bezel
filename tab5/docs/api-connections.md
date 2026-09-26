@@ -253,8 +253,25 @@ Source: `components/assist/src/assist.c`, `as_oai.c`, `as_oai.h` (verified this 
 - Endpoint: `POST <base>/v1/chat/completions` (`assist.c:377`).
 - Auth: `Authorization: Bearer <key>` (`as_oai_headers()`, `as_oai.c:155-158`), key from
   `OPENAI_API_KEY` in `KEYS.ENV` (`docs/keys.md:23,40`) or typed in settings.
-- Default model: `gpt-4o-mini` (`AS_OAI_DEFAULT_MODEL`, `as_oai.h:21`), overridable per
-  `A.cfg.oai_model` (`assist.c:679,1117-1220`).
+- Default model: `gpt-5` (`AS_OAI_DEFAULT_MODEL`), overridable per `A.cfg.oai_model`
+  (`assist.c:679,1117-1220`). The companion's own default is `gpt-5-mini` (`VO_CHAT_DEFAULT`,
+  `voice.h`) -- its answers are spoken, and thinking time is silence with a face on screen.
+- **`reasoning_effort` is sent, and which value is not cosmetic: it decides whether the tools work
+  at all on this endpoint.** `as_oai_effort()` (`as_oai.c`, tested in `test_assist.c`) maps it:
+
+  | model | sent | why |
+  |---|---|---|
+  | `gpt-5`, `gpt-5-mini`, `gpt-5-nano`, o-series | what was asked, else `medium` | Chat Completions supports `function_calling` and `structured_outputs` outright; effort takes `minimal`/`low`/`medium`/`high` |
+  | `gpt-6-*` | always `none` | on Chat Completions `gpt-6-sol` calls functions **only** at `reasoning_effort: none`, and `gpt-6-astra` does not call functions there at all -- OpenAI's docs point at the Responses API instead |
+  | anything older | nothing | a model that predates the parameter rejects the whole request |
+
+  The companion asks for `minimal` (`VO_EFFORT_DEFAULT`) and, on a 400 naming `reasoning_effort`,
+  drops it and remembers that per model -- the same shape as the existing `response_format`
+  fallback, because a model list is not something this tablet can keep current.
+- No `temperature` and no `max_completion_tokens` are sent: a reasoning model rejects any
+  temperature but its default, and a token cap cuts tool calls short.
+- **Moving to GPT-6 properly means porting to the Responses API.** Until then a GPT-5 model is the
+  right choice here, not the older one.
 - The tablet's own Anthropic-shaped Messages requests are translated to OpenAI's Chat Completions shape
   by `as_oai.c` (message roles, tool_result → `role:"tool"` messages, `join_text()`/`result_text()`
   helpers, `as_oai.c:13-45`) — this is the "one contract, two shapes" adapter for the assistant.

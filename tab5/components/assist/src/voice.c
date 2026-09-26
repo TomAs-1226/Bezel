@@ -620,11 +620,22 @@ static const char REPLY_SCHEMA[] =
 
 /* The request: system, the remembered exchanges, this question, and this turn's tool rounds. fmt: 0 the
  * JSON schema, 1 plain JSON mode, 2 nothing (a model that takes neither). */
-static void chat_body(ab_t *b, const char *model, const char *question, const aj_t *turn, const char *tools, int fmt)
+static void chat_body(ab_t *b, const char *model, const char *question, const aj_t *turn, const char *tools,
+                      int fmt, bool effort)
 {
     ab_reset(b);
     ab_puts(b, "{\"model\":");
     ab_str(b, model);
+    /* Minimal effort, and only for a model that takes the parameter at all: this answer is spoken,
+     * so thinking time is silence. as_oai_effort() also turns it into "none" for a gpt-6 model,
+     * which is the only setting under which Chat Completions will call functions there. */
+    if (effort) {
+        const char *e = as_oai_effort(model, VO_EFFORT_DEFAULT);
+        if (e) {
+            ab_puts(b, ",\"reasoning_effort\":");
+            ab_str(b, e);
+        }
+    }
     ab_puts(b, ",\"messages\":[{\"role\":\"system\",\"content\":");
     ab_str(b, SYSTEM_PROMPT);
     ab_puts(b, "}");
@@ -755,7 +766,7 @@ static bool answer(const char *question, vo_reply_t *rep)
             memset(a, 0, sizeof *a);
             free(a);
         }
-        if (!model[0]) snprintf(model, sizeof model, "%s", AS_OAI_DEFAULT_MODEL);
+        if (!model[0]) snprintf(model, sizeof model, "%s", VO_CHAT_DEFAULT);
     }
     pthread_mutex_lock(&V.lock);
     bool fresh = V.clear_hist || hal_seconds() - V.last_turn > HIST_IDLE_S;
@@ -776,14 +787,16 @@ static bool answer(const char *question, vo_reply_t *rep)
     ab_init(&body);
     bool ok = false;
     static int fmt; /* what this model took last time: the schema first */
+    static bool effort = true; /* and whether it took reasoning_effort */
     static char fmt_model[48];
     if (strcmp(fmt_model, model) != 0) {
         snprintf(fmt_model, sizeof fmt_model, "%s", model);
         fmt = 0;
+        effort = true;
     }
     for (int round = 0; round <= TOOL_ROUNDS && !cancelled(); round++) {
         /* the last round offers no tools: it must answer */
-        chat_body(&body, model, q, turn, round < TOOL_ROUNDS ? tools : NULL, fmt);
+        chat_body(&body, model, q, turn, round < TOOL_ROUNDS ? tools : NULL, fmt, effort);
         if (body.oom) {
             set_err("out of memory building the request");
             break;
@@ -793,6 +806,14 @@ static bool answer(const char *question, vo_reply_t *rep)
         if (cancelled()) {
             resp_free(&r);
             break;
+        }
+        if (sent && r.status == 400 && effort && r.body && strstr(r.body, "reasoning_effort")) {
+            /* The same shape as the format fallback below: a model list is not something this
+             * tablet can keep up to date, so it learns from the refusal and remembers per model. */
+            effort = false;
+            resp_free(&r);
+            round--;
+            continue;
         }
         if (sent && r.status == 400 && fmt < 2 && r.body &&
             (strstr(r.body, "response_format") || strstr(r.body, "json_schema") || strstr(r.body, "json_object"))) {

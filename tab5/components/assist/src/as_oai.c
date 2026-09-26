@@ -120,13 +120,34 @@ static void assistant_msg(ab_t *out, const aj_t *content, bool *first)
     ab_free(&t);
 }
 
+static bool starts(const char *s, const char *pfx)
+{
+    size_t n = strlen(pfx);
+    return s && !strncmp(s, pfx, n);
+}
+
+const char *as_oai_effort(const char *model, const char *wanted)
+{
+    if (!model || !model[0]) model = AS_OAI_DEFAULT_MODEL;
+    if (starts(model, "gpt-6")) return "none";
+    if (starts(model, "gpt-5") || starts(model, "o1") || starts(model, "o3") || starts(model, "o4"))
+        return wanted && wanted[0] ? wanted : "medium";
+    return NULL;
+}
+
 void as_oai_request(const as_hist_t *h, const as_req_t *q, ab_t *out)
 {
     ab_reset(out);
     ab_puts(out, "{\"model\":");
     ab_str(out, q->model && q->model[0] ? q->model : AS_OAI_DEFAULT_MODEL);
-    /* no max_completion_tokens: the model's own ceiling (a small cap would cut tool calls short) */
+    /* no max_completion_tokens: the model's own ceiling (a small cap would cut tool calls short).
+     * No temperature either -- a reasoning model rejects any value but its default. */
     ab_puts(out, ",\"stream\":true,\"stream_options\":{\"include_usage\":true}");
+    const char *effort = as_oai_effort(q->model, q->effort);
+    if (effort) {
+        ab_puts(out, ",\"reasoning_effort\":");
+        ab_str(out, effort);
+    }
     if (q->tools && q->tools[0]) {
         ab_puts(out, ",\"tools\":[");
         for (int i = 0; i < AS_NTOOLS; i++) {

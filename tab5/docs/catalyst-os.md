@@ -164,7 +164,7 @@ The logs app (the card's root, `logs/`, and the recorder's `runs/`) and the reco
   ranked causes with confidence and evidence, next checks, what to look at (tunables by path, limits, wiring), and
   what the log can't tell. It says so plainly when the log doesn't support a conclusion.
 - **Where it runs.** On the assistant's worker (`assist_post_job`), after any conversation turn in flight: no new
-  thread. Key and model are the assistant's OpenAI settings (kv `oai_key`, `oai_model`; default gpt-4o-mini), not
+  thread. Key and model are the assistant's OpenAI settings (kv `oai_key`, `oai_model`; default gpt-5), not
   streamed, no token cap.
 - **The answer** shows in the logs app (scrollable), goes to the island and the notifications ("analysis of
   <file>: <verdict>"), and **save** writes `CATOS/DOCS/MMDDHHMM.MD` with the answer and the digest that was sent.

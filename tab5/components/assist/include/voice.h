@@ -57,13 +57,18 @@ typedef struct {
     vo_out_t out;          /* speak, show, or both ("v_out": "both", "speak", "show") */
     bool wake;             /* listen for the wake word while on screen ("v_wake") */
     bool follow;           /* after an answer, listen a few seconds for a follow-up, no wake word ("v_follow") */
-    char chat_model[48];   /* "" → the assistant's OpenAI model, else gpt-4o-mini ("v_chat") */
+    char chat_model[48];   /* "" → the assistant's OpenAI model, else VO_CHAT_DEFAULT ("v_chat") */
     char stt_model[48];    /* "" → gpt-4o-mini-transcribe ("v_stt") */
     char tts_model[48];    /* "" → gpt-4o-mini-tts ("v_tts") */
     char voice[24];        /* "" → coral ("v_voice") */
     char lang[8];          /* ISO 639-1 hint for transcription, "" → detect ("v_lang") */
 } voice_config_t;
 
+/* The companion answers with tools, so the model has to be one that calls them on Chat Completions
+ * -- see as_oai_effort(). gpt-5-mini rather than gpt-5: this one is spoken aloud, and a second of
+ * thinking is a second of silence with a face on screen waiting. */
+#define VO_CHAT_DEFAULT "gpt-5-mini"
+#define VO_EFFORT_DEFAULT "minimal"
 #define VO_STT_DEFAULT "gpt-4o-mini-transcribe"
 #define VO_STT_FALLBACK "whisper-1"
 #define VO_TTS_DEFAULT "gpt-4o-mini-tts"

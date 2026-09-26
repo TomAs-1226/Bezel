@@ -18,7 +18,11 @@
 #include "as_json.h"
 #include "as_sse.h"
 
-#define AS_OAI_DEFAULT_MODEL "gpt-4o-mini"
+/* GPT-5, not GPT-4o-mini and not GPT-6. This client speaks Chat Completions, and on Chat
+ * Completions gpt-5 is the family that does function calling and structured outputs without
+ * conditions -- gpt-6-sol does function calling only at reasoning_effort "none", and gpt-6-astra
+ * not at all (its docs say so and point at the Responses API). The tools are the point here. */
+#define AS_OAI_DEFAULT_MODEL "gpt-5"
 #define AS_OAI_DEFAULT_BASE "https://api.openai.com"
 #define AS_OAI_MAX_CALLS 32
 
@@ -28,6 +32,15 @@
 void as_oai_request(const as_hist_t *h, const as_req_t *q, ab_t *out);
 /* "Authorization: Bearer …" and the content headers. The key never goes anywhere else. */
 void as_oai_headers(const char *api_key, char *out, size_t n);
+
+/* The reasoning_effort to send with `model`, or NULL to send none.
+ *
+ * Pure, and its own function because getting it wrong costs the tools rather than a little speed:
+ *   gpt-5 / o-series  -> `wanted` ("minimal", "low", "medium", "high"), or "medium";
+ *   gpt-6-*           -> "none", whatever was wanted: Chat Completions does function calling with
+ *                        gpt-6-sol only at "none", and with gpt-6-astra not at all;
+ *   anything else     -> NULL: an older model 400s on a parameter it has never heard of. */
+const char *as_oai_effort(const char *model, const char *wanted);
 
 /* ---- the stream ---- */
 

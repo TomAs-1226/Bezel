@@ -694,6 +694,7 @@ static void openai(void)
     aj_t *d = parse(body.p);
     CHECK(d != NULL);
     CHECK(!strcmp(aj_gets(d, "model"), "gpt-4o-mini"));
+    CHECK(!aj_get(d, "reasoning_effort"));   /* an older model 400s on a parameter it never had */
     CHECK(aj_is(aj_get(d, "stream"), AJ_TRUE));
     CHECK(aj_is(aj_get(aj_get(d, "stream_options"), "include_usage"), AJ_TRUE));
     CHECK(!aj_get(d, "thinking") && !aj_get(d, "max_tokens"));
@@ -749,10 +750,46 @@ static void desk(void)
     CHECK(b && b->kind == AS_T_READ);
 }
 
+/* Which reasoning_effort goes with which model, and that the request carries it.
+ *
+ * This is worth a test because getting it wrong costs the TOOLS, not a little speed: on Chat
+ * Completions gpt-6-sol calls functions only at effort "none", gpt-6-astra not at all, and a model
+ * older than the parameter refuses the whole request. */
+static void oai_effort(void)
+{
+    CHECK(as_oai_effort("gpt-5", "minimal") && !strcmp(as_oai_effort("gpt-5", "minimal"), "minimal"));
+    CHECK(!strcmp(as_oai_effort("gpt-5-mini", "low"), "low"));
+    CHECK(!strcmp(as_oai_effort("gpt-5-nano", ""), "medium"));          /* nothing asked for: the default */
+    CHECK(!strcmp(as_oai_effort("gpt-5", NULL), "medium"));
+    CHECK(!strcmp(as_oai_effort("o3-mini", "high"), "high"));
+    CHECK(!strcmp(as_oai_effort("gpt-6-sol", "minimal"), "none"));      /* whatever was wanted */
+    CHECK(!strcmp(as_oai_effort("gpt-6-astra", "high"), "none"));
+    CHECK(as_oai_effort("gpt-4o-mini", "minimal") == NULL);
+    CHECK(as_oai_effort("gpt-4.1", "low") == NULL);
+    CHECK(!strcmp(as_oai_effort("", "low"), "low"));                    /* empty: the default model, gpt-5 */
+    CHECK(!strcmp(as_oai_effort(NULL, "low"), "low"));
+
+    /* and it reaches the wire */
+    as_hist_t h;
+    as_hist_init(&h);
+    as_hist_user(&h, NULL, "hello");
+    as_req_t q = { .model = "gpt-5-mini", .effort = "minimal", .system = "s" };
+    ab_t body;
+    ab_init(&body);
+    as_oai_request(&h, &q, &body);
+    aj_t *d = parse(body.p);
+    CHECK(d && !strcmp(aj_gets(d, "reasoning_effort"), "minimal"));
+    CHECK(d && !aj_get(d, "temperature"));
+    aj_free(d);
+    ab_free(&body);
+    as_hist_free(&h);
+}
+
 void test_assist(int *checks, int *fails)
 {
     g_checks = checks;
     g_fails = fails;
+    oai_effort();
     json();
     schema();
     sse();
