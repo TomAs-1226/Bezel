@@ -135,6 +135,8 @@ static struct {
     float spin[3], energy, hue_amt;
     bz_motion_t glow;
     as_phase_t last_phase;
+    double core_at;   /* when the core was last drawn: it is capped, not drawn every frame */
+    bool core_dirty;  /* the rings have turned, or the phase changed, since that drawing */
     /* the prompt bar */
     lv_obj_t *chips, *send, *send_icon, *send_label;
     const char *sugg[5];
@@ -269,19 +271,29 @@ static void view_rich(view_t *v, const as_entry_t *e)
     if (v->text) lv_obj_add_flag(v->text, LV_OBJ_FLAG_HIDDEN);
 }
 
-static void view_fill(view_t *v, const as_entry_t *e)
+/* `ph` is the phase read by the caller under the same lock this runs inside: an answer is only settled
+ * once the conversation has stopped writing. It may have nothing to do — the caller hands it every row,
+ * not only the ones whose text changed, because a settled answer waiting for the renderer looks exactly
+ * like a row that has not moved. */
+static void view_fill(view_t *v, const as_entry_t *e, as_phase_t ph)
 {
-    /* the streaming answer settles: draw it again, this time as what it says it is */
-    if (v->kind == AS_E_TEXT && v->rev == e->rev && v->rich_rev != e->rev && assist_phase() != AS_PHASE_WRITING &&
-        ui_md_is_rich(e->text))
-        view_rich(v, e);
-    if (v->rev == e->rev) return;
+    bool fresh = v->rev != e->rev;
+    if (!fresh && (v->kind != AS_E_TEXT || v->rich_rev == e->rev)) return;
     v->rev = e->rev;
     const char *t = e->text ? e->text : "";
+    if (v->kind == AS_E_TEXT && ph != AS_PHASE_WRITING) {
+        /* it has stopped arriving: draw it as what it says it is. rich_rev records the verdict either
+         * way, so a plain answer is read for marks once and not again on every later bump. */
+        if (ui_md_is_rich(t)) {
+            view_rich(v, e);
+            return;
+        }
+        v->rich_rev = e->rev;
+    }
+    if (!fresh) return;
     if (v->kind == AS_E_TEXT && v->rich) {
-        /* it grew again after settling (a second block of the same answer): back to the renderer */
-        v->rich_rev = e->rev - 1;
-        if (assist_phase() != AS_PHASE_WRITING) view_rich(v, e);
+        /* rendered once and grown since, still arriving: the column the reader is looking at stays, and
+         * the settle above redraws it with what was added. A half-written table is not a table yet. */
         return;
     }
     if (v->kind == AS_E_TEXT || v->kind == AS_E_USER) {
@@ -315,6 +327,7 @@ static void sync_transcript(void)
     AS.rev = rev;
     bool grew = false;
     assist_lock();
+    as_phase_t ph = assist_phase_locked();
     int first = assist_first(), n = assist_count();
     int start = first + n - VIEW_MAX;
     if (start < first) start = first;
@@ -323,10 +336,13 @@ static void sync_transcript(void)
     int next = AS.nv ? AS.v[AS.nv - 1].id + 1 : start;
     for (int i = 0; i < AS.nv; i++) {
         const as_entry_t *e = assist_entry(AS.v[i].id - first);
-        if (e && e->rev != AS.v[i].rev) {
-            view_fill(&AS.v[i], e);
-            grew = true;
-        }
+        if (!e) continue;
+        /* Every row, not only the grown ones: an answer that stopped arriving is still one plain label
+         * and this is where it becomes what it says it is. That is not growth — the reader's place in a
+         * finished answer is theirs, so promoting it must not pull the list to the bottom. */
+        bool changed = e->rev != AS.v[i].rev;
+        view_fill(&AS.v[i], e, ph);
+        if (changed) grew = true;
     }
     if (next < first + n) {
         /* new rows are made at the top of the list and laid out at the bottom; LVGL would redraw both
@@ -344,7 +360,7 @@ static void sync_transcript(void)
             const as_entry_t *e = assist_entry(id - first);
             v->id = id;
             view_make(v, e);
-            view_fill(v, e);
+            view_fill(v, e, ph);
         }
         lv_obj_update_layout(AS.list);
         lv_display_enable_invalidation(d, true);
@@ -625,21 +641,38 @@ static void assist_frame(double now, double dt)
     card_frame(now);
     as_phase_t ph = assist_phase();
     bool busy = ph != AS_PHASE_IDLE && ph != AS_PHASE_ERROR;
-    /* the rings: the energy rides the `smooth` spring toward busy or rest; they turn with it */
-    bz_motion_to(&AS.glow, busy ? 1 : 0, BZ_SMOOTH);
+    /* The energy is the core's whole state: its colour, how far round the arcs reach, how big the heart
+     * is. It rides Bezel's effects spring, which never bounces, and it keeps that spring through the lean
+     * renderer's instant motion — without `keep` the core simply stepped between dim and lit, which is
+     * most of what made it look wrong. */
+    float want = busy ? 1.0f : 0.0f;
+    if (AS.glow.target != want) bz_motion_to(&AS.glow, want, BZ_EFFECT);
     bool m = bz_motion_tick(&AS.glow);
     AS.energy = AS.glow.value < 0 ? 0 : AS.glow.value;
-    float speed = bz_ui_calm() ? 0 : 0.25f + 2.2f * AS.energy;
-    if (AS.energy > 0.01f || m) {
+    /* The rings turn while it works. This was gated on bz_ui_calm(), which on the tablet is held true by
+     * the renderer (no glass pass, solid surfaces) and not because stillness was asked for: the core
+     * never turned there at all, and was redrawn every frame anyway for a picture that never changed. */
+    float speed = 0.25f + 2.2f * AS.energy;
+    if (AS.energy > 0.005f || m) {
         AS.spin[0] += (float)dt * speed;
         AS.spin[1] -= (float)dt * speed * 1.6f;
         AS.spin[2] += (float)dt * speed * 0.7f;
-        lv_obj_invalidate(AS.core);
+        AS.core_dirty = true;
         bz_ui_keep_alive();
+    }
+    /* 358 x 330 of arcs and seventy-two ticks is most of a frame's drawing, for a turn of a few degrees.
+     * Drawn at 24 Hz, which is as fast as rings read as turning, and whatever the frame rate is doing. */
+    if (AS.core_dirty) {
+        bz_ui_keep_alive();
+        if (now - AS.core_at >= 1.0 / 24) {
+            AS.core_dirty = false;
+            AS.core_at = now;
+            lv_obj_invalidate(AS.core);
+        }
     }
     if (ph != AS.last_phase) {
         AS.last_phase = ph;
-        lv_obj_invalidate(AS.core);
+        AS.core_dirty = true;
         ui_text(AS.phase, "%s", phase_word(ph));
         bz_icon_set(AS.send_icon, busy ? BZ_I_STOP_CIRCLE : BZ_I_KEYBOARD, 24, false);
         ui_text(AS.send_label, "%s", busy ? "stop" : "ask");
@@ -798,6 +831,7 @@ static void assist_build(lv_obj_t *b)
     lv_obj_add_flag(AS.card, LV_OBJ_FLAG_HIDDEN);
 
     bz_motion_init(&AS.glow, 0, 0.002f);
+    AS.glow.keep = true; /* the core's one transition: it eases even where other motion is instant */
     AS.last_phase = (as_phase_t)-1;
 }
 
@@ -844,7 +878,12 @@ static void orb_frame(double now, double dt, void *u)
     if (ph == AS_PHASE_CONFIRM) {
         bz_glass_set_tint(ORB.glass, 1, 0.55f);
         if (ORB.last != ph && !here) ui_island_say(BZ_I_AUTO_AWESOME, "assist needs your ok");
-    } else if (busy && !bz_ui_calm()) {
+    } else if (busy && show) {
+        /* Breathing while it works away from its own screen. This was gated on bz_ui_calm(), which the
+         * tablet holds true for the renderer's sake, so on the tablet the orb sat still and said nothing
+         * while the assistant worked. The tint is quantized where it is applied, so the breath restyles
+         * a few times a second, not every frame — and it only breathes while it is on screen, because a
+         * breath asks for a frame and the hidden orb was asking for them all. */
         float k = 0.18f + 0.22f * (0.5f + 0.5f * sinf((float)now * 3.4f));
         bz_glass_set_tint(ORB.glass, 3, k);
         bz_ui_keep_alive();
@@ -871,7 +910,14 @@ void ui_orb_init(void)
     ORB.obj = lv_obj_create(g);
     lv_obj_remove_style_all(ORB.obj);
     lv_obj_set_size(ORB.obj, 92, 92);
-    lv_obj_set_pos(ORB.obj, W - PAD - 92, H - DOCK_BOTTOM - 92);
+    /* Beside the dock in landscape, above it in portrait.
+     *
+     * The dock is a fixed 660 px centred in the frame. At 1280 that leaves 300 px of corner to its
+     * right and the orb sits in it. At 720 the dock spans 30..690 and that corner IS the last dock
+     * item, so the orb covers "apps" and the dock reads as incomplete rather than as obscured. A
+     * phone floats this kind of button above the bar; so does this one now. */
+    if (PORTRAIT) lv_obj_set_pos(ORB.obj, W - PAD - 92, H - DOCK_BOTTOM - DOCK_H - 12 - 92);
+    else lv_obj_set_pos(ORB.obj, W - PAD - 92, H - DOCK_BOTTOM - 92);
     lv_obj_add_flag(ORB.obj, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(ORB.obj, LV_OBJ_FLAG_SCROLLABLE);
     ORB.glass = bz_glass_attach(ORB.obj, 7, 46);

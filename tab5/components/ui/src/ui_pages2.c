@@ -556,7 +556,13 @@ const ui_app_t *ui_app_find(const char *name)
     return NULL;
 }
 
-#define APPS_COLS 6
+/* What a tile needs to show its name and hint without an ellipsis, measured against the longest of
+ * them ("preflight", "systemcore", "recorder"): 18 px of padding each side and about 140 px of word.
+ * The column COUNT follows from the frame -- six across the landscape frame, three across phone
+ * mode's -- because a fixed six in a 720 px frame is a 105 px tile and every label becomes "pre...". */
+#define APPS_TILE_MIN 176
+#define APPS_COLS (((W) - 2 * PAD + BZ_GAP) / (APPS_TILE_MIN + BZ_GAP) < 2 \
+                   ? 2 : ((W) - 2 * PAD + BZ_GAP) / (APPS_TILE_MIN + BZ_GAP))
 #define APP_TILE_H 140
 
 static void apps_group(lv_obj_t *col, const char *title, const app_entry_t *e, int n)

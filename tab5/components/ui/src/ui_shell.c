@@ -25,7 +25,6 @@
 #define DOCK_GAP 4
 #define DOCK_PAD 8
 #define DOCK_W (NPAGES * DOCK_ITEM_W + (NPAGES - 1) * DOCK_GAP + 2 * DOCK_PAD)
-#define DOCK_H 92
 #define MAX_APPS 48         /* app windows built so far: every app in the library fits, with room */
 
 cat_robot_t *R;
@@ -816,7 +815,7 @@ static bool dev_handler(const char *line)
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
-        strncmp(line, "docwrite", 8))
+        strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -828,6 +827,7 @@ static bool dev_handler(const char *line)
 static double s_prof[12];
 static const char *const s_prof_name[12] = { "slide", "caches", "dock", "orient", "windows", "perf", "model",
                                              "assist", "island", "pages", "app", "rest" };
+static double s_batt_s; /* of the island's refresh, the part spent inside hal_battery */
 
 /* A document that exercises everything the renderer draws, written onto the card through the very
  * function the assistant's document tool calls. It is the only way to see a chart and a drawing on the
@@ -943,6 +943,20 @@ static void dev_run(void)
     } else if (!strncmp(s_dev_cmd, "ask ", 4)) {
         /* a typed question to the companion, as its keyboard would send it */
         voice_ask(s_dev_cmd + 4);
+    } else if (!strncmp(s_dev_cmd, "carry", 5)) {
+        /* "carry 0": a card or a hint over a scrolling list makes the whole list redraw again, as it did
+         * before. "carry 1": it is carried with the list. Both costs, on one build, on one screen. */
+        bool on = s_dev_cmd[5] != ' ' || s_dev_cmd[6] != '0';
+        bz_ui_scroll_carry(on);
+        printf("carry: %s\n", on ? "on" : "off");
+    } else if (!strncmp(s_dev_cmd, "assist fake", 11)) {
+        /* "assist fake N": N turns of the sample document into the transcript, no model and no network.
+         * Scrolling a long answer is the app's dearest frame, and measuring it twice the same way needs
+         * the same answer twice — so it starts a new conversation, exactly as the "new" button does. */
+        int n = s_dev_cmd[11] == ' ' ? atoi(s_dev_cmd + 12) : 2;
+        assist_reset();
+        for (int i = 0; i < (n > 0 ? n : 2); i++) assist_fake("what does this tablet draw?", DOC_SAMPLE);
+        ui_app_open(&APP_ASSIST, NULL);
     } else if (!strncmp(s_dev_cmd, "docwrite", 8)) {
         /* the assistant's own document tool, driven from the cable: writes the sample onto the card */
         const char *nm = s_dev_cmd[8] == ' ' ? s_dev_cmd + 9 : "render sample";
@@ -1015,6 +1029,8 @@ static void dev_run(void)
             printf("  shell %s %.0f ms\n", s_prof_name[i], s_prof[i] * 1000);
             s_prof[i] = 0;
         }
+        printf("  shell batt %.0f ms (of island)\n", s_batt_s * 1000);
+        s_batt_s = 0;
         int gp[4];
         hal_frame_gaps(gp);
         double lp[4];
@@ -1136,7 +1152,10 @@ static void status_refresh(void)
     if (strcmp(lv_label_get_text(U.st_link), li)) lv_label_set_text(U.st_link, li);
     bz_set_color(U.st_link, t.up || n.up ? BZ_C_INK : BZ_C_DIM);
     hal_battery_t b;
-    if (hal_battery(&b) && b.ok) {
+    double t_batt_ = bz_ui_clock();
+    bool batt_ok_ = hal_battery(&b);
+    s_batt_s += bz_ui_clock() - t_batt_;
+    if (batt_ok_ && b.ok) {
         const char *bi = b.charging ? BZ_I_BATTERY_CHARGING_FULL : b.percent > 70 ? BZ_I_BATTERY_FULL
                          : b.percent > 40 ? BZ_I_BATTERY_5_BAR : b.percent > 15 ? BZ_I_BATTERY_3_BAR : BZ_I_BATTERY_ALERT;
         if (strcmp(lv_label_get_text(U.st_batt_icon), bi)) lv_label_set_text(U.st_batt_icon, bi);
@@ -2010,6 +2029,22 @@ static void shell_frame(double now, double dt, void *user)
 {
     (void)user;
     g_now = now;
+    /* Once, on the interface's very first frame: make LVGL redraw all of its content.
+     *
+     * main() already damages the compositor when the boot animation hands over, but that only says
+     * "re-composite" -- it does not make LVGL re-render, so wherever the interface draws nothing the
+     * content buffer still holds whatever the boot card painted. In landscape the two cover the same
+     * rectangle and nobody ever saw it. In phone mode the frame is 720x1280 and the boot card painted
+     * 1280x720, so the leftovers sit in plain view: a second clock offset behind the real one and a
+     * strip of the landscape dock down the side. It looked like the portrait layout was broken; the
+     * portrait layout was correct all along and was being drawn over stale pixels.
+     *
+     * Here rather than in main() because this runs on the task that owns LVGL. One frame, once. */
+    static bool cleared;
+    if (!cleared) {
+        cleared = true;
+        lv_obj_invalidate(lv_screen_active());
+    }
     double p_ = bz_ui_clock();
     dev_run();
 #if BZ_LEAN

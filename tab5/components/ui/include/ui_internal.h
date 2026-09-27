@@ -11,8 +11,13 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#define W HAL_W
-#define H HAL_H
+/* The frame every screen is laid out in. 1280x720 normally; 720x1280 in phone mode, which the owner turns
+ * on in the control center and which takes effect on the next start (ui_phone_set). It never changes while
+ * the firmware runs, so a layout may read it as a constant — but not in a constant expression. */
+#define W hal_frame_w
+#define H hal_frame_h
+/* Portrait: for the screens that lay themselves out differently rather than just narrower. */
+#define PORTRAIT (H > W)
 #define PAD BZ_PAD_PAGE
 /* The frame, top to bottom: the status band (page title and context on the left; link, battery and clock on
  * the right, then the island's orb in the corner), the body, and the dock. */
@@ -29,6 +34,7 @@
 #define STATUS_W 240       /* the status cluster, at its widest */
 #define BODY_Y 88          /* page bodies start under the band */
 #define DOCK_BOTTOM 14     /* the dock's gap to the bottom edge */
+#define DOCK_H 92          /* the dock's height: anything placing itself clear of it needs this */
 #define DOCK_CLEAR 118     /* the dock's top edge from the bottom, and a gap: 14 + 92 + 12 */
 #define BODY_BOTTOM (H - DOCK_CLEAR) /* 602: where a page's tiles end */
 
@@ -76,6 +82,12 @@ bool ui_locked(void);
 bool ui_overlay_up(void);  /* the lock screen or the control center covers the pages */
 bool ui_asleep(void);
 void ui_set_flip(bool flip); /* turns the picture 180° and redraws everything */
+/* Phone mode: the whole interface laid out in the panel's own portrait frame (720x1280) instead of
+ * landscape. It is the owner's choice of FRAME; auto-rotate is which way up that frame is held, and the two
+ * are independent — phone mode never reads or writes S.auto_rotate. Because every screen is built once at
+ * start-up from W and H, the choice takes effect on the next start: ui_phone_set() saves it, says so, and
+ * restarts the tablet. hal_phone() is what this start was built as. */
+void ui_phone_set(bool on);
 void ui_set_accent(int accent); /* the accent everywhere (one full redraw), saved */
 void ui_apply_addresses(void);
 
@@ -179,11 +191,55 @@ void ui_photos_slideshow(lv_obj_t *from);
  * the settings (the clock app also calls it, for a shell that doesn't). */
 void ui_os_boot(void);
 
-/* The control center: pulled down from the top edge. */
+/* ---- the control center: pulled down from the top edge ----
+ *
+ * Its contents are a registry. A control says what it is called, its icon, how much of the sheet's grid it
+ * takes and what it does; the control center lays out whatever is registered and knows nothing about any
+ * particular one. Adding a control is a static ui_cc_control_t and one ui_cc_add() call, from any file.
+ *
+ * The grid is eight columns across the landscape frame and four across phone mode's, so the same controls
+ * reflow rather than needing a second layout. Controls are placed in the order registered, each in the
+ * first free cell it fits; a row is as tall as the tallest control that occupies exactly one of it; and
+ * whatever the rows leave over goes to the one control marked `grow` (the notifications).
+ *
+ * ui_cc_add() may be called any time before ui_cc_init(); a control added then sits with the toggles,
+ * after the system's own and before sleep, power and the notifications. */
+typedef enum {
+    UI_CC_TOGGLE, /* a round glass tile that lights when on() says so; tap() does it */
+    UI_CC_LEVEL,  /* a Bezel level, get() and set() its value */
+    UI_CC_PANEL,  /* a glass module build() fills */
+    UI_CC_TILE,   /* the same on a solid tonal surface, for content rather than a control */
+} ui_cc_kind_t;
+
+typedef struct {
+    const char *name;     /* under a toggle's icon, and what the dev console calls it: one short word */
+    const char *icon;
+    ui_cc_kind_t kind;
+    int cols, rows;       /* grid cells; cols is clamped to the sheet's width */
+    int h;                /* a one-row control's own height, centred in its row; 0: the row's */
+    bool grow;            /* takes the height the rows left over (one control only) */
+    bool (*avail)(void);  /* NULL, or false to leave it out of this build's sheet entirely */
+    bool (*on)(void);                         /* TOGGLE */
+    void (*tap)(void);                        /* TOGGLE */
+    float (*get)(void);                       /* LEVEL */
+    void (*set)(float v, bool final);         /* LEVEL */
+    void (*build)(lv_obj_t *m, int w, int h); /* PANEL, TILE: once */
+    void (*refresh)(lv_obj_t *m);             /* PANEL, TILE: at 10 Hz while the sheet is open */
+} ui_cc_control_t;
+
+void ui_cc_add(const ui_cc_control_t *c); /* the struct must outlive the call: a static one */
+/* Controls that belong to another file, asked for their registration as the sheet is built. */
+void ui_light_cc_add(void);     /* ui_apps_util.c: the flashlight */
+void ui_home_mode_cc_add(void); /* ui_home_mode.c: home mode */
+
 void ui_cc_init(void);
 /* The assistant's orb, over every screen (ui_app_assist.c). */
 void ui_orb_init(void);
 void ui_cc_open(void);
+void ui_cc_close(void);         /* put it away (a control that opens an app) */
+/* Put it away and then do this, once the sheet is gone: a control that opens an app or a surface, which
+ * wants the screen to itself rather than a second sheet sliding over the first. */
+void ui_cc_after_close(void (*fn)(void));
 bool ui_cc_is_open(void);       /* the control center, as if pulled down */
 void ui_orb_show(bool show); /* the orb floats over the pages; an open app takes its corner */
 /* Starts the state recorder, so the states app has a timeline from boot (ui_apps_sc.c). */
