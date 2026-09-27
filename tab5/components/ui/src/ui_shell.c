@@ -1406,16 +1406,66 @@ static void win_layout(void)
 
 /* ---- motion caches ---- */
 
+/* The chrome — the dock, the assistant's orb, the island — out of an offscreen render, and back after.
+ *
+ * Every offscreen render of a page has to do this, because on the tablet the glass IS the content
+ * display's top layer (bz_ui_glass), and LVGL draws the top layer into whatever it renders. A page
+ * picture taken without hiding it has a dock and an orb baked into it, and then the slide puts that
+ * picture up as a layer and moves it: the baked pair slide away with the page while the real pair stay
+ * where they belong, which is two docks and two AI buttons on screen for the length of the swipe.
+ *
+ * Piece by piece, not the top layer itself: the top layer has no parent, and LVGL's flag setters
+ * dereference the parent to mark its layout dirty. The bitmask puts back exactly what was visible, so a
+ * piece that was already hidden — the orb inside an app — stays hidden. */
+static uint32_t chrome_hide(void)
+{
+    lv_obj_t *top = bz_ui_glass();
+    uint32_t nc = lv_obj_get_child_count(top), shown = 0;
+    for (uint32_t k = 0; k < nc && k < 32; k++) {
+        lv_obj_t *c = lv_obj_get_child(top, (int32_t)k);
+        if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+        shown |= 1u << k;
+        lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
+    }
+    return shown;
+}
+
+/* Hide it again, keeping the record of what was visible that chrome_hide already took.
+ *
+ * A picture is rendered a band a frame, and the run stays open across those frames -- but the frame
+ * hooks keep running, and they own the chrome's visibility: orb_frame puts the orb back the moment it
+ * finds it hidden, and the dock is managed the same way. So only the first band came out clean and
+ * every later one had the chrome drawn into it, which is why it was the dock and the orb -- they live
+ * at the bottom of the page, in the last band of all. Re-applied before each band. */
+static void chrome_rehide(void)
+{
+    lv_obj_t *top = bz_ui_glass();
+    uint32_t nc = lv_obj_get_child_count(top);
+    for (uint32_t k = 0; k < nc && k < 32; k++)
+        lv_obj_add_flag(lv_obj_get_child(top, (int32_t)k), LV_OBJ_FLAG_HIDDEN);
+}
+
+static void chrome_restore(uint32_t shown)
+{
+    lv_obj_t *top = bz_ui_glass();
+    uint32_t nc = lv_obj_get_child_count(top);
+    for (uint32_t k = 0; k < nc && k < 32; k++)
+        if (shown & (1u << k)) lv_obj_remove_flag(lv_obj_get_child(top, (int32_t)k), LV_OBJ_FLAG_HIDDEN);
+}
+
 static void prep_page(bool before, void *u)
 {
     static int x;
     static bool win_hidden;
+    static uint32_t shown;
     if (before) {
         x = lv_obj_get_x(U.track);
         win_hidden = lv_obj_has_flag(U.win, LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_x(U.track, -(int)(intptr_t)u * W);
         lv_obj_add_flag(U.win, LV_OBJ_FLAG_HIDDEN);
+        shown = chrome_hide();
     } else {
+        chrome_restore(shown);
         lv_obj_set_x(U.track, x);
         if (!win_hidden) lv_obj_remove_flag(U.win, LV_OBJ_FLAG_HIDDEN);
     }
@@ -1427,28 +1477,17 @@ static void slide_prep(bool before, void *u)
     int i = (int)(intptr_t)u;
     static int x;
     static uint32_t shown; /* which of the chrome's pieces were visible, to put back exactly those */
-    /* the chrome is hidden piece by piece: the top layer itself has no parent, and LVGL's flag setters
-     * dereference the parent to mark its layout dirty */
-    lv_obj_t *top = bz_ui_glass();
-    uint32_t nc = lv_obj_get_child_count(top);
     if (before) {
         x = lv_obj_get_x(U.track);
         lv_obj_remove_flag(U.pages[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(U.pages[U.page], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_x(U.track, -i * W);
-        shown = 0;
-        for (uint32_t k = 0; k < nc && k < 32; k++) {
-            lv_obj_t *c = lv_obj_get_child(top, (int32_t)k);
-            if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
-            shown |= 1u << k;
-            lv_obj_add_flag(c, LV_OBJ_FLAG_HIDDEN);
-        }
+        shown = chrome_hide();
     } else {
+        chrome_restore(shown);
         lv_obj_set_x(U.track, x);
         lv_obj_add_flag(U.pages[i], LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(U.pages[U.page], LV_OBJ_FLAG_HIDDEN);
-        for (uint32_t k = 0; k < nc && k < 32; k++)
-            if (shown & (1u << k)) lv_obj_remove_flag(lv_obj_get_child(top, (int32_t)k), LV_OBJ_FLAG_HIDDEN);
     }
 }
 
@@ -1478,6 +1517,7 @@ static void slide_band(int page, int band)
     }
     double t1 = bz_ui_clock();
     lv_area_t a = { 0, band * H / SL_BANDS, W - 1, (band + 1) * H / SL_BANDS - 1 };
+    chrome_rehide(); /* the frame hooks put it back between bands: see chrome_rehide */
     bz_ui_offscreen_band(nb + (size_t)a.y1 * W, W, &a);
     double t2 = bz_ui_clock();
     bz_ui_slide_nb_patch(&a); /* into the panel's orientation, a band at a time (the Tab5's slide) */
@@ -1563,6 +1603,7 @@ static bool caches_ready(void)
 static void render_band(int i, int b)
 {
     lv_area_t a = { 0, b * H / CACHE_BANDS, W - 1, (b + 1) * H / CACHE_BANDS - 1 };
+    chrome_rehide(); /* between bands the frame hooks put it back: see chrome_rehide */
     bz_ui_render_offscreen(strip_page(i) + (size_t)a.y1 * MC.stride, MC.stride, &a, prep_page, (void *)(intptr_t)i);
 }
 
@@ -1579,6 +1620,39 @@ static void render_page(int i)
 static void grab_page(int i)
 {
     bz_ui_copy(strip_page(i), MC.stride, bz_ui_content_buf(), W, W, H);
+    /* The copy came from the content buffer, and the chrome is drawn into that buffer -- on the tablet
+     * the glass is this display's top layer. Left in the picture it slides away with the page while the
+     * real dock and orb stay where they belong, which is two docks and two AI buttons for the length of
+     * a swipe. So the rectangles they cover are drawn again with the chrome hidden: roughly 70k pixels,
+     * against the 920k that re-rendering the whole page instead of copying it would cost.
+     *
+     * Gathered before the render begins, because the prepare hook is what hides them. */
+    lv_area_t rect[8];
+    int nr = 0;
+    lv_obj_t *top = bz_ui_glass();
+    uint32_t nc = lv_obj_get_child_count(top);
+    for (uint32_t k = 0; k < nc && nr < 8; k++) {
+        lv_obj_t *c = lv_obj_get_child(top, (int32_t)k);
+        if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+        lv_area_t a;
+        lv_obj_get_coords(c, &a);
+        /* Room for whatever a piece draws outside itself -- the glass pieces carry a shadow. The exact
+         * figure is lv_obj_get_ext_draw_size, which lives in a private LVGL header this file does not
+         * pull in; a fixed margin is plenty here, since these rectangles only have to be large enough
+         * and they are clipped to the screen below. */
+        lv_area_increase(&a, 24, 24);
+        if (a.x1 < 0) a.x1 = 0;
+        if (a.y1 < 0) a.y1 = 0;
+        if (a.x2 > W - 1) a.x2 = W - 1;
+        if (a.y2 > H - 1) a.y2 = H - 1;
+        if (a.x1 <= a.x2 && a.y1 <= a.y2) rect[nr++] = a;
+    }
+    if (nr) {
+        bz_ui_offscreen_begin(prep_page, (void *)(intptr_t)i);
+        for (int r = 0; r < nr; r++)
+            bz_ui_offscreen_band(strip_page(i) + (size_t)rect[r].y1 * MC.stride + rect[r].x1, MC.stride, &rect[r]);
+        bz_ui_offscreen_end();
+    }
     MC.ok[i] = true;
     MC.t[i] = g_now;
 }
