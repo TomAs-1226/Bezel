@@ -1,0 +1,294 @@
+/* Glass surfaces baked into images. See bz_frost.h for why the tablet needs them. */
+#include "bz_frost.h"
+
+#include "bz_theme.h"
+#include "bz_tokens.h"
+
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#define BIG_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
+#define BIG_FREE(p) heap_caps_free(p)
+#else
+#define BIG_ALLOC(n) malloc(n)
+#define BIG_FREE(p) free(p)
+#endif
+
+/* ------------------------------------------------------------------ grain */
+
+#define GRAIN_N 64
+static int8_t GRAIN[GRAIN_N * GRAIN_N];
+static bool grain_ready;
+
+static float grain_hash(int x, int y)
+{
+    uint32_t h = (uint32_t)(x & (GRAIN_N - 1)) * 374761393u + (uint32_t)(y & (GRAIN_N - 1)) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return (float)(h ^ (h >> 16)) / 4294967296.0f;
+}
+
+/* one octave, sampled every `step` px and smoothed, wrapping at GRAIN_N whatever the step */
+static float grain_octave(int x, int y, int step)
+{
+    int x0 = x / step, y0 = y / step, w = GRAIN_N / step;
+    float fx = (float)(x - x0 * step) / step, fy = (float)(y - y0 * step) / step;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    float a = grain_hash(x0 % w, y0 % w), b = grain_hash((x0 + 1) % w, y0 % w);
+    float c = grain_hash(x0 % w, (y0 + 1) % w), d = grain_hash((x0 + 1) % w, (y0 + 1) % w);
+    float top = a + (b - a) * fx, bot = c + (d - c) * fx;
+    return top + (bot - top) * fy;
+}
+
+static void grain_init(void)
+{
+    if (grain_ready) return;
+    grain_ready = true;
+    for (int y = 0; y < GRAIN_N; y++)
+        for (int x = 0; x < GRAIN_N; x++) {
+            float v = grain_octave(x, y, 4) * 0.62f + grain_octave(x, y, 2) * 0.38f;
+            int s = (int)lrintf((v - 0.5f) * 2 * 127);
+            GRAIN[y * GRAIN_N + x] = (int8_t)(s < -127 ? -127 : s > 127 ? 127 : s);
+        }
+}
+
+int8_t bz_grain_at(int x, int y)
+{
+    grain_init();
+    return GRAIN[((y & (GRAIN_N - 1)) << 6) | (x & (GRAIN_N - 1))];
+}
+
+/* ------------------------------------------------------------------ baking */
+
+/* Enough for the chrome that is on screen at once -- the dock, the orb, the island, a few cards -- with
+ * room for both a light and a dark palette's worth before anything is evicted. */
+#define FROST_MAX 12
+
+typedef struct {
+    bool used;
+    int w, h, radius, opa;
+    uint32_t base;
+    uint32_t age; /* when it was last handed out, for eviction */
+    lv_image_dsc_t dsc;
+    uint8_t *px;      /* one allocation: the RGB565 pixels, then the A8 plane after them */
+    uint16_t *rgb;
+    uint8_t *alpha;
+} frost_t;
+
+static frost_t F[FROST_MAX];
+static uint32_t frost_clock;
+
+/* Signed distance to a rounded rectangle, negative inside. The compositor's sd_rrect, in the piece's own
+ * coordinates rather than the screen's. */
+static float sd_rrect(float px, float py, float w, float h, float r)
+{
+    float hw = w * 0.5f - r, hh = h * 0.5f - r;
+    float qx = fabsf(px - w * 0.5f) - hw, qy = fabsf(py - h * 0.5f) - hh;
+    float mx = qx > 0 ? qx : 0, my = qy > 0 ? qy : 0;
+    float outside = sqrtf(mx * mx + my * my);
+    float inside = (qx > qy ? qx : qy);
+    return (outside > 0 ? outside : (inside < 0 ? inside : 0)) - r;
+}
+
+/* The same bevel profile the compositor uses, (1 - (1 - x)^4)^(1/4), so a piece baked here and the same
+ * piece rendered there are the same shape of light and the design does not fork. */
+static float profile(float x)
+{
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    float om = 1 - x, om4 = om * om * om * om;
+    return powf(1 - om4, 0.25f);
+}
+
+static void bake(frost_t *f)
+{
+    const int w = f->w, h = f->h;
+    const float r = (float)f->radius;
+    /* the bevel's width, as band_of() in the compositor: wide enough to read, capped so a big panel does
+     * not become all edge */
+    float bw = 0.9f * r;
+    if (bw < 11) bw = 11;
+    if (bw > 40) bw = 40;
+
+    const int br = bz_r(f->base), bg = bz_g(f->base), bb = bz_b(f->base);
+    const uint32_t rimc = bz_pal->rim; /* the same rim light the compositor uses */
+    const int rr = bz_r(rimc), rg = bz_g(rimc), rb = bz_b(rimc);
+
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            float d = sd_rrect(x + 0.5f, y + 0.5f, (float)w, (float)h, r);
+            /* coverage: one pixel of antialiasing across the boundary, which the flat fill never had */
+            float cov = 0.5f - d;
+            cov = cov < 0 ? 0 : cov > 1 ? 1 : cov;
+            if (cov <= 0) {
+                f->rgb[(size_t)y * w + x] = 0;
+                f->alpha[(size_t)y * w + x] = 0;
+                continue;
+            }
+            float depth = d < 0 ? -d : 0;
+            float t = depth / bw;
+            float prof = profile(t > 1 ? 1 : t);
+
+            /* Which way this part of the edge faces, from the gradient of the distance field. Only the
+             * vertical part is used: the light is above, as it is everywhere else in Bezel, so the top
+             * edge catches it and the bottom edge falls away. */
+            float e = 0.75f;
+            float gy = sd_rrect(x + 0.5f, y + 0.5f + e, (float)w, (float)h, r) -
+                       sd_rrect(x + 0.5f, y + 0.5f - e, (float)w, (float)h, r);
+            float gx = sd_rrect(x + 0.5f + e, y + 0.5f, (float)w, (float)h, r) -
+                       sd_rrect(x + 0.5f - e, y + 0.5f, (float)w, (float)h, r);
+            float gl = sqrtf(gx * gx + gy * gy);
+            float ny = gl > 1e-6f ? gy / gl : 0;
+
+            /* a hairline rim right at the boundary, and a soft inner band behind it */
+            float rt = (depth - 0.35f) / (1.5f - 0.35f);
+            rt = rt < 0 ? 0 : rt > 1 ? 1 : rt;
+            float rim = 1 - rt * rt * (3 - 2 * rt);
+            float band = 1 - (t > 1 ? 1 : t);
+            band *= band; /* tighter to the edge than the rim's falloff, so the two read apart */
+
+            /* Up-facing edges bright, down-facing edges dark: -ny is +1 at the top, -1 at the bottom.
+             *
+             * The band's share is small and its downward share smaller still. It reaches a bevel-width
+             * into the piece, which on a 92-tall dock is most of the lower half, so anything but a whisper
+             * there stops reading as an edge and starts reading as a gradient across the whole panel --
+             * which is what it did at 0.22. */
+            float face = -ny;
+            /* 0.26 on the rim, because at full strength it came out as a hard white hairline -- 246 on a
+             * surface of 32. A rim light is a hint of where the edge is, not a stroke around it. */
+            float lit = 0.26f * rim * (0.55f + 0.45f * face) + band * 0.07f * (face > 0 ? face : face * 0.35f);
+
+            /* No grain in a baked panel, whatever BZ_GLASS_GRAIN says -- that token is the compositor's.
+             *
+             * Two things went wrong with it here and both are about scale. The shared field tiles every
+             * 64 px, which the compositor never notices because it modulates a bevel a few pixels wide,
+             * but a baked dock is 660 across: the same motif repeats ten times and reads as a printed
+             * pattern rather than a surface. And these panels are a dark blue-grey, 32/36/41 measured off
+             * the glass, so the amplitude that is visible at all is a large fraction of the colour, and
+             * adding it equally to three channels walks the surface toward neutral -- an olive cast over
+             * the whole dock. Detiling would want a field as big as the largest piece, which is a lot of
+             * PSRAM for something nearly invisible at this brightness.
+             *
+             * What makes this read as glass is the bevel and the antialiased edge, which a flat fill has
+             * neither of. The grain was not paying for itself. Anything that does get added below is a
+             * multiplier on the surface, never levels added to it, so it cannot shift the hue at all. */
+            float k = 1.0f;
+            /* the interior lifts very slightly toward the top, the way a thick sheet does */
+            k += 0.10f * (1 - (float)y / h) * prof;
+
+            int cr = (int)lrintf(br * k), cg = (int)lrintf(bg * k), cb = (int)lrintf(bb * k);
+            /* The rim is the one term allowed to change the colour, because that is what it is: light
+             * off the edge, in the palette's rim colour rather than in the surface's. */
+            int l = (int)lrintf(lit * 255);
+            if (l > 0) {
+                cr += (rr * l) >> 8;
+                cg += (rg * l) >> 8;
+                cb += (rb * l) >> 8;
+            } else if (l < 0) {
+                cr += (cr * l) >> 8;
+                cg += (cg * l) >> 8;
+                cb += (cb * l) >> 8;
+            }
+            cr = cr < 0 ? 0 : cr > 255 ? 255 : cr;
+            cg = cg < 0 ? 0 : cg > 255 ? 255 : cg;
+            cb = cb < 0 ? 0 : cb > 255 ? 255 : cb;
+
+            /* Quantized here, with a dither, rather than handing LVGL ARGB8888 and letting it round.
+             *
+             * The panel is RGB565: five bits of red, six of green, five of blue. A gentle brightness
+             * ramp across a dark surface therefore crosses a step in green while red and blue do not
+             * move at all, and the ramp arrives on the glass as a green cast -- measured, the interior
+             * went from r5=4 g6=9 b5=5 to r5=4 g6=11 b5=5, which is the whole of the olive tint. Nothing
+             * about the colour maths was wrong; the rounding was. A 4x4 ordered dither spreads each
+             * channel's error over neighbouring pixels so the ramp survives, and since the output is
+             * RGB565A8 rather than ARGB8888 it also costs three bytes a pixel instead of four. */
+            static const uint8_t BAYER[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+            int bay = BAYER[((y & 3) << 2) | (x & 3)];
+            int r5 = (cr * 31 * 16 + bay * 255) / (255 * 16);
+            int g6 = (cg * 63 * 16 + bay * 255) / (255 * 16);
+            int b5 = (cb * 31 * 16 + bay * 255) / (255 * 16);
+            r5 = r5 < 0 ? 0 : r5 > 31 ? 31 : r5;
+            g6 = g6 < 0 ? 0 : g6 > 63 ? 63 : g6;
+            b5 = b5 < 0 ? 0 : b5 > 31 ? 31 : b5;
+            uint16_t c565 = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+            f->rgb[(size_t)y * w + x] = c565;
+            f->alpha[(size_t)y * w + x] = (uint8_t)((int)lrintf(cov * 255) * f->opa / 255);
+        }
+    }
+}
+
+const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa)
+{
+    if (w <= 0 || h <= 0 || opa <= 0) return NULL;
+    if (radius * 2 > w) radius = w / 2;
+    if (radius * 2 > h) radius = h / 2;
+    if (radius < 0) radius = 0;
+
+    frost_clock++;
+    frost_t *free_slot = NULL, *oldest = NULL;
+    for (int i = 0; i < FROST_MAX; i++) {
+        frost_t *f = &F[i];
+        if (!f->used) {
+            if (!free_slot) free_slot = f;
+            continue;
+        }
+        if (f->w == w && f->h == h && f->radius == radius && f->base == base && f->opa == opa) {
+            f->age = frost_clock;
+            return &f->dsc;
+        }
+        if (!oldest || f->age < oldest->age) oldest = f;
+    }
+
+    frost_t *f = free_slot;
+    if (!f) {
+        /* every slot taken: the one that has gone longest without being asked for goes */
+        f = oldest;
+        BIG_FREE(f->px);
+        memset(f, 0, sizeof *f);
+    }
+    size_t n = (size_t)w * h * 3; /* 2 bytes of RGB565 and 1 of alpha */
+    f->px = BIG_ALLOC(n);
+    if (!f->px) {
+        memset(f, 0, sizeof *f);
+        return NULL; /* the caller keeps its flat fill, which is what it had before */
+    }
+    f->rgb = (uint16_t *)f->px;
+    f->alpha = f->px + (size_t)w * h * 2;
+    f->used = true;
+    f->w = w;
+    f->h = h;
+    f->radius = radius;
+    f->base = base;
+    f->opa = opa;
+    f->age = frost_clock;
+    bake(f);
+
+    f->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+    f->dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;
+    f->dsc.header.w = (uint32_t)w;
+    f->dsc.header.h = (uint32_t)h;
+    f->dsc.header.stride = (uint32_t)w * 2; /* the RGB plane's stride; the A8 plane follows it */
+    f->dsc.data_size = (uint32_t)n;
+    f->dsc.data = f->px;
+    return &f->dsc;
+}
+
+void bz_frost_flush(void)
+{
+    for (int i = 0; i < FROST_MAX; i++) {
+        if (!F[i].used) continue;
+        BIG_FREE(F[i].px);
+        memset(&F[i], 0, sizeof F[i]);
+    }
+}
+
+size_t bz_frost_bytes(void)
+{
+    size_t n = 0;
+    for (int i = 0; i < FROST_MAX; i++)
+        if (F[i].used) n += (size_t)F[i].w * F[i].h * 3;
+    return n;
+}

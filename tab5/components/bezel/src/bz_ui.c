@@ -4,6 +4,7 @@
 #include "esp_log.h"
 #endif
 #include "bz_theme.h"
+#include "bz_frost.h"
 #include "bz_tokens.h"
 #include "lvgl_private.h" /* the pending invalidations and area helpers, for bz_ui_scroll */
 
@@ -659,9 +660,25 @@ static bool update_glass(void)
                 uint32_t c = bz_color(BZ_C_SURFACE2);
                 static const bz_color_role_t TINT[5] = { BZ_C_SIGNAL, BZ_C_AMBER, BZ_C_LEAF, BZ_C_ICE, BZ_C_FAULT };
                 if (tint >= 0 && tint < 5) c = bz_mix(c, bz_color(TINT[tint]), amt / 16.0f);
-                lv_obj_set_style_bg_color(g->obj, bz_lv_rgb(c), 0);
-                lv_obj_set_style_bg_opa(g->obj, (lv_opa_t)opa, 0);
                 lv_obj_set_style_radius(g->obj, (int32_t)g->radius, 0);
+                /* The surface, baked. A flat fill is what this path had, and it is why the dock's edge
+                 * measured as a single step from ground to surface with no bevel and no antialiasing.
+                 * bz_frost draws that piece's bevel, grain and rim once at its own size, and LVGL blits
+                 * it as the background -- the same work per frame as the fill, with the shape of the
+                 * light bought at startup. It is only ever an improvement on what was here: a size it
+                 * cannot allocate for comes back NULL and the flat fill stands. */
+                const lv_image_dsc_t *fr = NULL;
+                int gw = lv_obj_get_width(g->obj), gh = lv_obj_get_height(g->obj);
+                if (opa > 0 && gw > 0 && gh > 0) fr = bz_frost(gw, gh, (int)g->radius, c, opa);
+                if (fr) {
+                    lv_obj_set_style_bg_opa(g->obj, LV_OPA_TRANSP, 0);
+                    lv_obj_set_style_bg_image_src(g->obj, fr, 0);
+                    lv_obj_set_style_bg_image_opa(g->obj, LV_OPA_COVER, 0);
+                } else {
+                    lv_obj_set_style_bg_image_src(g->obj, NULL, 0);
+                    lv_obj_set_style_bg_color(g->obj, bz_lv_rgb(c), 0);
+                    lv_obj_set_style_bg_opa(g->obj, (lv_opa_t)opa, 0);
+                }
             }
             continue;
         }
