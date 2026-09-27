@@ -1636,6 +1636,21 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
     lv_area_t a, c0, c1;
     lv_obj_get_coords(clip, &a);
     lv_obj_get_coords(content, &c0);
+    /* What the move is about to dirty, so it can be put back exactly as it was.
+     *
+     * lv_obj_set_y writes a style property carrying LAYOUT_UPDATE, which marks the content dirty,
+     * marks its parent dirty, and sets scr_layout_inv on the screen. Nothing reads those this frame
+     * -- but the settling pass at the top of the NEXT frame does, and scr_layout_inv sends it through
+     * layout_update_core, which lays out the whole screen tree. So a scroll was re-laying-out every
+     * object on screen once per frame, for a move that changes no layout at all: a container's
+     * children keep their positions relative to it, and lv_obj_refr_pos below carries them along.
+     *
+     * Restored rather than cleared, so that a relayout something else asked for in the same frame
+     * still happens. */
+    lv_obj_t *scr = lv_obj_get_screen(content);
+    uint8_t was_scr = scr->scr_layout_inv, was_c = content->layout_inv;
+    lv_obj_t *par = lv_obj_get_parent(content);
+    uint8_t was_p = par ? par->layout_inv : 0;
     lv_display_enable_invalidation(d, false);
     lv_obj_set_y(content, y);
     /* This object and its children, not the screen.
@@ -1646,6 +1661,9 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
      * which is where all three crash core dumps died. lv_obj_refr_pos does what a scroll asks:
      * apply this object's position and shift its children. */
     lv_obj_refr_pos(content);
+    scr->scr_layout_inv = was_scr;
+    content->layout_inv = was_c;
+    if (par) par->layout_inv = was_p;
     lv_display_enable_invalidation(d, true);
     lv_obj_get_coords(content, &c1);
     int dy = (int)(c1.y1 - c0.y1), h = (int)lv_area_get_height(&a), w = (int)lv_area_get_width(&a);
