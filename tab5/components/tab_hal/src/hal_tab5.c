@@ -541,7 +541,7 @@ static struct {
     SemaphoreHandle_t done;     /* counts finished rotations (given from the PPA's interrupt) */
     SemaphoreHandle_t handover; /* free: the previous frame is on the glass */
     QueueHandle_t jobs;
-    uint32_t overflow, late;
+    uint32_t overflow, late, scroll_over;
 } P;
 
 #ifdef CATALYST_ASYNC_PRESENT
@@ -834,7 +834,14 @@ static uint32_t s_frame, s_buf_frame[3];     /* frames handed over; the frame ea
 
 /* Lists scrolled since the last present (see scroll_apply): their pixels move in the panel's buffers by
  * DMA2D, from the newest picture; LVGL draws only the strip that came into view. */
-#define SCROLL_MAX 4
+/* Scrolled rectangles the platform will move in one frame.
+ *
+ * Four was enough while a scroll was one rectangle each. It is not now: a list that runs under the dock
+ * is shifted as the pieces of itself that miss the chrome, which is up to four on its own, and more than
+ * one scroller can be settling at once. Past the limit the rectangle was dropped without a word, so that
+ * part of the screen simply never moved while the rest did -- which is a smear, and it took a while to
+ * recognise as an overflow rather than a broken copy. */
+#define SCROLL_MAX 16
 static struct {
     bz_area_t a;
     int dy;
@@ -1511,6 +1518,9 @@ static void slide_scroll(const bz_area_t *a, int dy)
             return;
         }
     if (s_nscroll < SCROLL_MAX) s_scroll[s_nscroll++] = (typeof(s_scroll[0])){ *a, dy };
+    else if (!P.scroll_over++)
+        ESP_LOGW(TAG, "scroll: more than %d rectangles in a frame; one will not move and will smear",
+                 SCROLL_MAX);
 }
 
 /* Each scrolled rect: the rows that stay in view, from the glass, dy rows further on. In the portrait
