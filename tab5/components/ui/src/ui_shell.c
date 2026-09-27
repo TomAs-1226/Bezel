@@ -833,7 +833,7 @@ static int s_bandn;
 
 static bool dev_handler(const char *line)
 {
-    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) &&
+    if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) && strncmp(line, "phone", 5) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
         strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5))
@@ -1029,6 +1029,17 @@ static void dev_run(void)
     } else if (!strcmp(s_dev_cmd, "home")) {
         if (ui_home_mode_active()) ui_home_mode_exit();
         else ui_home_mode_enter();
+    } else if (!strncmp(s_dev_cmd, "phone", 5)) {
+        /* "phone", "phone 1", "phone 0": which frame the interface is laid out in, from the cable.
+         *
+         * It exists because driving the control centre by synthetic swipes to reach this toggle has
+         * now twice produced a test that quietly did nothing -- the tap missed, the mode never
+         * changed, and two hundred seconds of swipes went to coordinates off the bottom of a
+         * landscape screen while reporting "no crash". A switch that cannot be set reliably cannot
+         * be tested reliably. */
+        bool want = s_dev_cmd[5] == ' ' ? s_dev_cmd[6] != '0' : !hal_phone();
+        printf("phone: %s -> %s\n", hal_phone() ? "on" : "off", want ? "on" : "off");
+        ui_phone_set(want);
     } else if (!strcmp(s_dev_cmd, "redraw")) {
         /* the whole screen drawn again: a panel shot before and after shows what a present left stale */
         lv_obj_invalidate(lv_screen_active());
