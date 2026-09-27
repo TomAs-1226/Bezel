@@ -1586,7 +1586,7 @@ static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *n
                     if (s_trace_inv > 0)
                         ESP_LOGW("bz_ui", "scroll carried sibling %u of %u: %d,%d-%d,%d", (unsigned)i, (unsigned)n,
                                  (int)cc.x1, (int)cc.y1, (int)cc.x2, (int)cc.y2);
-                    lv_area_intersect(&obs[(*nobs)++], &cc, a);
+                    obs[(*nobs)++] = cc; /* whole: only the copy it leaves behind belongs to the list */
                     continue;
                 }
 #endif
@@ -1612,7 +1612,7 @@ static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *n
         }
         int32_t ext = lv_obj_get_ext_draw_size(c);
         lv_area_increase(&cc, ext, ext);
-        lv_area_intersect(&obs[(*nobs)++], &cc, a);
+        obs[(*nobs)++] = cc; /* whole: only the copy it leaves behind belongs to the list */
 #else
         return false;
 #endif
@@ -1704,10 +1704,21 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
             for (int r = a.y2; r >= a.y1 + dy; r--) memcpy(px + r * W, px + (r - dy) * W, row);
         damage_content(&b);
     }
-    /* chrome over the list moved with it: drawn again where it was and where its copy landed */
+    /* Chrome over the list moved with it: drawn again where it is, and where its copy landed.
+     *
+     * Where it IS means the whole of it, not the part inside the list. The dock is 92 tall and the
+     * list's clip stops 28 rows into it, so clipping first left the dock redrawing that top band
+     * every frame and keeping stale glass below it -- a seam straight across the dock that reads as
+     * a second dock bar, and a dock whose surroundings only caught up once the scroll stopped. Its
+     * glass blurs what is behind it, and a blurred pixel below the clip still samples rows above it,
+     * so the whole piece has to be redrawn or none of it is right.
+     *
+     * The COPY is the other way round: only the part inside the list was shifted, so only that part
+     * left a ghost, and only it needs erasing. */
     for (int i = 0; i < nobs; i++) {
         lv_area_t m = obs[i];
         lv_inv_area(d, &m);
+        if (!lv_area_intersect(&m, &obs[i], &a)) continue;
         m.y1 += dy;
         m.y2 += dy;
         if (lv_area_intersect(&m, &m, &a)) lv_inv_area(d, &m);

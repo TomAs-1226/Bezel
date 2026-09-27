@@ -6,7 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define BODY_H (H - BODY_Y - DOCK_CLEAR + 40) /* bodies may run under the dock's glass */
+/* Bodies stop just short of the dock rather than running 28 rows under its glass.
+ *
+ * That overlap was never worth what it cost. The dock is 92 tall and only those 28 rows ever had
+ * anything behind them, so seven eighths of its glass was already blurring a static background --
+ * but the overlap put the dock inside the scrolled rectangle, which means every frame of every
+ * scroll either re-blurs the whole dock (6 ms, most frames down to 30 fps) or re-blurs part of it
+ * and leaves a seam across the rest. Ending above it buys back both. */
+#define BODY_H (H - BODY_Y - DOCK_CLEAR + 11)
 
 static void open_app_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
 
