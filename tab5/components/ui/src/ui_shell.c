@@ -2029,21 +2029,30 @@ static void shell_frame(double now, double dt, void *user)
 {
     (void)user;
     g_now = now;
-    /* Once, on the interface's very first frame: make LVGL redraw all of its content.
+    /* The first frames of the interface repaint everything, content and composite together.
      *
-     * main() already damages the compositor when the boot animation hands over, but that only says
-     * "re-composite" -- it does not make LVGL re-render, so wherever the interface draws nothing the
-     * content buffer still holds whatever the boot card painted. In landscape the two cover the same
-     * rectangle and nobody ever saw it. In phone mode the frame is 720x1280 and the boot card painted
-     * 1280x720, so the leftovers sit in plain view: a second clock offset behind the real one and a
-     * strip of the landscape dock down the side. It looked like the portrait layout was broken; the
-     * portrait layout was correct all along and was being drawn over stale pixels.
+     * The boot card owns the screen until it hands over, and what it painted stays in the buffers
+     * until something paints over it. main() damages the compositor at the handover, but that only
+     * says "compose again" -- it does not make LVGL re-render, and it happens before the interface
+     * has drawn anything, so the compositor faithfully composes the card's content one more time and
+     * the re-render that follows has nothing marked dirty left to show. Wherever the interface does
+     * not happen to paint, the card's pixels survive: in landscape the status bar appears at the
+     * bottom with a strip of displaced cards down the side, in phone mode a second clock behind the
+     * real one. It is every start, not only a change of frame shape -- the shape change only made it
+     * impossible to miss.
      *
-     * Here rather than in main() because this runs on the task that owns LVGL. One frame, once. */
-    static bool cleared;
-    if (!cleared) {
-        cleared = true;
+     * Both halves are needed and in this order: invalidate LVGL's content, then tell the compositor
+     * the result is new. Repeated for a few frames because the first one after the interface is
+     * released can still land while the card's last present is in flight. Three full repaints at
+     * start-up cost nothing anyone can see, and the alternative is a screen that looks broken until
+     * something happens to touch every pixel.
+     *
+     * Here rather than in main() because this runs on the task that owns LVGL. */
+    static int settle = 3;
+    if (settle > 0) {
+        settle--;
         lv_obj_invalidate(lv_screen_active());
+        bz_comp_damage_all(bz_ui_comp());
     }
     double p_ = bz_ui_clock();
     dev_run();
