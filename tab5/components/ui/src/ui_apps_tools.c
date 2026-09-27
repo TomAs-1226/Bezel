@@ -1075,7 +1075,7 @@ const ui_app_t APP_LOGS = { .name = "logs", .icon = BZ_I_RECEIPT_LONG, .build = 
 /* ================================================================== settings */
 
 static struct {
-    lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *calm_chip, *flip_chip, *perf_chip, *about, *wifi_list,
+    lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *calm_chip, *flip_chip, *phone_chip, *perf_chip, *about, *wifi_list,
         *wifi_state, *usb_state;
     ui_kb_t *pwkb;                 /* the Wi-Fi password: the shell's one keyboard */
     char entry[8];
@@ -1181,6 +1181,17 @@ static void st_calm(lv_obj_t *o, void *u)
     ui_settings_save();
 }
 #endif
+
+/* Phone mode: the frame every screen is laid out in, not which way up it is held. Auto-rotate above is
+ * untouched by it and keeps working inside whichever frame is chosen. It takes a restart, so the chip
+ * shows what the next start will be. */
+static void st_phone(lv_obj_t *o, void *u)
+{
+    (void)u;
+    bool on = !hal_phone();
+    ui_chip_set(o, on);
+    ui_phone_set(on);
+}
 
 static void st_perf(lv_obj_t *o, void *u)
 {
@@ -1313,6 +1324,7 @@ static struct {
     lv_obj_t *nav[SS_COUNT], *pane[SS_COUNT];
     int cur;
     lv_obj_t *lock_chip, *sleep_chips[4], *dim_chips[4], *click_chip, *tz_chips[5], *clock, *sd_state, *batt, *off_btn, *link_state, *assist_state;
+    lv_obj_t *dns_chips[3], *dns_state;
     double off_armed;
     lv_obj_t *swatch[BZ_NACCENTS];
     int wanted;          /* a section asked for by name (ui_settings_show), -1 none */
@@ -1407,6 +1419,43 @@ static void sx_chime(lv_obj_t *o, void *u)
     hal_tone(880, 120, S.volume);
 }
 
+/* The resolver to ask. "automatic" is whatever DHCP handed out, which on a filtered network is the
+ * thing doing the filtering. */
+static const char *const DNS_L[3] = { "automatic", "Google", "Cloudflare" };
+static const char *const DNS_A[3] = { "", "8.8.8.8", "1.1.1.1" };
+static const char *const DNS_B[3] = { "", "8.8.4.4", "1.0.0.1" };
+
+static int dns_current(void)
+{
+    char a[16] = "", b[16] = "";
+    if (!hal_wifi_dns_get(a, sizeof a, b, sizeof b)) return 0;
+    for (int i = 1; i < 3; i++) if (!strcmp(a, DNS_A[i])) return i;
+    return 1; /* set to something we do not offer: show it as chosen rather than as automatic */
+}
+
+static void sx_dns_show(void)
+{
+    int cur = dns_current();
+    for (int i = 0; i < 3; i++) ui_chip_set(SX.dns_chips[i], i == cur);
+    if (!SX.dns_state) return;
+    char a[16] = "", b[16] = "";
+    bool chosen = hal_wifi_dns_get(a, sizeof a, b, sizeof b);
+    /* The filtered flag is the reason anybody comes to this setting, so it is what the line says. */
+    if (hal_net_filtered())
+        ui_text(SX.dns_state, "This network answers for hosts with the wrong certificate: it filters. %s",
+                chosen ? "A different resolver is already set." : "Try Google or Cloudflare.");
+    else if (chosen) ui_text(SX.dns_state, "Asking %s%s%s.", a, b[0] ? " and " : "", b);
+    else ui_text(SX.dns_state, "Asking whatever the network hands out.");
+}
+
+static void sx_dns(lv_obj_t *o, void *u)
+{
+    (void)o;
+    int i = (int)(intptr_t)u;
+    hal_wifi_dns(DNS_A[i], DNS_B[i]);
+    sx_dns_show();
+}
+
 static void sx_tz(lv_obj_t *o, void *u)
 {
     (void)o;
@@ -1494,10 +1543,12 @@ static void settings_open(void)
     ui_chip_set(ST.calm_chip, S.calm);
 #endif
     ui_chip_set(ST.perf_chip, S.perf);
+    ui_chip_set(ST.phone_chip, hal_phone());
     for (int i = 0; i < 4; i++) ui_chip_set(SX.dim_chips[i], S.dim_s == DIM_S[i]);
     for (int i = 0; i < 4; i++) ui_chip_set(SX.sleep_chips[i], S.sleep_s == SLEEP_S[i]);
     ui_chip_set(SX.click_chip, S.clicks);
     for (int i = 0; i < 5; i++) ui_chip_set(SX.tz_chips[i], i == S.tz);
+    sx_dns_show();
     SX.off_armed = 0;
     lv_label_set_text(lv_obj_get_child(SX.off_btn, 1), "turn off");
     ui_assist_settings_open();
@@ -1578,6 +1629,9 @@ static void settings_build(lv_obj_t *b)
 #else
     ST.calm_chip = ui_chip(r, "calm", st_calm, NULL);
 #endif
+    bz_label(t, "the frame the interface is laid out in", BZ_F_LABEL, BZ_C_DIM);
+    r = sx_wrap_row(t, iw);
+    ST.phone_chip = ui_chip(r, "phone mode · portrait", st_phone, NULL);
     bz_label(t, "dim when untouched for", BZ_F_LABEL, BZ_C_DIM);
     r = sx_wrap_row(t, iw);
     for (int i = 0; i < 4; i++) SX.dim_chips[i] = ui_chip(r, DIM_L[i], sx_dim, (void *)(intptr_t)i);
@@ -1669,6 +1723,17 @@ static void settings_build(lv_obj_t *b)
                                  "adapter into the radio, on the USB-A port.",
                               BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(note, iw);
+
+    bz_label(t, "dns", BZ_F_LABEL, BZ_C_DIM);
+    SX.dns_state = bz_label_line(t, "", BZ_F_BODY, BZ_C_INK, iw);
+    r = sx_wrap_row(t, iw);
+    for (int i = 0; i < 3; i++) SX.dns_chips[i] = ui_chip(r, DNS_L[i], sx_dns, (void *)(intptr_t)i);
+    lv_obj_t *dn = bz_label(t, "Which server names are looked up on. A school or venue network often hands out one that "
+                               "answers for some hosts with a block page, which is why the assistant can stop working while "
+                               "Wi-Fi is fine. This changes which resolver is asked; it does nothing about a network that "
+                               "blocks by address instead.",
+                            BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(dn, iw);
 
     /* pc link and the assistant: their own apps hold the detail */
     t = sx_pane(b, SS_LINK, px, pw);
