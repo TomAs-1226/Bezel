@@ -447,6 +447,48 @@ static void tables_init(void)
     }
 }
 
+/* The frost texture: a tileable field of surface roughness, baked once.
+ *
+ * Two octaves of smoothed value noise rather than white noise, because white noise at one pixel reads as
+ * sensor grain and dithering, not as a surface. Smoothing gives it a grain size, and the second octave
+ * keeps it from looking regular. Signed, centred on zero, so it brightens and darkens the bevel equally
+ * and the mean rim brightness is unchanged.
+ *
+ * GRAIN_N is a power of two so the wrap is an AND, and the whole thing is 4 kB -- small enough to stay in
+ * cache while a bevel is drawn, which is what makes it free. */
+#define GRAIN_N 64
+static int8_t GRAIN[GRAIN_N * GRAIN_N];
+
+static float grain_hash(int x, int y)
+{
+    uint32_t h = (uint32_t)(x & (GRAIN_N - 1)) * 374761393u + (uint32_t)(y & (GRAIN_N - 1)) * 668265263u;
+    h = (h ^ (h >> 13)) * 1274126177u;
+    return (float)(h ^ (h >> 16)) / 4294967296.0f;
+}
+
+/* one octave, sampled at 1/step and smoothed, so the field wraps at GRAIN_N whatever the step */
+static float grain_octave(int x, int y, int step)
+{
+    int x0 = x / step, y0 = y / step;
+    float fx = (float)(x - x0 * step) / step, fy = (float)(y - y0 * step) / step;
+    fx = fx * fx * (3 - 2 * fx);
+    fy = fy * fy * (3 - 2 * fy);
+    int w = GRAIN_N / step;
+    float a = grain_hash(x0 % w, y0 % w), b = grain_hash((x0 + 1) % w, y0 % w);
+    float c0 = grain_hash(x0 % w, (y0 + 1) % w), d = grain_hash((x0 + 1) % w, (y0 + 1) % w);
+    return (a + (b - a) * fx) + ((c0 + (d - c0) * fx) - (a + (b - a) * fx)) * fy;
+}
+
+static void grain_init(void)
+{
+    for (int y = 0; y < GRAIN_N; y++)
+        for (int x = 0; x < GRAIN_N; x++) {
+            float v = grain_octave(x, y, 4) * 0.62f + grain_octave(x, y, 2) * 0.38f;
+            int s = (int)lrintf((v - 0.5f) * 2 * 127);
+            GRAIN[y * GRAIN_N + x] = (int8_t)(s < -127 ? -127 : s > 127 ? 127 : s);
+        }
+}
+
 static inline float table(const float *t, float x)
 {
     if (x <= 0) return t[0];
@@ -1001,6 +1043,7 @@ bz_comp_t *bz_comp_create(int w, int h, uint16_t *content, uint32_t *ink, uint16
     if (!c) return NULL;
     tables_init();
     quant_init();
+    grain_init();
     c->w = w;
     c->h = h;
     c->content = content;
@@ -1357,6 +1400,17 @@ static void glass_rows(bz_comp_t *c, void *arg, int y0, int y1, int part)
             int rr = br, gg = bgc, bl = bb;
             if (cov) {
                 int lt = (g->rim[i] * J->lr[g->ang[i]] + g->band[i] * J->lb[g->ang[i]]) >> 8;
+                /* Surface grain, on the bevel only. Scaled by the band so it fades out into the flat
+                 * interior, which never reaches here anyway -- that is the single-span fast path, and
+                 * keeping the texture off it is what makes this cost nothing worth measuring. Indexed in
+                 * the cluster's own coordinates, so the grain belongs to the glass and travels with it
+                 * rather than swimming underneath while it moves. Calm mode draws flat glass and skips
+                 * the whole light term, so it is quiet here too. */
+                if (BZ_GLASS_GRAIN && g->band[i]) {
+                    int lx = x - g->bbox.x1;
+                    int gt = GRAIN[((ly & (GRAIN_N - 1)) << 6) | (lx & (GRAIN_N - 1))];
+                    lt += (gt * g->band[i] * BZ_GLASS_GRAIN) >> 16;
+                }
                 if (J->glow[k]) {
                     float ddx = x + 0.5f - J->px[k], ddy = y + 0.5f - J->py[k];
                     int gi = (int)((ddx * ddx + ddy * ddy) * J->gk);

@@ -66,6 +66,13 @@ enum {
 #define BZ_GLASS_MERGE 22.6f
 #define BZ_GLASS_GLOW_RADIUS 65.0f
 #define BZ_GLASS_PRESS_SCALE 1.06f
+/* Surface grain along the bevel: how much the baked frost texture moves the light term, 0..255.
+ *
+ * Real frosted glass is not optically smooth, and a bevel with a perfectly even rim reads as plastic.
+ * The texture is a tileable field baked once at startup, so this costs one lookup and a multiply on the
+ * edge pixels only -- the flat interior keeps its single-span fast path and pays nothing. Kept low on
+ * purpose: at this size it should be felt rather than seen. */
+#define BZ_GLASS_GRAIN 56
 /* The dock is too big to re-shape every frame of a press on the P4 (its geometry table is ~90k px): it
  * answers a press with the glow alone. Bezel scales it 1.02. */
 #define BZ_GLASS_DOCK_PRESS_SCALE 1.0f
