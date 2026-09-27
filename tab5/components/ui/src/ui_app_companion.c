@@ -526,24 +526,30 @@ static void status_line(double now, char *out, size_t n)
 }
 
 
-static void caption(const char *asked, const char *answer, double now)
+static void caption(const char *asked, const char *answer, const char *show, double now)
 {
     ui_text(CP.asked, "%s", asked);
-    /* An answer meant to be spoken is plain prose, and a label is the cheapest thing that draws it. When
-     * the model reaches for markdown anyway — a list of what it found, a chart of the battery — the same
-     * renderer the assist app uses draws it here (ui_md.c), and the plain label steps aside. */
-    bool rich = ui_md_is_rich(answer);
-    if (rich) {
-        lv_obj_add_flag(CP.answer, LV_OBJ_FLAG_HIDDEN);
+    /* An answer meant to be spoken is plain prose, and a label is the cheapest thing that draws it. Two
+     * things can put markdown on screen instead. The model may fill "show" — a chart, a short list —
+     * which is drawn under the prose and never read aloud, so both appear. Or it may reach for markdown
+     * in the answer itself despite being told not to, and then the renderer draws that and the plain
+     * label steps aside. Either way it is ui_md.c, the same renderer the assist app uses. */
+    bool drawn = show && show[0];
+    bool rich = !drawn && ui_md_is_rich(answer);
+    if (drawn || rich) {
         if (!CP.cap_rich) {
             CP.cap_rich = bz_box(CP.cap_box);
             lv_obj_set_width(CP.cap_rich, lv_obj_get_width(CP.answer));
         }
         lv_obj_remove_flag(CP.cap_rich, LV_OBJ_FLAG_HIDDEN);
-        ui_md_render(CP.cap_rich, answer, lv_obj_get_width(CP.answer));
+        ui_md_render(CP.cap_rich, drawn ? show : answer, lv_obj_get_width(CP.answer));
+    }
+    if (rich) {
+        lv_obj_add_flag(CP.answer, LV_OBJ_FLAG_HIDDEN);
         ui_scroller_follow(CP.cap_box);
     } else {
-        if (CP.cap_rich) lv_obj_add_flag(CP.cap_rich, LV_OBJ_FLAG_HIDDEN);
+        /* only when nothing was drawn at all: with "show" the prose and the block both stay */
+        if (CP.cap_rich && !drawn) lv_obj_add_flag(CP.cap_rich, LV_OBJ_FLAG_HIDDEN);
         lv_obj_remove_flag(CP.answer, LV_OBJ_FLAG_HIDDEN);
         const char *cur = lv_label_get_text(CP.answer);
         if (!cur || strcmp(cur, answer) != 0) {
@@ -587,10 +593,10 @@ static void voice_sync(double now)
         else asked[0] = 0;
         if (r->failed) {
             /* no answer: why, where it would have been, and a face and a sound that say so */
-            caption(asked, r->say, now);
+            caption(asked, r->say, NULL, now);
             worry(now, 4.0);
         } else if (!r->say[0]) {
-            if (r->shown) caption(asked, "...", now);
+            if (r->shown) caption(asked, "...", NULL, now);
         } else {
             /* a feeling to wear for the answer: while it's spoken, and a little after */
             CP.mood = r->emotion;
@@ -610,7 +616,7 @@ static void voice_sync(double now)
             if (r->emotion == VO_EMO_EXCITED || r->emotion == VO_EMO_HAPPY || r->emotion == VO_EMO_LOVE) CP.bounce_t0 = now;
             if (rnd() < 0.4f) CP.blink_t0 = now;
             /* caption() decides: plain prose into the label, markdown through the renderer */
-            if (r->shown) caption(asked, r->say, now);
+            if (r->shown) caption(asked, r->say, r->show, now);
             if (!r->spoken) {
                 chime(CHIME_ANSWER);
                 /* meant to be heard, but the sound is off: say where the answer went, once per answer */
@@ -670,7 +676,7 @@ static void assist_sync(double now)
         }
     }
     assist_unlock();
-    if (last_user >= 0) caption(asked, answer ? answer : "...", now);
+    if (last_user >= 0) caption(asked, answer ? answer : "...", NULL, now);
     free(answer);
 }
 

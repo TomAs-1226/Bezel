@@ -123,6 +123,17 @@ quietly missing, so nobody reads a partial drawing as the whole one.
 - `components/ui/src/ui_app_companion.c` — the companion's replies
 - `components/ui/src/ui_apps_os.c` — the documents app, for `.MD` and `.SVG` on the card
 
+The two models reach it differently, because only one of them is read out loud.
+
+The **assistant** writes markdown, `chart` and `svg` directly into its answer; its whole reply goes through
+the renderer. The **companion** may not: its words go to a text-to-speech voice, so anything it writes is
+spoken exactly as typed, and a chart block would be read out as gibberish. It has a second field instead —
+`show` in its reply JSON, `vo_reply_t::show` — which is drawn under the spoken prose and never voiced. It
+goes through the same renderer, so `svg` would draw — but the companion is taught markdown and `chart`
+only, because its caption is a narrow column beside a face and a drawing wants the room the assist app
+has. A companion that reaches for markdown in `say` anyway is still
+rendered rather than shown as raw asterisks, but that is a fallback, not the way in.
+
 A document can also be written onto the card from outside the app — that is what the assistant's
 document tool calls:
 

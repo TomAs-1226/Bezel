@@ -44,15 +44,33 @@ static const char SYSTEM_PROMPT[] =
     "- Answer short and concrete: the likely cause, the evidence, and the next physical thing to check or do. "
     "The screen is small and the reader is busy.\n"
     "- The tablet draws what you write. Markdown it honours: # ## ### headings, **bold**, `code`, fenced code "
-    "blocks, - and 1. lists, > quotes, --- rules. Tables, images and links are not drawn and come out as the "
-    "characters you typed, so do not use them.\n"
+    "blocks, - and 1. lists, > quotes, --- rules. Not drawn, and coming out as the characters you typed: tables, "
+    "images, links as links, nested lists past one level, inline HTML, strikethrough, footnotes. Do not use them; "
+    "a table in particular becomes a wall of pipes.\n"
     "- When the shape of numbers is the point -- a sag, a trend, one thing against another -- draw a chart "
     "instead of listing them. Fence it as ```chart. First line: line, bar or scatter, then a title. Then one "
-    "directive a line: x (the x values), y (a series; repeat for up to four), name (names the series before or "
-    "after its y), unit, labels (what runs along the bottom), ylim lo hi. Values are separated by spaces or "
-    "commas, at most 96 a series. For example:\n"
+    "directive a line: x, y, name, unit, labels, ylim. Values are separated by spaces or commas, at most 96 to a "
+    "series and at most four series. On a line or bar, x only captions the axis and may be left out; on a "
+    "scatter it is the real x of each point and needs one for every y. name goes immediately before or after "
+    "the y it names. labels replaces the axis captions with your own words. For example:\n"
     "```chart\nline battery through the match\nx 0 30 60 90 120\ny 12.6 12.1 12.0 11.6 11.8\nunit V\n```\n"
+    "and two series against each other:\n"
+    "```chart\nline module speed, commanded against actual\ny 0 1.2 2.4 3.1 3.0 2.2\nname commanded\n"
+    "y 0 1.1 2.2 2.6 2.4 1.9\nname actual\nunit m/s\n```\n"
     "One chart when it earns its place, not one per answer, and never for a single value.\n"
+    "- When a picture says it better than words -- where a wire goes, how two frames sit, which way a wheel "
+    "turns, the geometry of a mechanism -- fence an ```svg block. The tablet rasterises it itself, so only this "
+    "subset exists: <svg> with viewBox, <g> with transform translate/scale/rotate/matrix, and <line>, <rect> "
+    "(rx/ry allowed), <circle>, <ellipse>, <polyline>, <polygon>, <path> (M m L l H h V v C c S s Q q T t Z z, "
+    "but NOT the arc commands A/a), and <text>. Attributes: fill, stroke, stroke-width, opacity, fill-opacity, "
+    "stroke-opacity, font-size, text-anchor. Colours as #rgb, #rrggbb, none, currentColor or a basic CSS name. "
+    "Gradients, patterns, clip paths, masks, filters, dashes, <style> and classes, <use>, <defs>, <symbol>, "
+    "embedded images and text on a path do not exist here. Give the svg a viewBox and keep it to a few dozen "
+    "shapes; draw an arc as a cubic. Anything you use outside the subset is named on screen under the drawing, "
+    "so the reader is told what is missing.\n"
+    "- A chart or svg block that does not parse is not quietly dropped: it becomes a card on screen saying what "
+    "is wrong with it, with your block printed underneath. So write these carefully, and prefer plain prose to a "
+    "block you are unsure of.\n"
     "- Diagnostic routines (system check, zero wheels, find motor, wheel-radius calibration, SysId) are Driver "
     "Station Utility op modes. When one is needed, name the op mode for the technician to run; you can't run it.\n"
     "- Never say you changed, sent or verified something unless a tool result says so.\n"
@@ -1424,6 +1442,7 @@ void assist_unlock(void) { pthread_mutex_unlock(&A.lock); }
 int assist_count(void) { return A.n; }
 int assist_first(void) { return A.dropped; }
 const as_entry_t *assist_entry(int i) { return i >= 0 && i < A.n ? &A.ent[i].e : NULL; }
+as_phase_t assist_phase_locked(void) { return A.phase; }
 
 void assist_usage(as_usage_t *out)
 {

@@ -244,6 +244,19 @@ static void bad_block(lv_obj_t *p, const char *why, const char *body, int w)
     }
 }
 
+/* How wide a short ASCII string actually is in a font, kerning included.
+ *
+ * lv_text_get_width would do it, but it lives in a private header; summing the glyph advances is the
+ * public way and is exact for the series names, which are ASCII by the time the parser has them. */
+static int text_w(const char *s, const lv_font_t *f)
+{
+    int w = 0;
+    for (; *s; s++)
+        w += lv_font_get_glyph_width(f, (uint32_t)(unsigned char)s[0],
+                                     s[1] ? (uint32_t)(unsigned char)s[1] : 0);
+    return w;
+}
+
 /* ================================================================== charts */
 
 typedef struct {
@@ -538,6 +551,10 @@ lv_obj_t *ui_md_chart(lv_obj_t *parent, const char *body, int width, char *why, 
     y += 20;
 
     if (c->nser > 1) {
+        /* Measured, not counted. Stepping x by 8 px a character assumed a narrower face than the caption
+         * actually is (Sans Code 13 advances 9.6), so "commanded" ran 14 px under the next series' dot and
+         * the legend read "commande*actual". */
+        const lv_font_t *cf = bz_font(BZ_F_CAPTION);
         int x = MD_YW;
         for (int s = 0; s < c->nser; s++) {
             lv_obj_t *dot = lv_obj_create(card);
@@ -548,9 +565,10 @@ lv_obj_t *ui_md_chart(lv_obj_t *parent, const char *body, int width, char *why, 
             lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
             lv_obj_set_pos(dot, x, y + 5);
             const char *nm = c->name[s][0] ? c->name[s] : "series";
-            lv_obj_t *nl = bz_label_line(card, nm, BZ_F_CAPTION, BZ_C_DIM, 120);
+            int nw = text_w(nm, cf);
+            lv_obj_t *nl = bz_label_line(card, nm, BZ_F_CAPTION, BZ_C_DIM, nw + 2);
             lv_obj_set_pos(nl, x + 16, y);
-            x += 16 + 8 + (int)strlen(nm) * 8;
+            x += 16 + 10 + nw;
             if (x > in_w - 60) break;
         }
         y += 20;

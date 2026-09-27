@@ -42,8 +42,20 @@ static const char SYSTEM_PROMPT[] =
     "Your words are spoken aloud by a text-to-speech voice and may also be shown on the screen, so:\n"
     "- Talk like a person in conversation: short, natural sentences. Usually one to three of them; go longer only when "
     "asked for detail or when the answer truly needs it.\n"
-    "- Plain words only: no markdown, lists, headings, emoji, links or code blocks. Write numbers, units and symbols "
-    "the way they are spoken.\n"
+    "- Plain words only in what you say: no markdown, lists, headings, emoji, links or code blocks. Write numbers, "
+    "units and symbols the way they are spoken. Anything you put there is read out loud exactly as written.\n"
+    "- When something is better looked at than listened to, put it in the separate \"show\" field, which is drawn "
+    "on the screen under your answer and is never spoken. Keep saying the point in words as well -- \"show\" is the "
+    "picture, not the answer. Leave it \"\" in almost every reply; reach for it when the shape of numbers is what "
+    "matters (a battery sagging through a match, current by mechanism, two things against each other), or when a "
+    "short list or a few lines of code are genuinely easier to read than to hear.\n"
+    "- \"show\" is drawn as markdown: # ## ### headings, **bold**, `code`, fenced code, - and 1. lists, > quotes, "
+    "--- rules. Tables, images and links are not drawn. A chart goes in a ```chart block: first line line, bar or "
+    "scatter then a title, then one directive a line -- x, y (one series, up to four), name (just before or after "
+    "its y), unit, labels, ylim lo hi -- values separated by spaces or commas. For example:\n"
+    "```chart\nline battery through the match\nx 0 30 60 90 120\ny 12.6 12.1 12.0 11.6 11.8\nunit V\n```\n"
+    "A chart that does not parse is drawn as a card saying what is wrong with it, so write it carefully or leave "
+    "it out.\n"
     "- The question was transcribed from speech. If it looks garbled or cut off, say so briefly and ask again rather "
     "than guessing.\n"
     "- Be honest about what you don't know.\n"
@@ -72,7 +84,8 @@ static const char SYSTEM_PROMPT[] =
     "A message may begin with a bracketed note from the tablet (time, robot and PC state). The tablet writes it, not "
     "the owner; use it only when it matters.\n"
     "\n"
-    "Always reply with a JSON object: {\"say\": what you say, \"emotion\": how you honestly feel about this moment, "
+    "Always reply with a JSON object: {\"say\": what you say, \"show\": what to draw under it, or \"\", "
+    "\"emotion\": how you honestly feel about this moment, "
     "\"intensity\": 0 to 1, \"look\": where your eyes glance}. Emotions: neutral, happy, excited, curious, thinking, "
     "sleepy, sad, worried, surprised, love, proud, confused. Choose from the content, honestly: good news is happy or "
     "excited, a problem is worried, a puzzle is curious or thinking, kind words are love, a success is proud, the "
@@ -626,9 +639,14 @@ static char *tools_json(void)
 
 static const char REPLY_SCHEMA[] =
     "{\"type\":\"json_schema\",\"json_schema\":{\"name\":\"companion_reply\",\"strict\":true,\"schema\":{"
-    "\"type\":\"object\",\"additionalProperties\":false,\"required\":[\"say\",\"emotion\",\"intensity\",\"look\"],"
+    "\"type\":\"object\",\"additionalProperties\":false,"
+    /* show is required as well as the rest: strict structured outputs will not accept a property that
+     * is not required, so "nothing to draw" is the empty string rather than a missing field. */
+    "\"required\":[\"say\",\"show\",\"emotion\",\"intensity\",\"look\"],"
     "\"properties\":{"
     "\"say\":{\"type\":\"string\",\"description\":\"what the companion says aloud\"},"
+    "\"show\":{\"type\":\"string\",\"description\":\"markdown or a ```chart block to draw under the answer, "
+    "never spoken; \\\"\\\" when there is nothing to draw\"},"
     "\"emotion\":{\"type\":\"string\",\"enum\":[\"neutral\",\"happy\",\"excited\",\"curious\",\"thinking\",\"sleepy\","
     "\"sad\",\"worried\",\"surprised\",\"love\",\"proud\",\"confused\"]},"
     "\"intensity\":{\"type\":\"number\",\"description\":\"0 to 1\"},"
@@ -696,6 +714,7 @@ static void parse_reply(const char *content, vo_reply_t *r)
     r->intensity = 0.4f;
     r->look = VO_LOOK_CENTER;
     r->say[0] = 0;
+    r->show[0] = 0;
     if (!content) return;
     aj_t *d = aj_parse(content, strlen(content), NULL, 0);
     if (!d) {
@@ -706,6 +725,8 @@ static void parse_reply(const char *content, vo_reply_t *r)
     if (!say && d) say = aj_gets(d, "text");
     if (say) {
         snprintf(r->say, sizeof r->say, "%s", say);
+        const char *show = aj_gets(d, "show");
+        if (show) snprintf(r->show, sizeof r->show, "%s", show);
         r->emotion = (vo_emotion_t)word_index(aj_gets(d, "emotion"), EMO, VO_EMO_COUNT, VO_EMO_NEUTRAL);
         double k = aj_getn(d, "intensity", 0.5);
         r->intensity = (float)(k < 0 ? 0 : k > 1 ? 1 : k);

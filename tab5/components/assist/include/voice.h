@@ -44,7 +44,12 @@ typedef enum { VO_OUT_BOTH, VO_OUT_SPEAK, VO_OUT_SHOW } vo_out_t;
 typedef struct {
     uint32_t seq;          /* bumps with each answer (0: none yet) */
     char heard[256];       /* what was asked, transcribed or typed */
-    char say[1200];        /* the answer */
+    char say[1200];        /* the answer, as prose: this is what the voice reads aloud */
+    /* Drawn under the answer and never spoken: markdown, or a ```chart block. The companion's words go
+     * through a text-to-speech voice, so they have to stay plain prose -- which left it unable to show a
+     * shape of numbers it could see perfectly well. This is the way out: the prose says what it means,
+     * this says it again in a form only the screen can carry. Empty in almost every answer. */
+    char show[900];
     vo_emotion_t emotion;
     float intensity;       /* 0..1 */
     vo_look_t look;
