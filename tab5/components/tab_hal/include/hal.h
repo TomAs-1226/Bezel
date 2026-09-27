@@ -17,6 +17,18 @@ extern "C" {
 
 #define HAL_W 1280
 #define HAL_H 720
+/* HAL_W/HAL_H are the buffers': the panel is 720x1280 and the landscape picture is turned onto it, so
+ * both frames are the same HAL_W*HAL_H pixels whichever way round the interface is laid out.
+ *
+ * The frame the interface is laid out IN is hal_frame_w/hal_frame_h: HAL_W x HAL_H normally, and the
+ * panel's own 720 x 1280 in phone mode. It is chosen in hal_init() from the owner's setting and never
+ * changes again, so layout code may read it as a constant. Phone mode is the owner's choice of frame;
+ * which way up that frame is held is hal_set_flip()'s, and the two are independent. */
+extern int hal_frame_w, hal_frame_h;
+bool hal_phone(void);           /* the frame is the portrait one */
+/* Phone mode for the NEXT start, saved; this start keeps the frame it was built with. The caller
+ * restarts the tablet when it wants the change now. */
+void hal_phone_next(bool on);
 
 /* ---- display and touch: the buffers bz_ui renders into, and how a frame reaches the glass ---- */
 typedef struct {
@@ -176,6 +188,14 @@ typedef struct {
     char ssid[33];
     int rssi;
     char ip[16];         /* Wi-Fi's */
+    /* When `up` is false, why. The tablet spent a night saying "wi-fi off" while it was in fact looking
+     * for a network that was not in the building -- 1397 join attempts, every one answered "no AP
+     * found" -- and that reads to anyone holding it as Wi-Fi dropping over and over. It is the opposite:
+     * nothing ever connected, and it never would have. `want` is the network it is trying to join, ""
+     * when none is saved, and `absent` is true once a join has failed because that network could not be
+     * found rather than because it was refused. */
+    char want[33];
+    bool absent;
 } hal_net_t;
 void hal_net(hal_net_t *out);
 void hal_net_report(char *out, size_t n, const char *host); /* dev console: addresses, DNS, a lookup */
@@ -238,6 +258,46 @@ void hal_tether_fallback(const char *ip, const char *mask);
 /* mDNS browse (e.g. "_catalyst-link", "_tcp"): blocking up to timeout_ms. */
 typedef struct { char name[48]; char host[64]; char ip[16]; int port; } hal_service_t;
 int hal_mdns_browse(const char *service, const char *proto, hal_service_t *out, int max, int timeout_ms);
+
+/* ---- BLE presence watch ----
+ * A doorbell, never a wire. The only thing this carries is "something advertising this 4-byte id is
+ * within radio range", which link.c turns into "the PC is switched on and its Catalyst Link is
+ * running". No connection is ever made, no GATT is read, and no data crosses the radio: once the
+ * beacon says the PC is there, the tablet talks to it over HTTP on the LAN exactly as it does now.
+ *
+ * Two reasons it is worth having at all. One, a failed HTTP poll cannot tell "the PC is asleep" from
+ * "a packet went missing", and those want different words on the screen and different patience. Two,
+ * a PC that has just woken up is reachable a second later, but the poller only looks every POLL_S, so
+ * the beacon appearing is the cheapest way to look *now*.
+ *
+ * The radio belongs to the C6 co-processor, which reaches the P4 as HCI frames multiplexed over the
+ * same SDIO link that carries Wi-Fi. It works only when three things line up: the C6's esp-hosted
+ * image was built with CONFIG_BT_ENABLED (M5Stack's factory image and this repository's firmware/c6
+ * up to now were not), this firmware was built with NimBLE as its host stack, and the controller then
+ * answers. When any of them is missing hal_ble_watch() answers false and the tablet behaves exactly
+ * as it did before BLE existed -- that is the point of it being a separate question. */
+typedef struct {
+    bool built;          /* this firmware has a BLE host stack compiled in at all */
+    bool ready;          /* the host stack synced with the C6's controller: a radio really answered */
+    bool watching;
+    bool present;        /* the beacon was seen inside the watch's hold window */
+    int rssi;            /* of the last sighting; 0 when there has been none */
+    double last;         /* hal_seconds() of the last sighting, 0 never */
+    unsigned seen;       /* sightings since boot -- proof the radio path works, for the dev console */
+} hal_ble_t;
+
+/* Watch for undirected advertisements carrying manufacturer-specific data whose first `n` bytes match
+ * `id`. `hold_s` is how long a sighting counts for: advertisers skip intervals and a scan window
+ * misses packets, so a single gap must not read as absence. `on_change` runs on the BLE host's task
+ * when present flips either way -- do nothing slow or blocking in it, just set a flag.
+ *
+ * Returns false when this firmware has no BLE host stack at all, or the stack refused to start; then
+ * nothing else here does anything. It cannot tell a working radio from a missing one, because a C6
+ * without a controller answers nothing rather than refusing: watch `ready` for that. Calling it again
+ * replaces the id being watched for. */
+bool hal_ble_watch(const uint8_t *id, size_t n, double hold_s, void (*on_change)(bool present, int rssi));
+void hal_ble_stop(void);
+void hal_ble(hal_ble_t *out);
 
 /* HTTP/1.1 client, http:// and https:// (TLS verified against the platform's CA bundle), with the
  * body streamed as it arrives — Server-Sent Events for the assistant, JSON for everything else.

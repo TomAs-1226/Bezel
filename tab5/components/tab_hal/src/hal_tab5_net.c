@@ -1290,6 +1290,13 @@ void hal_net(hal_net_t *o)
     if (N.up) {
         snprintf(o->ssid, sizeof o->ssid, "%s", N.ssid);
         o->rssi = N.rssi;
+    } else {
+        /* which network it is looking for, and whether the last attempt failed because it is not here */
+        wifi_config_t wc = { 0 };
+        if (esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK)
+            snprintf(o->want, sizeof o->want, "%.32s", (const char *)wc.sta.ssid);
+        int r = N.drop_reason;
+        o->absent = N.drops > 0 && (r == 201 || r == 210 || r == 211 || r == 212);
     }
 }
 
