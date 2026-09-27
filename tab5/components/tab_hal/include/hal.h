@@ -183,6 +183,22 @@ void hal_net_report(char *out, size_t n, const char *host); /* dev console: addr
 void hal_wifi_diag(char *out, size_t n);
 void hal_wifi_join(const char *ssid, const char *pass);
 void hal_wifi_rejoin(void);
+
+/* Something on this network answered for a host we asked for and its certificate did not match: a
+ * school filter, a captive portal, a proxy. The link is fine; the internet is not what it claims to
+ * be. Cleared when the tablet gets a new address. */
+bool hal_net_filtered(void);
+
+/* The DNS servers to use instead of the ones DHCP hands out. Both "" (or NULL) goes back to DHCP's.
+ * Kept across boots and re-applied on every lease, because DHCP overwrites them each time.
+ *
+ * It is worth knowing what this can and cannot do: it changes which resolver is asked, so it moves
+ * past filtering done AT the resolver. A network that redirects outgoing port 53 to its own server,
+ * or that blocks by address or by SNI at the firewall, is unaffected -- the tablet will simply get
+ * the same answer from somewhere else, or none. Try it and look; do not assume it worked. */
+void hal_wifi_dns(const char *primary, const char *secondary);
+/* What is set, "" for DHCP's. Returns true when the owner has chosen. */
+bool hal_wifi_dns_get(char *primary, size_t pn, char *secondary, size_t sn);
 void hal_antenna(bool external); /* the RF switch on E1.P0: false internal, true the MMCX socket */
 int hal_antenna_get(void);       /* which one, read back off the expander; -1 it didn't answer */
 /* The Wi-Fi watchdog restarts the tablet when the C6 stops answering (its reset needs a host restart). Before

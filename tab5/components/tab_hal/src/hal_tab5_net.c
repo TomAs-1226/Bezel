@@ -44,6 +44,7 @@
 #include "iot_usbh_ecm.h"
 #include "iot_usbh_rndis.h"
 #include "lwip/netif.h"
+#include "lwip/dns.h"
 #include "lwip/netdb.h"
 #include "lwip/sockets.h"
 #include <errno.h>
@@ -165,6 +166,66 @@ static void reconnect_soon(bool fresh)
     if (s_retry_step < (int)(sizeof RETRY_S / sizeof *RETRY_S) - 1) s_retry_step++;
 }
 
+/* The gateway that has answered a probe on this network, 0 if none ever has.
+ *
+ * Shared, because it is the one piece of evidence that separates "this network drops our probes" from
+ * "the link has stopped working", and both the watchdog and wifi_heal() have to ask it. A gateway that
+ * has never answered tells you nothing when it stays silent; one that used to answer and has gone
+ * quiet tells you a great deal. Cleared whenever the address changes, since it is a fact about one
+ * network and not about the tablet. */
+static volatile uint32_t s_gw_answered;
+
+/* This network intercepts: a name resolved, and TLS to the answer was not who we asked for. Recorded
+ * so the interface can say "this network blocks it" instead of blaming Wi-Fi, and so a blocked host
+ * cannot be mistaken for a broken radio. */
+static volatile bool s_filtered;
+bool hal_net_filtered(void) { return s_filtered; }
+
+/* ---- the DNS the owner chose ---- */
+
+static char s_dns[2][16];   /* "" each: whatever DHCP says */
+
+/* Puts the chosen servers on the interface. DHCP has just overwritten them if this is a fresh lease,
+ * which is exactly why this is called from GOT_IP and not only when the setting changes. */
+static void dns_apply(void)
+{
+    if (!N.sta || !s_dns[0][0]) return;
+    for (int i = 0; i < 2; i++) {
+        if (!s_dns[i][0]) continue;
+        esp_netif_dns_info_t d = { 0 };
+        d.ip.type = ESP_IPADDR_TYPE_V4;
+        d.ip.u_addr.ip4.addr = esp_ip4addr_aton(s_dns[i]);
+        if (d.ip.u_addr.ip4.addr) esp_netif_set_dns_info(N.sta, i ? ESP_NETIF_DNS_BACKUP : ESP_NETIF_DNS_MAIN, &d);
+    }
+}
+
+void hal_wifi_dns(const char *primary, const char *secondary)
+{
+    snprintf(s_dns[0], sizeof s_dns[0], "%s", primary ? primary : "");
+    snprintf(s_dns[1], sizeof s_dns[1], "%s", secondary ? secondary : "");
+    hal_kv_set("dns1", s_dns[0]);
+    hal_kv_set("dns2", s_dns[1]);
+    if (s_dns[0][0]) {
+        dns_apply();
+    } else if (N.sta) {
+        /* Back to DHCP's: the lease still holds them, so ask for it again rather than guessing. */
+        esp_netif_dhcpc_stop(N.sta);
+        esp_netif_dhcpc_start(N.sta);
+    }
+    /* Whatever was resolved under the old servers must not be reused: a block page's address would
+     * otherwise stay in the cache and the change would look like it had not worked. */
+    dns_clear_cache();
+    s_filtered = false;
+    ESP_LOGW(TAG, "wi-fi: DNS is now %s", s_dns[0][0] ? s_dns[0] : "whatever DHCP hands out");
+}
+
+bool hal_wifi_dns_get(char *primary, size_t pn, char *secondary, size_t sn)
+{
+    if (primary) snprintf(primary, pn, "%s", s_dns[0]);
+    if (secondary) snprintf(secondary, sn, "%s", s_dns[1]);
+    return s_dns[0][0] != 0;
+}
+
 static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
@@ -196,6 +257,9 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         ip_event_got_ip_t *e = data;
         snprintf(N.ip, sizeof N.ip, IPSTR, IP2STR(&e->ip_info.ip));
         N.up = true;
+        s_gw_answered = 0;   /* a different network's gateway proves nothing about this one */
+        s_filtered = false;
+        dns_apply();         /* DHCP has just set its own: put the owner's choice back */
         /* if the C6 restarted, its netif may now sit ahead of the tether in lwIP's list: put the tether back
          * in front, so a subnet both share still goes out the USB cable (see tether_promote()) */
         tether_promote_all();
@@ -262,6 +326,7 @@ void hal_c6_hold(bool on) { s_c6_hold = on; }
 
 bool esp_hosted_sdio_kick_queued(int n); /* esp_hosted's sdio_drv.c (Catalyst Tab's addition) */
 static bool gw_alive(uint32_t *gw);
+
 static bool rpc_ok(void)
 {
     wifi_ap_record_t ap;
@@ -405,6 +470,7 @@ static void rssi_task(void *arg)
                 if (dead) ESP_LOGI(TAG, "wi-fi: the gateway answers again");
                 dead = 0;
                 answered = gw;
+                s_gw_answered = gw;
             } else if (gw && gw == answered) {
                 dead++;
                 int64_t now = esp_timer_get_time();
@@ -478,6 +544,9 @@ static void wifi_init(void)
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, wifi_event, NULL);
     esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, wifi_event, NULL);
     /* 4 KB: its gateway probe opens a socket and selects on it */
+    hal_kv_get("dns1", s_dns[0], sizeof s_dns[0]);
+    hal_kv_get("dns2", s_dns[1], sizeof s_dns[1]);
+    dns_apply();
     xTaskCreatePinnedToCore(rssi_task, "rssi", 4096, NULL, 2, &N.rssi_task, 0);
     /* esp-hosted logs every RPC at info (one line each 3 s from the signal poll alone) */
     esp_log_level_set("rpc_core", ESP_LOG_WARN);
@@ -1132,6 +1201,18 @@ void hal_wifi_diag(char *out, size_t n)
              (unsigned)N.cc_n, a < 0 ? "?" : a ? "external (MMCX)" : "internal", joined, (unsigned)ap.primary,
              joined ? ap.rssi : 0, ap.bssid[0], ap.bssid[1], ap.bssid[2], ap.bssid[3], ap.bssid[4], ap.bssid[5],
              (unsigned)N.drops, N.drop_reason, drop_name(N.drop_reason), N.drop_rssi);
+
+    /* Uptime and the watchdog's own history, kept across the restarts it makes. A restart loop is
+     * invisible in everything above -- every counter it prints is reset by the restart. */
+    size_t k = strlen(out);
+    if (k + 80 >= n) return;
+    uint32_t wall = (uint32_t)time(NULL);
+    int recent = 0;
+    for (int i = 0; i < 3; i++)
+        if (s_c6_restarts[i] && wall > s_c6_restarts[i] && wall - s_c6_restarts[i] < 3600) recent++;
+    snprintf(out + k, n - k, "; up %us, %d watchdog restart%s in the last hour%s",
+             (unsigned)(esp_timer_get_time() / 1000000), recent, recent == 1 ? "" : "s",
+             s_filtered ? ", this network filters (TLS answered by the wrong certificate)" : "");
 }
 
 /* esp-hosted's OTA steps (rpc_wrap.c; not in its public header): the image goes over the SDIO link in
@@ -1313,20 +1394,60 @@ static void http_headers(esp_http_client_handle_t c, const char *h)
  * even to the gateway; the PC can't ping the tablet). Joining the network again clears it: three requests
  * failing in a row with Wi-Fi "up" rejoin it, at most once a minute. */
 static volatile int s_http_fails;
-static void wifi_heal(void)
+
+/* A request failed. Decide whether that says anything about the LINK -- and usually it does not.
+ *
+ * It used to end in c6_restart(), which restarts the tablet. On a filtered network that is a loop
+ * with no exit: every request fails for a reason the radio cannot fix, so the tablet restarts, comes
+ * back, fails again. Measured on `smchs-acc`, where api.openai.com resolves to a block page whose
+ * certificate is not OpenAI's.
+ *
+ * So this can now do one thing at most: ask for a rejoin, and only when the link is implicated --
+ * the gateway answered on this network before and has since gone quiet. Restarting the C6 belongs to
+ * rssi_task, which watches the C6's own RPC and has evidence about the radio rather than about a
+ * route to one host.
+ *
+ * `tls_failed` says the connection reached something and it was not who we asked for. That is proof
+ * packets flow, not evidence they do not, so it is not counted at all. */
+static void wifi_heal(bool tls_failed)
 {
     static int64_t last;
-    /* both workers' requests land here (assist and the companion): counted atomically */
-    if (!N.up || __atomic_add_fetch(&s_http_fails, 1, __ATOMIC_RELAXED) < 3) return;
-    int64_t now = esp_timer_get_time();
-    if (last && now - last < 120 * 1000000LL) {
-        /* joined again under two minutes ago and still nothing: the C6 needs its reset */
-        if (s_http_fails >= 4) c6_restart("nothing gets through, even after joining again", gw_ok);
+    if (tls_failed) {
+        /* Reached, and answered by the wrong certificate: a filter, a captive portal, or a proxy. */
+        if (!s_filtered) ESP_LOGW(TAG, "wi-fi: something on this network answers for hosts we ask for "
+                                       "(TLS did not match): treating it as filtered, not as broken");
+        s_filtered = true;
+        s_http_fails = 0;
         return;
     }
+    /* both workers' requests land here (assist and the companion): counted atomically */
+    if (!N.up || __atomic_add_fetch(&s_http_fails, 1, __ATOMIC_RELAXED) < 3) return;
+
+    /* The guard rssi_task always had and this path never did. A gateway that has never answered a
+     * probe on this network -- an enterprise controller that drops port 80 without a word -- is
+     * silent whether the link works or not, so its silence is not evidence. */
+    if (!s_gw_answered) {
+        static int64_t said;
+        int64_t now = esp_timer_get_time();
+        if (now - said > 60 * 1000000LL) {
+            ESP_LOGW(TAG, "wi-fi: requests are failing, but this network's gateway has never answered "
+                          "a probe, so nothing here says the link is at fault: leaving it alone");
+            said = now;
+        }
+        s_http_fails = 0;
+        return;
+    }
+    uint32_t gw = 0;
+    if (gw_alive(&gw)) {
+        /* The link carries packets. Whatever failed, failed further out than this tablet. */
+        s_http_fails = 0;
+        return;
+    }
+    int64_t now = esp_timer_get_time();
+    if (last && now - last < 120 * 1000000LL) return;  /* one rejoin every two minutes, and no more */
     last = now;
     s_http_fails = 0;
-    ESP_LOGW(TAG, "wi-fi: connected but nothing gets through: joining again");
+    ESP_LOGW(TAG, "wi-fi: the gateway used to answer and has gone quiet while requests fail: joining again");
     hal_wifi_rejoin(); /* the disconnect handler asks for the reconnect, at once for a rejoin we chose */
 }
 
@@ -1402,7 +1523,7 @@ hal_http_t *hal_http_open(const hal_http_req_t *req, int *status, char *err, siz
         if (tls && err && errn) snprintf(err, errn, "TLS failed (-0x%x)", -tls);
         else http_err(err, errn, what, why);
         hal_http_close(h);
-        wifi_heal();
+        wifi_heal(tls != 0);
         return NULL;
     }
     if (status) *status = esp_http_client_get_status_code(h->c);
