@@ -442,10 +442,23 @@ static int upload_now(const char *sd_path, const char *name)
 }
 
 /* reachable and taking our token: only then is anything sent (a wrong token would reject it all) */
+/* Away means nothing has been heard from the Link for a while -- not that one request failed.
+ *
+ * This used to be `L.st.reachable && auth && last_ok < 10`, and L.st.reachable is the result of the most
+ * recent poll alone. So a single lost packet, a Wi-Fi roam, or a PC busy for five seconds took the link
+ * down and the screen said the PC was away. The ten-second window did not save it either: polls are
+ * three seconds apart and time out after five, so two unlucky ones in a row already exceeded it with
+ * nothing wrong at either end.
+ *
+ * A failed request is evidence about that request. It is not evidence about whether the PC is there --
+ * the same thing that had the radio being restarted over a blocked host. Six polls' worth of silence is.
+ * L.st.reachable stays as it was, the last poll's answer, which is what the status line should show. */
+#define AWAY_S 20.0
 static bool reachable_now(void)
 {
     pthread_mutex_lock(&L.lock);
-    bool ok = L.st.reachable && L.st.auth && hal_seconds() - L.st.last_ok < 10;
+    /* last_ok 0 is "never once answered", which is away however early in the boot it is asked */
+    bool ok = L.st.auth && L.st.last_ok > 0 && hal_seconds() - L.st.last_ok < AWAY_S;
     pthread_mutex_unlock(&L.lock);
     return ok;
 }
