@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 118 px
  * Bpp: 4
- * Opts: --no-compress --no-prefilter --bpp 4 --size 118 --format lvgl --lv-font-name bz_font_clock_118 --lv-include lvgl.h -o /home/user/Bezel/tab5/components/bezel/fonts/bz_font_clock_118.c --font /opt/fonts/flex_clock250_tnum.ttf -r 0x20,0x2b,0x2c,0x2d,0x2e,0x2f,0x30,0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38,0x39,0x3a,0x25,0xb0,0x2014
+ * Opts: --no-compress --no-prefilter --bpp 4 --size 118 --format lvgl --lv-font-name bz_font_clock_118 --lv-include lvgl.h -o C:\Users\yu_th\dev\_worktrees\Bezel-tab5\tab5\components\bezel\fonts\bz_font_clock_118.c --font /opt/fonts\flex_clock250_tnum.ttf -r 0x20,0x2b,0x2c,0x2d,0x2e,0x2f,0x30,0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38,0x39,0x3a,0x25,0xb0,0x2014
  ******************************************************************************/
 
 #include "lvgl.h"

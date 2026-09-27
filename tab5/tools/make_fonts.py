@@ -114,7 +114,7 @@ def fetch(fonts_dir):
 def tnum(src, fonts_dir):
     dst = os.path.join(fonts_dir, src.replace(".ttf", "_tnum.ttf"))
     if not os.path.exists(dst):
-        subprocess.run([shutil.which("pyftfeatfreeze") or "pyftfeatfreeze", "-f", "tnum", os.path.join(fonts_dir, src), dst], check=True)
+        _run(_feature_freezer() + ["-f", "tnum", os.path.join(fonts_dir, src), dst])
     return dst
 
 
@@ -131,11 +131,65 @@ def available(path, ranges):
     return ",".join(hex(cp) for cp in keep)
 
 
+# Coverage levels per pixel. 4 is sixteen, which is where the stepping on a small curve comes from;
+# 8 is 256 and doubles the bitmap. Spent on the faces with small glyphs and many of them, which is
+# what is read closely; icons and the giant display faces stay at 4, where the extra levels buy
+# nothing and the files are already the largest here.
+SMOOTH = ("body", "name", "title", "mono")
+
+
+def bpp_for(name):
+    return "8" if any(("_" + k + "_") in name for k in SMOOTH) else "4"
+
+
+def _feature_freezer():
+    """How to start the OpenType feature freezer, as a command prefix.
+
+    Prefer its console script; fall back to the module, because the package installs the script
+    unreliably (importable here, no script anywhere) and the resulting FileNotFoundError looks
+    exactly like a different tool being absent."""
+    found = _script("pyftfeatfreeze")
+    if found and os.path.sep in str(found):
+        return [found]
+    return [sys.executable, "-m", "opentype_feature_freezer.cli"]
+
+
+def _script(stem):
+    """A console script by name, in a form this platform can start.
+
+    pip and npm both install these as .exe or .cmd shims on Windows, and Git Bash puts the
+    extension-less Unix wrapper first on PATH -- which CreateProcess cannot run, so subprocess
+    raises FileNotFoundError and it reads as "not installed" for something that is."""
+    if os.name == "nt":
+        for ext in (".exe", ".cmd", ".bat"):
+            found = shutil.which(stem + ext)
+            if found:
+                return found
+    return shutil.which(stem) or stem
+
+
+def _tool():
+    """Where lv_font_conv is, in a form this platform can actually start.
+
+    npm installs it as a .cmd shim on Windows, and CreateProcess cannot run a batch file: passing
+    the path straight to subprocess raises FileNotFoundError, which looks exactly like "not
+    installed" for something that is installed and on PATH."""
+    return _script("lv_font_conv")
+
+
+def _run(args):
+    """cmd /c for a .cmd shim, straight through for anything else."""
+    if os.name == "nt" and str(args[0]).lower().endswith((".cmd", ".bat")):
+        subprocess.run(["cmd", "/c"] + [str(a) for a in args], check=True, stdout=subprocess.DEVNULL)
+    else:
+        subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
+
+
 def conv(name, path, size, ranges, extra_symbols=None, fallback=None):
     out = os.path.join(OUT, name + ".c")
     wanted = ranges
     ranges = available(path, ranges)
-    args = [shutil.which("lv_font_conv") or "lv_font_conv", "--no-compress", "--no-prefilter", "--bpp", "4", "--size", str(size), "--format", "lvgl",
+    args = [_tool(), "--no-compress", "--no-prefilter", "--bpp", bpp_for(name), "--size", str(size), "--format", "lvgl",
             "--lv-font-name", name, "--lv-include", "lvgl.h", "-o", out, "--font", path]
     if ranges:
         args += ["-r", ranges]
@@ -147,7 +201,7 @@ def conv(name, path, size, ranges, extra_symbols=None, fallback=None):
             args += ["--font", fallback, "-r", missing]
     if extra_symbols:
         args += ["-r", extra_symbols]
-    subprocess.run(args, check=True, stdout=subprocess.DEVNULL)
+    _run(args)
     # lv_font_conv writes `#include "lvgl/lvgl.h"`-style guards; normalise to the component's include
     src = open(out, encoding="utf-8").read()
     src = re.sub(r'#ifdef LV_LVGL_H_INCLUDE_SIMPLE\n#include "lvgl.h"\n#else\n#include "[^"]*"\n#endif', '#include "lvgl.h"', src)
