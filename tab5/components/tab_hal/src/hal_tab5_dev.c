@@ -4,7 +4,8 @@
  *
  *   shot                     → "SHOT w h n\n", then n bytes: the landscape picture, RGB565 little-endian,
  *                              run-length coded as (uint16 count, uint16 pixel) pairs
- *   tap x y                  → a press and release at (x, y) in the landscape frame
+ *   tap x y                  → a press and release at (x, y) in the frame the interface is laid out in
+ *                              (landscape, or phone mode's portrait: hal_frame_w/hal_frame_h)
  *   swipe x0 y0 x1 y1 ms     → a press moving from one point to the other over ms, then a release
  *   flip                     → turns the picture 180°
  *
@@ -64,13 +65,17 @@ static void put(const void *p, size_t n)
 
 static void say(const char *s) { put(s, strlen(s)); }
 
+/* the panel's own buffer is 720x1280 whichever frame the interface is laid out in */
+#define PANEL_SHOT_W HAL_H
+#define PANEL_SHOT_H HAL_W
+
 static void shot(bool panel)
 {
     hal_display_t d;
     hal_display(&d);
     /* LVGL's landscape picture, or the portrait frame buffer the panel is scanning out */
     const uint16_t *px = bz_ui_content_buf(); /* LVGL's current buffer (they swap) */
-    int w = panel ? HAL_H : HAL_W, h = panel ? HAL_W : HAL_H;
+    int w = panel ? PANEL_SHOT_W : hal_frame_w, h = panel ? PANEL_SHOT_H : hal_frame_h;
     size_t n = (size_t)HAL_W * HAL_H;
     uint16_t *copy = NULL; /* the panel's picture, copied out before the frames after it can overwrite it */
     if (panel) {
@@ -100,9 +105,11 @@ static void shot(bool panel)
     }
     esp_log_level_t was = esp_log_level_get("*");
     esp_log_level_set("*", ESP_LOG_NONE);
-    char head[48];
-    /* a panel picture also says whether the picture is turned, so the tool shows it the way up it reads */
-    snprintf(head, sizeof head, "SHOT %d %d %u %d\n", w, h, (unsigned)(k * 2), panel && hal_flip() ? 1 : 0);
+    char head[64];
+    /* a panel picture also says whether the picture is turned, so the tool shows it the way up it reads; the
+     * fifth field says it needs no turning at all, which is every picture in phone mode */
+    snprintf(head, sizeof head, "SHOT %d %d %u %d %d\n", w, h, (unsigned)(k * 2), panel && hal_flip() ? 1 : 0,
+             hal_phone() ? 1 : 0);
     say(head);
     size_t m = 0;
     for (size_t i = 0; i < n;) {
@@ -213,6 +220,28 @@ static void run(char *line)
         if (hal_battery(&bt)) snprintf(buf, sizeof buf, "MEM battery %.3f V %.3f A, %d %%%s\n", bt.volts, bt.amps, bt.percent, bt.charging ? ", charging" : "");
         else snprintf(buf, sizeof buf, "MEM battery: no reading\n");
         say(buf);
+        say("OK\n");
+    } else if (!strncmp(line, "kv ", 3)) {
+        /* Read one stored setting. The reason this exists: "the weather says Irvine" is not
+         * answerable without knowing what hm_place actually holds, and navigating the UI to find
+         * out is slower than asking.
+         *
+         * Secrets are reported as set and never printed. A key read onto this console ends up in
+         * somebody's terminal scrollback and in whatever log it was piped to. */
+        static const char *const SECRET[] = { "openai", "oai_key", "ha_token", "tba_key",
+                                              "link_token", "anthropic", "wifi_pass" };
+        const char *k = line + 3;
+        bool secret = false;
+        for (size_t i = 0; i < sizeof SECRET / sizeof *SECRET; i++)
+            if (strstr(k, SECRET[i])) secret = true;
+        char v[192] = "";
+        bool have = hal_kv_get(k, v, sizeof v);
+        char msg[256];
+        if (!have) snprintf(msg, sizeof msg, "MEM kv %s (not set)\n", k);
+        else if (secret) snprintf(msg, sizeof msg, "MEM kv %s (set, %d chars, not shown)\n", k, (int)strlen(v));
+        else snprintf(msg, sizeof msg, "MEM kv %s = %s\n", k, v);
+        memset(v, 0, sizeof v);
+        say(msg);
         say("OK\n");
     } else if (!strncmp(line, "dns", 3) && (line[3] == 0 || line[3] == ' ')) {
         /* "dns" shows it, "dns auto" gives it back to DHCP, "dns 8.8.8.8 8.8.4.4" chooses. */

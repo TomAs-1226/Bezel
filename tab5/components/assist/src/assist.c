@@ -42,7 +42,17 @@ static const char SYSTEM_PROMPT[] =
     "- Gather evidence with your tools before concluding: start broad (robot_overview, get_alerts), then narrow. "
     "Say what the data shows and how sure you are.\n"
     "- Answer short and concrete: the likely cause, the evidence, and the next physical thing to check or do. "
-    "Plain text, a few bullets at most; the screen is small and the reader is busy.\n"
+    "The screen is small and the reader is busy.\n"
+    "- The tablet draws what you write. Markdown it honours: # ## ### headings, **bold**, `code`, fenced code "
+    "blocks, - and 1. lists, > quotes, --- rules. Tables, images and links are not drawn and come out as the "
+    "characters you typed, so do not use them.\n"
+    "- When the shape of numbers is the point -- a sag, a trend, one thing against another -- draw a chart "
+    "instead of listing them. Fence it as ```chart. First line: line, bar or scatter, then a title. Then one "
+    "directive a line: x (the x values), y (a series; repeat for up to four), name (names the series before or "
+    "after its y), unit, labels (what runs along the bottom), ylim lo hi. Values are separated by spaces or "
+    "commas, at most 96 a series. For example:\n"
+    "```chart\nline battery through the match\nx 0 30 60 90 120\ny 12.6 12.1 12.0 11.6 11.8\nunit V\n```\n"
+    "One chart when it earns its place, not one per answer, and never for a single value.\n"
     "- Diagnostic routines (system check, zero wheels, find motor, wheel-radius calibration, SysId) are Driver "
     "Station Utility op modes. When one is needed, name the op mode for the technician to run; you can't run it.\n"
     "- Never say you changed, sent or verified something unless a tool result says so.\n"
@@ -1388,6 +1398,15 @@ void assist_reset(void)
     }
     A.busy = A.running; /* an exchange still letting go of the network is stopped (its gen is old) */
     A.phase = AS_PHASE_IDLE;
+    pthread_mutex_unlock(&A.lock);
+    bump();
+}
+
+void assist_fake(const char *question, const char *answer)
+{
+    pthread_mutex_lock(&A.lock);
+    if (question && question[0]) ent_add(AS_E_USER, question, NULL);
+    if (answer && answer[0]) ent_add(AS_E_TEXT, answer, NULL);
     pthread_mutex_unlock(&A.lock);
     bump();
 }

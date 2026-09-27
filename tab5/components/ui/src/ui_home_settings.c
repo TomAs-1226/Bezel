@@ -11,6 +11,7 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #define LIST_SHOWN 48      /* entity chips at once: the kind filter narrows a big house */
 
@@ -54,7 +55,19 @@ static void show(void)
     for (int i = 0; i < NSAVER; i++) ui_chip_set(HS.saver[i], c->saver_min == SAVER_MIN[i]);
     ui_chip_set(HS.cam_on, c->cam_on);
     for (int i = 0; i < NCAMMIN; i++) ui_chip_set(HS.cam_min[i], c->cam_min == CAM_MIN[i]);
-    ui_text(lv_obj_get_child(HS.place, 1), "%s", c->place[0] ? c->place : "set the place");
+    /* What was typed, and -- when it is not the same place -- what the geocoder made of it. A card
+     * reading "Irvine" under a setting reading "Mission Viejo" is otherwise unexplainable from the
+     * tablet, and the two are shown in different screens so nobody can see them disagree. */
+    {
+        home_weather_t wx;
+        home_weather_get(&wx);
+        const char *typed = c->place[0] ? c->place : NULL;
+        if (!typed) ui_text(lv_obj_get_child(HS.place, 1), "set the place");
+        else if (wx.err[0]) ui_text(lv_obj_get_child(HS.place, 1), "%s - %s", typed, wx.err);
+        else if (wx.place[0] && strncasecmp(wx.place, typed, strlen(typed)) != 0)
+            ui_text(lv_obj_get_child(HS.place, 1), "%s -> %s", typed, wx.place);
+        else ui_text(lv_obj_get_child(HS.place, 1), "%s", typed);
+    }
     ui_text(lv_obj_get_child(HS.url, 1), "%s", c->ha_url[0] ? c->ha_url : "home assistant's address");
     ui_text(lv_obj_get_child(HS.token, 1), "%s", c->ha_token[0] ? "token set \xc2\xb7 change it" : "add a token");
 }
