@@ -214,6 +214,22 @@ static void run(char *line)
         else snprintf(buf, sizeof buf, "MEM battery: no reading\n");
         say(buf);
         say("OK\n");
+    } else if (!strncmp(line, "dns", 3) && (line[3] == 0 || line[3] == ' ')) {
+        /* "dns" shows it, "dns auto" gives it back to DHCP, "dns 8.8.8.8 8.8.4.4" chooses. */
+        char a[16] = "", b[16] = "";
+        if (line[3] == ' ' && !strcmp(line + 4, "auto")) {
+            hal_wifi_dns("", "");
+        } else if (line[3] == ' ') {
+            const char *sp = strchr(line + 4, ' ');
+            snprintf(a, sizeof a, "%.*s", sp ? (int)(sp - (line + 4)) : (int)sizeof a - 1, line + 4);
+            if (sp) snprintf(b, sizeof b, "%s", sp + 1);
+            hal_wifi_dns(a, b);
+        }
+        bool chosen = hal_wifi_dns_get(a, sizeof a, b, sizeof b);
+        char msg[80];
+        snprintf(msg, sizeof msg, "MEM dns %s %s\n", chosen ? a : "auto (DHCP)", chosen ? b : "");
+        say(msg);
+        say("OK\n");
     } else if (!strncmp(line, "net", 3) && (line[3] == 0 || line[3] == ' ')) {
         char buf[420];
         hal_net_report(buf, sizeof buf, line[3] ? line + 4 : "api.openai.com");
