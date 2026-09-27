@@ -301,6 +301,12 @@ static void scroll_frame(double now, double dt, void *user)
     for (int i = 0; i < MAX_SCROLLERS; i++) {
         scroller_t *s = g_scrollers[i];
         if (!s || s->dragging) continue;
+        /* Belt and braces to the delete callback above: a scroller that ever outlives its objects
+         * stops moving instead of laying out freed memory. Two pointer checks a frame. */
+        if (!lv_obj_is_valid(s->clip) || !lv_obj_is_valid(s->content)) {
+            g_scrollers[i] = NULL;
+            continue;
+        }
         if (bz_motion_tick(&s->y)) {
             bz_ui_scroll(s->clip, s->content, (int32_t)s->y.value);
             bz_ui_keep_alive();
@@ -324,6 +330,20 @@ bool ui_scroller_follow(lv_obj_t *content)
     return false;
 }
 
+/* The clip is being deleted, so its scroller must stop existing too.
+ *
+ * Without this the scroller stays in g_scrollers with pointers to freed objects, and the first
+ * frame in which its spring is still moving lays out freed memory -- which is the crash behind
+ * "scrolling the apps menu crashes it". On the UI thread, at the moment of deletion, so there is no
+ * window between the objects going and the scroller going. */
+static void scroller_gone(lv_event_t *e)
+{
+    scroller_t *s = lv_event_get_user_data(e);
+    for (int i = 0; i < MAX_SCROLLERS; i++)
+        if (g_scrollers[i] == s) g_scrollers[i] = NULL;
+    lv_free(s);
+}
+
 lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h)
 {
     scroller_t *s = lv_malloc_zeroed(sizeof *s);
@@ -337,6 +357,7 @@ lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h)
     bz_drag_attach(s->clip, &d);
     lv_obj_add_flag(s->clip, LV_OBJ_FLAG_EVENT_BUBBLE);
     for (int i = 0; i < MAX_SCROLLERS; i++) if (!g_scrollers[i]) { g_scrollers[i] = s; break; }
+    lv_obj_add_event_cb(s->clip, scroller_gone, LV_EVENT_DELETE, s);
     return s->content;
 }
 

@@ -77,7 +77,15 @@ static bool s_flip = false;
 #else
 static bool s_flip = true;
 #endif
-#define ROT (s_flip ? PPA_SRM_ROTATION_ANGLE_270 : PPA_SRM_ROTATION_ANGLE_90)
+#define ROT (s_phone ? (s_flip ? PPA_SRM_ROTATION_ANGLE_180 : PPA_SRM_ROTATION_ANGLE_0) \
+                     : (s_flip ? PPA_SRM_ROTATION_ANGLE_270 : PPA_SRM_ROTATION_ANGLE_90))
+
+/* Phone mode: the interface is laid out in the panel's own portrait frame, so a present is a straight copy
+ * and the picture is turned by nothing at all. Read once in hal_init() and never changed after, because
+ * every layout in the firmware is built from hal_frame_w/hal_frame_h at start-up. */
+static bool s_phone;
+int hal_frame_w = HAL_W, hal_frame_h = HAL_H;
+bool hal_phone(void) { return s_phone; }
 
 #define PANEL_W BSP_LCD_H_RES /* 720 */
 #define PANEL_H BSP_LCD_V_RES /* 1280 */
@@ -272,7 +280,7 @@ static float percent_from_cell(float v)
  * ~0.15 V under the resting voltage, which the curve would read as 10-15 % gone */
 #define PACK_OHMS 0.15f
 
-bool hal_battery(hal_battery_t *o)
+static bool battery_read(hal_battery_t *o)
 {
     memset(o, 0, sizeof *o);
     uint8_t b[2];
@@ -326,6 +334,26 @@ bool hal_battery(hal_battery_t *o)
     last_pct = o->percent;
     o->ok = true;
     return true;
+}
+
+/* The monitor is configured to average 16 conversions of 1.1 ms on each channel, so it has nothing new
+ * to say oftener than about every 35 ms, and the filter above deliberately moves the percentage over
+ * minutes. Every screen that shows a charge asked ten times a second, and each ask is two I2C
+ * transactions on the bus the touch controller is read on every frame. Held for a second and handed out:
+ * the reading is no staler than the hardware's own, and the bus is left for the finger. */
+bool hal_battery(hal_battery_t *o)
+{
+    static hal_battery_t held;
+    static double at;
+    static bool have, ok;
+    double now = hal_seconds();
+    if (!have || now - at >= 1.0) {
+        ok = battery_read(&held);
+        at = now;
+        have = true;
+    }
+    *o = held;
+    return ok;
 }
 
 static uint8_t bcd(uint8_t v) { return (uint8_t)((v >> 4) * 10 + (v & 15)); }
@@ -432,7 +460,11 @@ static bool imu_read(hal_imu_t *o)
      * reaction to gravity, the UI wants gravity's direction. UNVERIFIED against a unit: if the Level
      * tool reads mirrored, flip the signs here. */
     float px = x, py = -y;
-    float lx = s_flip ? py : -py, ly = s_flip ? -px : px;
+    /* phone mode leaves the panel's frame alone, so gravity needs no turn either — only the 180° when the
+     * tablet is held the other way up. UNVERIFIED on a unit in phone mode: if the Level tool or auto-rotate
+     * read the wrong way round there, these two lines are the signs to try. */
+    float lx = s_phone ? (s_flip ? px : -px) : (s_flip ? py : -py);
+    float ly = s_phone ? (s_flip ? py : -py) : (s_flip ? -px : px);
     /* Measured on a unit: the BMI270 sits turned about its y axis, so its x and z read opposite to the
      * panel's. Landscape y comes from raw x and z is raw z: those two take the other sign (auto-rotate
      * picked the wrong way up, and Level read ~180° lying flat); landscape x, from raw y, doesn't. */
@@ -574,6 +606,19 @@ static void rot_init(void)
     ppa_client_register_event_callbacks(ROTQ.client, &cbs);
 }
 
+/* The panel rows a frame rectangle lands on: whole rows either way round, because a landscape column is a
+ * portrait row and in phone mode a row is itself. */
+static void panel_rows(const bz_area_t *a, int *r0, int *r1)
+{
+    if (s_phone) {
+        *r0 = s_flip ? hal_frame_h - 1 - a->y2 : a->y1;
+        *r1 = s_flip ? hal_frame_h - 1 - a->y1 : a->y2;
+    } else {
+        *r0 = s_flip ? a->x1 : HAL_W - 1 - a->x2;
+        *r1 = s_flip ? a->x2 : HAL_W - 1 - a->x1;
+    }
+}
+
 static void rotate_cpu(const bz_present_t *p, uint16_t *fb)
 {
     const bz_area_t *a = &p->a;
@@ -582,15 +627,24 @@ static void rotate_cpu(const bz_present_t *p, uint16_t *fb)
      * before would be merged with the pixels written here and written back over what the DMA put there.
      * Dropped first (no line in a frame buffer is ever left dirty: every CPU write below is written back
      * straight after), so each is read fresh. */
+    int r0, r1;
+    panel_rows(a, &r0, &r1);
     {
-        int r0 = s_flip ? a->x1 : HAL_W - 1 - a->x2, r1 = s_flip ? a->x2 : HAL_W - 1 - a->x1;
         uintptr_t b0 = (uintptr_t)(fb + (size_t)r0 * PANEL_W) & ~(uintptr_t)127;
         uintptr_t b1 = ((uintptr_t)(fb + (size_t)(r1 + 1) * PANEL_W) + 127) & ~(uintptr_t)127;
         esp_cache_msync((void *)b0, b1 - b0, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
     }
     for (int y = a->y1; y <= a->y2; y++, src += p->stride) {
         const uint16_t *s = src;
-        if (!s_flip) {
+        if (s_phone) {
+            /* the frame is the panel's: a row is a row, turned end for end when held the other way up */
+            if (!s_flip) {
+                memcpy(fb + (size_t)y * PANEL_W + a->x1, s, (size_t)(a->x2 - a->x1 + 1) * 2);
+            } else {
+                uint16_t *d = fb + (size_t)(hal_frame_h - 1 - y) * PANEL_W + (hal_frame_w - 1 - a->x1);
+                for (int x = a->x1; x <= a->x2; x++) *d-- = *s++;
+            }
+        } else if (!s_flip) {
             /* landscape (x, y) lands at portrait (y, W-1-x) */
             uint16_t *d = fb + (size_t)(HAL_W - 1 - a->x1) * PANEL_W + y;
             for (int x = a->x1; x <= a->x2; x++, d -= PANEL_W) *d = *s++;
@@ -601,7 +655,6 @@ static void rotate_cpu(const bz_present_t *p, uint16_t *fb)
     }
     /* out of the cache now: a PPA rotation later in the frame invalidates its rows without writing them
      * back, which would drop these */
-    int r0 = s_flip ? a->x1 : HAL_W - 1 - a->x2, r1 = s_flip ? a->x2 : HAL_W - 1 - a->x1;
     esp_cache_msync(fb + (size_t)r0 * PANEL_W, (size_t)(r1 - r0 + 1) * PANEL_W * 2,
                     ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
 }
@@ -638,7 +691,11 @@ static bool rotate_area(const bz_present_t *p, void *fb, bool async)
         .scale_y = 1,
         .mode = PPA_TRANS_MODE_NON_BLOCKING,
     };
-    if (!s_flip) {
+    if (s_phone) {
+        /* no turn at all: the frame is the panel's own, or the whole of it end for end */
+        op.out.block_offset_x = (uint32_t)(s_flip ? hal_frame_w - 1 - a->x2 : a->x1);
+        op.out.block_offset_y = (uint32_t)(s_flip ? hal_frame_h - 1 - a->y2 : a->y1);
+    } else if (!s_flip) {
         /* 90° counter-clockwise: landscape (x, y) lands at portrait (y, W-1-x) */
         op.out.block_offset_x = (uint32_t)a->y1;
         op.out.block_offset_y = (uint32_t)(HAL_W - 1 - a->x2);
@@ -1372,6 +1429,9 @@ static void slide_init(void)
         ESP_LOGW(TAG, "no DMA2D copier: page slides fall back to the landscape path");
     }
     s_fbcpy_done = xSemaphoreCreateBinary();
+    /* Phone mode never takes these paths (hal_display leaves SLIDE_OPS out), and the renderer's own
+     * fallback wants three screens of PSRAM of its own: four unused ones here would not fit beside them. */
+    if (s_phone) return;
     /* the slide's portrait pictures, up front and not zeroed (nothing reads them before they're written;
      * never written by the CPU, so no dirty cache line can land on the DMA's data) */
     size_t n = (size_t)PANEL_W * PANEL_H * 2;
@@ -1541,7 +1601,10 @@ bool hal_touch(int *x, int *y, void *user)
     esp_lcd_touch_read_data(T.touch);
     if (esp_lcd_touch_get_data(T.touch, p, &cnt, 1) != ESP_OK || !cnt) return false;
     /* the inverse of the picture's turn in rotate_area() */
-    if (!s_flip) {
+    if (s_phone) {
+        *x = s_flip ? hal_frame_w - 1 - p[0].x : p[0].x;
+        *y = s_flip ? hal_frame_h - 1 - p[0].y : p[0].y;
+    } else if (!s_flip) {
         *x = HAL_W - 1 - p[0].y;
         *y = p[0].x;
     } else {
@@ -1580,10 +1643,13 @@ void hal_set_flip(bool flip)
 
 bool hal_flip(void) { return s_flip; }
 
-/* The portrait rows a landscape area lands on: all the panel needs written back and shown. */
+void hal_phone_next(bool on) { hal_kv_set("phone", on ? "1" : "0"); }
+
+/* The panel rows a frame area lands on, widened into y0..y1: all the panel needs written back and shown. */
 static void rows_of(const bz_area_t *a, int *y0, int *y1)
 {
-    int r0 = s_flip ? a->x1 : HAL_W - 1 - a->x2, r1 = s_flip ? a->x2 : HAL_W - 1 - a->x1;
+    int r0, r1;
+    panel_rows(a, &r0, &r1);
     if (r0 < *y0) *y0 = r0;
     if (r1 > *y1) *y1 = r1;
 }
@@ -1832,7 +1898,10 @@ void hal_display(hal_display_t *o)
     o->async_present = true;
 #else
     o->async_present = false;
-    o->slide = s_fbcpy ? &SLIDE_OPS : NULL; /* without the DMA2D copier the renderer slides by itself */
+    /* Without the DMA2D copier the renderer slides by itself, and so it does in phone mode: every fast path
+     * there turns a landscape column into a panel row, which the portrait frame does not do. Phone mode
+     * pays for it with a full redraw per page swipe and the control center's older module cascade. */
+    o->slide = s_fbcpy && !s_phone ? &SLIDE_OPS : NULL;
 #endif
 }
 
@@ -2166,7 +2235,9 @@ static void plane_draw(uint16_t *fb, int *y0, int *y1)
 
 bool hal_camera_plane(int bx, int by, int bw, int bh, int *x, int *y, int *w, int *h)
 {
-    if (!C.on || !C.frames[0] || !s_fbcpy) return false;
+    /* the plane turns the camera's frames to match a landscape picture on a portrait panel; in phone mode
+     * there is no turn to make, so the caller draws the preview itself (hal_camera_frame) */
+    if (!C.on || !C.frames[0] || !s_fbcpy || s_phone) return false;
     C.px = bx + (bw - C.out_w) / 2;
     C.py = by + (bh - C.out_h) / 2;
     *x = C.px;
@@ -2579,6 +2650,11 @@ static RTC_NOINIT_ATTR struct {
     uint32_t settled;  /* this start did */
     char stage[24];
     uint32_t planned;  /* the last restart was asked for (hal_restart_planned): not a failed start */
+    /* The core dump already reported, by the timestamp in its own header. Kept so the same crash is
+     * not announced on every boot WITHOUT erasing the image -- the image is the only place the
+     * stack behind the fault exists, and espcoredump needs it to say anything more than two
+     * addresses. A new crash overwrites it, so nothing piles up. */
+    uint32_t dump_seen;
 } B;
 
 static hal_boot_t s_prev;
@@ -2636,11 +2712,24 @@ static void boot_record_init(void)
     /* the core dump the crash left, if any: which task, where, and the caller */
     if (esp_core_dump_image_check() == ESP_OK) {
         esp_core_dump_summary_t *sum = malloc(sizeof *sum);
-        if (sum && esp_core_dump_get_summary(sum) == ESP_OK)
-            snprintf(s_prev.detail, sizeof s_prev.detail, "%.15s pc %08lx ra %08lx cause %lu", sum->exc_task,
-                     (unsigned long)sum->exc_pc, (unsigned long)sum->ex_info.ra, (unsigned long)sum->ex_info.mcause);
+        if (sum && esp_core_dump_get_summary(sum) == ESP_OK) {
+            /* Identify the dump by where it faulted, so the same one is not announced every boot.
+             * Not erased: the image holds the stack behind the fault, and two addresses have not
+             * been enough to find this bug three times over. Read it with
+             *     idf.py -B build-main -p COM9 coredump-info
+             * and the next crash overwrites it by itself. */
+            uint32_t id = (uint32_t)sum->exc_pc ^ (uint32_t)sum->ex_info.ra;
+            if (id != B.dump_seen) {
+                B.dump_seen = id;
+                snprintf(s_prev.detail, sizeof s_prev.detail, "%.15s pc %08lx ra %08lx cause %lu", sum->exc_task,
+                         (unsigned long)sum->exc_pc, (unsigned long)sum->ex_info.ra,
+                         (unsigned long)sum->ex_info.mcause);
+            } else {
+                snprintf(s_prev.detail, sizeof s_prev.detail, "%.15s pc %08lx (already reported; dump kept)",
+                         sum->exc_task, (unsigned long)sum->exc_pc);
+            }
+        }
         free(sum);
-        esp_core_dump_image_erase();
     }
     B.magic = BOOT_MAGIC;
     B.settled = 0;
@@ -2718,6 +2807,13 @@ bool hal_init(void)
         nvs_flash_erase();
         nvs_flash_init();
     }
+    /* Phone mode, before a buffer or a frame exists: the whole firmware lays itself out from the frame this
+     * sets, so it is read here and never read again. */
+    char ph[4];
+    s_phone = hal_kv_get("phone", ph, sizeof ph) && ph[0] == '1';
+    hal_frame_w = s_phone ? PANEL_W : HAL_W;
+    hal_frame_h = s_phone ? PANEL_H : HAL_H;
+    ESP_LOGI(TAG, "frame: %dx%d%s", hal_frame_w, hal_frame_h, s_phone ? " (phone mode)" : "");
     /* the time zone the PC or settings chose (the RTC keeps UTC-agnostic local time; TZ turns it back) */
     char tz[48];
     if (hal_kv_get("tz", tz, sizeof tz)) {
