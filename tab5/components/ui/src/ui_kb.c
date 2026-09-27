@@ -151,6 +151,18 @@ static void key_tick(const char *txt)
 
 #define NOT_APPLIED (-1.0f)   /* the lift is never negative, so this cannot match a real value */
 
+/* The body being lifted has been deleted: let go of it.
+ *
+ * This replaces an lv_obj_is_valid() in the frame hook, which was not a pointer test -- it walked
+ * the whole object tree every frame looking for the object. LVGL announces the deletion, so there
+ * is nothing to hunt for. */
+static void lifted_gone(lv_event_t *e)
+{
+    (void)e;
+    K.lifted = NULL;
+    K.lift_at = NOT_APPLIED;
+}
+
 static void lift_to(float px) { bz_motion_to(&K.lift, px, BZ_LAYER); }
 
 static void put_away(void)
@@ -179,10 +191,6 @@ static void kb_frame(double now, double dt, void *u)
     bool moving = bz_motion_tick(&K.lift);
     /* K.lifted, not K.owner->body: after a dismiss there is no owner and the body still has to come
      * down. An app can also be closed while lifted, so the object is checked before it is written. */
-    if (K.lifted && !lv_obj_is_valid(K.lifted)) {
-        K.lifted = NULL;
-        K.lift_at = NOT_APPLIED;
-    }
     if (K.lifted) {
         float v = K.lift.value;
         if (v != K.lift_at) {
@@ -193,6 +201,7 @@ static void kb_frame(double now, double dt, void *u)
             /* Landed, and nobody is using it: put it back exactly, then let go. Rounding the spring's
              * tail could otherwise leave the app a pixel high for as long as it is open. */
             lv_obj_set_style_translate_y(K.lifted, 0, 0);
+            lv_obj_remove_event_cb(K.lifted, lifted_gone);
             K.lifted = NULL;
             K.lift_at = NOT_APPLIED;
         }
@@ -365,9 +374,13 @@ void ui_kb_show(ui_kb_t *k, const char *title, const char *text, bool secret, bo
     /* A different body than last time, or the same one after it was let go: either way the next
      * frame must write, so lift_at starts at a value no spring produces. */
     if (K.lifted != k->body) {
-        if (K.lifted && lv_obj_is_valid(K.lifted)) lv_obj_set_style_translate_y(K.lifted, 0, 0);
+        if (K.lifted) {
+            lv_obj_set_style_translate_y(K.lifted, 0, 0);
+            lv_obj_remove_event_cb(K.lifted, lifted_gone);
+        }
         K.lifted = k->body;
         K.lift_at = NOT_APPLIED;
+        if (K.lifted) lv_obj_add_event_cb(K.lifted, lifted_gone, LV_EVENT_DELETE, NULL);
     }
     lift_to(KB_LIFT);
 }

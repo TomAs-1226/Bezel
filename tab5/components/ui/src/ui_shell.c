@@ -301,12 +301,13 @@ static void scroll_frame(double now, double dt, void *user)
     for (int i = 0; i < MAX_SCROLLERS; i++) {
         scroller_t *s = g_scrollers[i];
         if (!s || s->dragging) continue;
-        /* Belt and braces to the delete callback above: a scroller that ever outlives its objects
-         * stops moving instead of laying out freed memory. Two pointer checks a frame. */
-        if (!lv_obj_is_valid(s->clip) || !lv_obj_is_valid(s->content)) {
-            g_scrollers[i] = NULL;
-            continue;
-        }
+        /* No lv_obj_is_valid() here, though it reads like the careful thing to do. It is not a
+         * pointer test: it walks the whole object tree through obj_valid_child() looking for the
+         * object. Two of those per scroller slot per frame is dozens of full tree walks a frame,
+         * and a soak caught the panic INSIDE obj_valid_child -- a walk hunting for corruption
+         * faults on the same bad child as any other reader. scroller_gone() on LV_EVENT_DELETE
+         * removes the scroller the moment its clip is destroyed, on this thread, with no window
+         * in between; that is the guarantee, and it needs no second one. */
         if (bz_motion_tick(&s->y)) {
             bz_ui_scroll(s->clip, s->content, (int32_t)s->y.value);
             bz_ui_keep_alive();
