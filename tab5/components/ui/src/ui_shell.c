@@ -2195,7 +2195,16 @@ static void shell_frame(double now, double dt, void *user)
     perf_frame(now);
     PROF_MARK(5);
 
-    if (now - U.last_refresh >= 0.1) {
+    /* Nothing is refreshed while something is moving across the screen.
+     *
+     * This block is the interface's bookkeeping -- the robot model, the island, every page's numbers --
+     * and it runs ten times a second whatever else is happening, including through the whole of an app
+     * opening or a page sliding. It is the single most expensive thing in a frame during an animation,
+     * and none of it is worth a dropped frame: the most it can be out of date by is the length of the
+     * animation, under a second, over numbers that are themselves seconds old. Deferred, not skipped --
+     * last_refresh is left alone, so the moment the motion stops the next frame does the work. */
+    bool moving = bz_ui_sheeting() || SL.active || (U.app && fabsf(U.k.value - U.k.target) > 0.01f);
+    if (!moving && now - U.last_refresh >= 0.1) {
         U.last_refresh = now;
         cat_model_update(R);
         PROF_MARK(6);
@@ -2203,8 +2212,15 @@ static void shell_frame(double now, double dt, void *user)
         PROF_MARK(7);
         island_refresh();
         PROF_MARK(8);
-        /* a page's refresh only while it's on screen and nothing covers it */
-        bool covered = (U.app && U.k.target > 0) || ui_home_mode_active();
+        /* A page's refresh only while it's on screen and nothing covers it.
+         *
+         * Covered means the window is still in front of it, not that the window is on its way in.
+         * U.k.target drops to 0 the instant a close is asked for, while the window itself takes the
+         * whole of its spring to shrink away -- so every page refresher ran, at 10 Hz, against a page
+         * nobody could see yet, for the length of every close. Measured through four opens and closes
+         * that stage cost 967 ms of every 2 s, about 48 ms a refresh, against 10 ms of every 2 s while
+         * scrolling. It is most of why an app open runs at 22 fps. */
+        bool covered = (U.app && (U.k.target > 0 || U.k.value > 0.02f)) || ui_home_mode_active();
         for (int i = 0; i < U.nrefresh; i++)
             if (U.refresh[i].page < 0 || (U.refresh[i].page == U.page && !covered)) U.refresh[i].fn(U.refresh[i].user);
         PROF_MARK(9);
