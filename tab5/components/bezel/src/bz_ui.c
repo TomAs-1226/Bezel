@@ -28,6 +28,7 @@ struct bz_glass {
     float rx, ry, rw, rh;
     bool alive, solo;
     int lite_opa;      /* calm: the solid background last given to obj (-1: none) */
+    int lite_amt, lite_tint; /* and the tint mixed into it, in sixteenths */
     bool lite_dark;
 };
 
@@ -130,8 +131,9 @@ static void prof_event(lv_event_t *e)
     }
 }
 
-/* Who asks for (nearly) the whole screen to be redrawn: a backtrace at most every 3 s, decoded with
- * addr2line against the ELF. */
+/* Who asks for (nearly) the whole screen to be redrawn. This said a backtrace, which the tablet cannot
+ * give: CONFIG_ESP_SYSTEM_NO_BACKTRACE is set and esp_backtrace_print on RISC-V prints the interruptee's
+ * registers instead. The object is found by its rectangle instead (trace_who), which is what names it. */
 static double s_hook_ms[16];
 static int s_trace_inv; /* frames left to log every invalidated area (the dev console's "inv") */
 void bz_ui_trace_inv(int frames) { s_trace_inv = frames; }
@@ -149,12 +151,66 @@ int bz_ui_big_inv(uint32_t *px)
     return n;
 }
 
+#ifdef ESP_PLATFORM
+/* The objects whose rectangle is (or holds, edge to edge) the area just invalidated, named by the child
+ * indices that reach them from the screen. An invalidation is truncated to every ancestor, so the object
+ * that asked either matches the area exactly or holds it with at least one edge shared. */
+static int who_path(lv_obj_t *o, char *out, size_t n)
+{
+    lv_obj_t *chain[12];
+    int d = 0;
+    for (lv_obj_t *p = o; p && d < 12; p = lv_obj_get_parent(p)) chain[d++] = p;
+    size_t k = 0;
+    for (int i = d - 2; i >= 0 && k + 8 < n; i--) k += (size_t)snprintf(out + k, n - k, "%s%d", k ? "." : "", (int)lv_obj_get_index(chain[i]));
+    if (!k && n) out[0] = 0;
+    return d;
+}
+
+static void who_walk(lv_obj_t *o, const lv_area_t *a, int *left)
+{
+    if (lv_obj_has_flag(o, LV_OBJ_FLAG_HIDDEN)) return;
+    lv_area_t c;
+    lv_obj_get_coords(o, &c);
+    int32_t ext = lv_obj_get_ext_draw_size(o);
+    lv_area_increase(&c, ext, ext);
+    bool holds = c.x1 <= a->x1 && c.y1 <= a->y1 && c.x2 >= a->x2 && c.y2 >= a->y2;
+    bool edge = c.x1 == a->x1 || c.y1 == a->y1 || c.x2 == a->x2 || c.y2 == a->y2;
+    if (holds && edge && *left > 0) {
+        (*left)--;
+        char path[64];
+        int depth = who_path(o, path, sizeof path);
+        ESP_LOGW("bz_ui", "  who %s depth %d: %d,%d-%d,%d ext %d children %d", path, depth, (int)c.x1, (int)c.y1,
+                 (int)c.x2, (int)c.y2, (int)ext, (int)lv_obj_get_child_count(o));
+    }
+    if (!holds) return; /* a child can only be smaller: nothing below can hold the area either */
+    for (uint32_t i = 0; i < lv_obj_get_child_count(o); i++) who_walk(lv_obj_get_child(o, (int32_t)i), a, left);
+}
+
+static void trace_who(const lv_area_t *a)
+{
+    lv_display_t *d = U.disp_content;
+    int left = 12;
+    who_walk(lv_display_get_screen_active(d), a, &left);
+    who_walk(lv_display_get_layer_top(d), a, &left);
+}
+#endif
+
 static void big_inv(lv_event_t *e)
 {
     const lv_area_t *a = lv_event_get_param(e);
 #ifdef ESP_PLATFORM
-    if (s_trace_inv > 0 && a)
+    if (s_trace_inv > 0 && a) {
         ESP_LOGI("bz_ui", "inv %d,%d-%d,%d (%d px)", (int)a->x1, (int)a->y1, (int)a->x2, (int)a->y2, (int)lv_area_get_size(a));
+        /* a big one: which object it is. The RISC-V build has no backtrace (ESP_SYSTEM_NO_BACKTRACE), so the
+         * object is found by its rectangle instead, and named by its path of child indices from the screen —
+         * which is what it takes to find it in the source. Rate-limited: the walk costs more than a frame. */
+        static double who_last;
+        double who_now = prof_wall();
+        if (lv_area_get_size(a) >= 300000 && who_now - who_last > 0.5) {
+            who_last = who_now;
+            trace_who(a);
+        }
+    }
 #endif
     static double last;
     if (!a || lv_area_get_size(a) < 300000 || U.offscreen) return;
@@ -499,6 +555,8 @@ bz_glass_t *bz_glass_attach(lv_obj_t *obj, uint8_t group, float radius)
         g->press_scale = BZ_GLASS_PRESS_SCALE;
         g->tint = -1;
         g->lite_opa = -1;
+        g->lite_amt = -1;
+        g->lite_tint = -2;
         bz_motion_init(&g->strength, 0, 0.002f);
         bz_motion_init(&g->press, 0, 0.002f);
         bz_motion_init(&g->scale, 1, 0.0005f);
@@ -572,10 +630,21 @@ static bool update_glass(void)
         if (U.calm) {
             float st = g->strength.value < 0 ? 0 : g->strength.value > 1 ? 1 : g->strength.value;
             int opa = (int)(st * 16 + 0.5f) * 255 / 16;
-            if (opa != g->lite_opa || g->lite_dark != U.dark) {
+            /* The tint too. Reduced transparency makes glass solid, not colourless: the tint is how a
+             * glass control says what it is doing — the assistant's orb goes amber when it needs an
+             * answer — and on the tablet, where calm is always on, it was simply dropped. In 16 steps,
+             * like the opacity, so a breathing tint doesn't restyle on every frame. */
+            int amt = (int)((g->tint_amt.value < 0 ? 0 : g->tint_amt.value > 1 ? 1 : g->tint_amt.value) * 16 + 0.5f);
+            int tint = amt > 0 ? g->tint : -1;
+            if (opa != g->lite_opa || amt != g->lite_amt || tint != g->lite_tint || g->lite_dark != U.dark) {
                 g->lite_opa = opa;
+                g->lite_amt = amt;
+                g->lite_tint = tint;
                 g->lite_dark = U.dark;
-                lv_obj_set_style_bg_color(g->obj, bz_lv(BZ_C_SURFACE2), 0);
+                uint32_t c = bz_color(BZ_C_SURFACE2);
+                static const bz_color_role_t TINT[5] = { BZ_C_SIGNAL, BZ_C_AMBER, BZ_C_LEAF, BZ_C_ICE, BZ_C_FAULT };
+                if (tint >= 0 && tint < 5) c = bz_mix(c, bz_color(TINT[tint]), amt / 16.0f);
+                lv_obj_set_style_bg_color(g->obj, bz_lv_rgb(c), 0);
                 lv_obj_set_style_bg_opa(g->obj, (lv_opa_t)opa, 0);
                 lv_obj_set_style_radius(g->obj, (int32_t)g->radius, 0);
             }
@@ -1473,16 +1542,31 @@ uint16_t *bz_ui_content_buf(void)
  * over it are listed in obs: a list moved by the platform carries those pixels along, so they're drawn
  * again where they were and where they landed. */
 #define SCROLL_OBS 6
+/* Why the last call said no, for the dev console's "inv" trace: the conditions are indistinguishable
+ * from the damage alone, and the whole cost of a scroll turns on which one it was. */
+static char s_unobs_why[96];
+/* Whether a card or a hint drawn over the list is carried with it rather than refused. The dev console's
+ * "carry 0" puts it back the way it was, so both costs can be measured on one build, on one screen. */
+static bool s_carry = true;
+void bz_ui_scroll_carry(bool on) { s_carry = on; }
 static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *nobs)
 {
     *nobs = 0;
     for (lv_obj_t *p = lv_obj_get_parent(o); p; o = p, p = lv_obj_get_parent(p)) {
         lv_area_t pc;
         lv_obj_get_coords(p, &pc);
-        if (!lv_area_is_in(a, &pc, lv_obj_get_style_radius(p, 0))) return false;
-        if (lv_obj_get_style_opa(p, 0) < LV_OPA_MAX || lv_obj_get_style_transform_scale_x(p, 0) != LV_SCALE_NONE ||
-            lv_obj_get_style_transform_scale_y(p, 0) != LV_SCALE_NONE)
+        if (!lv_area_is_in(a, &pc, lv_obj_get_style_radius(p, 0))) {
+            if (s_trace_inv > 0)
+                snprintf(s_unobs_why, sizeof s_unobs_why, "parent %d,%d-%d,%d r%d doesn't hold it", (int)pc.x1,
+                         (int)pc.y1, (int)pc.x2, (int)pc.y2, (int)lv_obj_get_style_radius(p, 0));
             return false;
+        }
+        if (lv_obj_get_style_opa(p, 0) < LV_OPA_MAX || lv_obj_get_style_transform_scale_x(p, 0) != LV_SCALE_NONE ||
+            lv_obj_get_style_transform_scale_y(p, 0) != LV_SCALE_NONE) {
+            if (s_trace_inv > 0)
+                snprintf(s_unobs_why, sizeof s_unobs_why, "parent faded or scaled (opa %d)", (int)lv_obj_get_style_opa(p, 0));
+            return false;
+        }
         uint32_t n = lv_obj_get_child_count(p);
         for (uint32_t i = (uint32_t)lv_obj_get_index(o) + 1; i < n; i++) {
             lv_obj_t *c = lv_obj_get_child(p, (int32_t)i);
@@ -1491,7 +1575,26 @@ static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *n
             lv_obj_get_coords(c, &cc);
             int32_t ext = lv_obj_get_ext_draw_size(c);
             lv_area_increase(&cc, ext, ext);
-            if (lv_area_is_on(&cc, a)) return false;
+            if (lv_area_is_on(&cc, a)) {
+                /* Something drawn over the list is not a reason to redraw the whole list. The top layer's
+                 * chrome has always been carried instead — listed in obs, drawn again where it was and
+                 * where the shift put its copy — and a card inside the app is the same thing seen from a
+                 * different branch of the tree. Refusing cost the assistant's transcript its whole visible
+                 * area, text and all, on every frame that the "can't answer yet" card was up. */
+#if BZ_LEAN
+                if (s_carry && *nobs < SCROLL_OBS && U.cfg.slide && U.cfg.slide->scroll) {
+                    if (s_trace_inv > 0)
+                        ESP_LOGW("bz_ui", "scroll carried sibling %u of %u: %d,%d-%d,%d", (unsigned)i, (unsigned)n,
+                                 (int)cc.x1, (int)cc.y1, (int)cc.x2, (int)cc.y2);
+                    lv_area_intersect(&obs[(*nobs)++], &cc, a);
+                    continue;
+                }
+#endif
+                if (s_trace_inv > 0)
+                    snprintf(s_unobs_why, sizeof s_unobs_why, "later sibling %u of %u over it: %d,%d-%d,%d ext %d",
+                             (unsigned)i, (unsigned)n, (int)cc.x1, (int)cc.y1, (int)cc.x2, (int)cc.y2, (int)ext);
+                return false;
+            }
         }
     }
     lv_obj_t *top = lv_display_get_layer_top(U.disp_content);
@@ -1501,7 +1604,12 @@ static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *n
         lv_obj_get_coords(c, &cc);
         if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN) || !lv_area_is_on(&cc, a)) continue;
 #if BZ_LEAN
-        if (*nobs == SCROLL_OBS || !U.cfg.slide || !U.cfg.slide->scroll) return false;
+        if (*nobs == SCROLL_OBS || !U.cfg.slide || !U.cfg.slide->scroll) {
+            if (s_trace_inv > 0)
+                snprintf(s_unobs_why, sizeof s_unobs_why, "chrome %u over it: %d,%d-%d,%d (%d already)", (unsigned)i,
+                         (int)cc.x1, (int)cc.y1, (int)cc.x2, (int)cc.y2, *nobs);
+            return false;
+        }
         int32_t ext = lv_obj_get_ext_draw_size(c);
         lv_area_increase(&cc, ext, ext);
         lv_area_intersect(&obs[(*nobs)++], &cc, a);
@@ -1515,14 +1623,29 @@ static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *n
 bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
 {
     lv_display_t *d = U.disp_content;
-    /* layout already pending elsewhere invalidates as it normally would; only this move is kept quiet */
+    /* Layout already pending elsewhere invalidates as it normally would; only this move is kept quiet.
+     *
+     * This pass stays. Skipping it -- on the argument that nothing changes between frames of a drag
+     * -- displaced the whole page sideways with a wrap: the blit copies the CLIP's rectangle out of
+     * the framebuffer, and without a settling pass those coordinates can be stale, so it copied the
+     * wrong columns. A cache watching the content cannot see that; the clip is a different object.
+     *
+     * The second pass, which used to follow the move, is gone: see lv_obj_refr_pos below. That was
+     * the expensive half and the dangerous one. */
     lv_obj_update_layout(content);
     lv_area_t a, c0, c1;
     lv_obj_get_coords(clip, &a);
     lv_obj_get_coords(content, &c0);
     lv_display_enable_invalidation(d, false);
     lv_obj_set_y(content, y);
-    lv_obj_update_layout(content);
+    /* This object and its children, not the screen.
+     *
+     * lv_obj_update_layout() walks from the top parent down the entire tree -- it does not lay out
+     * the object it is handed. Running it here, after the move, meant every frame of every drag
+     * re-laid-out every object on screen while things were being built and destroyed underneath,
+     * which is where all three crash core dumps died. lv_obj_refr_pos does what a scroll asks:
+     * apply this object's position and shift its children. */
+    lv_obj_refr_pos(content);
     lv_display_enable_invalidation(d, true);
     lv_obj_get_coords(content, &c1);
     int dy = (int)(c1.y1 - c0.y1), h = (int)lv_area_get_height(&a), w = (int)lv_area_get_width(&a);
@@ -1540,6 +1663,16 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
 #endif
     if (held || U.frozen || U.offscreen || U.thaw >= 0 || abs(dy) >= h || lv_obj_get_style_radius(clip, 0) ||
         !unobstructed(clip, &a, obs, &nobs)) {
+#ifdef ESP_PLATFORM
+        /* The fallback redraws the whole visible list, which is the dearest frame the interface has. While
+         * the dev console's "inv" trace is on, say which of the conditions took it: they are not otherwise
+         * distinguishable from the areas alone. */
+        if (s_trace_inv > 0)
+            ESP_LOGW("bz_ui", "scroll fell back: held %d frozen %d offscreen %d thaw %d dy %d h %d radius %d obstructed %d",
+                     held, U.frozen, U.offscreen, U.thaw, dy, h, (int)lv_obj_get_style_radius(clip, 0),
+                     !unobstructed(clip, &a, obs, &nobs));
+        if (s_trace_inv > 0 && s_unobs_why[0]) ESP_LOGW("bz_ui", "  because: %s", s_unobs_why);
+#endif
         lv_obj_invalidate(clip); /* what a plain move would have: both positions, clipped to the list */
         return false;
     }
