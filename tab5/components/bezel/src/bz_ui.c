@@ -265,26 +265,41 @@ void bz_ui_prof_take(float out[8])
 
 /* Pixels of the content buffer that changed: the compositor's damage, or in lean straight onto the list
  * of areas to present (merged into their bounding box once the list is full). */
+#if BZ_LEAN
+/* One more area on the list of what has to reach the panel.
+ *
+ * A full list is not a reason to forget one. The entries fold into their bounding box and the new area
+ * joins that: more pixels are presented than strictly changed, which costs a little, and nothing is left
+ * stale, which costs nothing. Dropping the area instead loses it for good, because the caller that
+ * collects LVGL's invalidations clears LVGL's own list in the same breath -- so the region keeps whatever
+ * it was holding until something unrelated happens to redraw it. That is the square that updates late
+ * once the interface has been busy for a while and there are more areas in flight than the list holds. */
+static void lean_add(const bz_area_t *b)
+{
+    if (U.nlean < BZ_COMP_MAX_PRESENT) {
+        U.lean[U.nlean++].a = *b;
+        return;
+    }
+    bz_area_t *m = &U.lean[0].a;
+    for (int i = 1; i < U.nlean; i++) {
+        bz_area_t *o = &U.lean[i].a;
+        if (o->x1 < m->x1) m->x1 = o->x1;
+        if (o->y1 < m->y1) m->y1 = o->y1;
+        if (o->x2 > m->x2) m->x2 = o->x2;
+        if (o->y2 > m->y2) m->y2 = o->y2;
+    }
+    U.nlean = 1;
+    if (b->x1 < m->x1) m->x1 = b->x1;
+    if (b->y1 < m->y1) m->y1 = b->y1;
+    if (b->x2 > m->x2) m->x2 = b->x2;
+    if (b->y2 > m->y2) m->y2 = b->y2;
+}
+#endif
+
 static void damage_content(const bz_area_t *b)
 {
 #if BZ_LEAN
-    if (U.nlean == BZ_COMP_MAX_PRESENT) {
-        bz_area_t *m = &U.lean[0].a;
-        for (int i = 1; i < U.nlean; i++) {
-            bz_area_t *o = &U.lean[i].a;
-            if (o->x1 < m->x1) m->x1 = o->x1;
-            if (o->y1 < m->y1) m->y1 = o->y1;
-            if (o->x2 > m->x2) m->x2 = o->x2;
-            if (o->y2 > m->y2) m->y2 = o->y2;
-        }
-        U.nlean = 1;
-        if (b->x1 < m->x1) m->x1 = b->x1;
-        if (b->y1 < m->y1) m->y1 = b->y1;
-        if (b->x2 > m->x2) m->x2 = b->x2;
-        if (b->y2 > m->y2) m->y2 = b->y2;
-    } else {
-        U.lean[U.nlean++].a = *b;
-    }
+    lean_add(b);
 #else
     bz_comp_damage_content(U.comp, b);
 #endif
@@ -914,8 +929,9 @@ bool bz_ui_frame(double now_s)
         for (uint32_t i = 0; i < d->inv_p && i < LV_INV_BUF_SIZE; i++) {
             if (d->inv_area_joined[i]) continue;
             const lv_area_t *m = &d->inv_areas[i];
-            if (U.nlean < BZ_COMP_MAX_PRESENT)
-                U.lean[U.nlean++].a = (bz_area_t){ (int16_t)m->x1, (int16_t)m->y1, (int16_t)m->x2, (int16_t)m->y2 };
+            /* every one of them: d->inv_p is cleared just below, so an area not taken here is not
+             * coming back, and LVGL will not redraw it either (its refresh is paused while held) */
+            lean_add(&(bz_area_t){ (int16_t)m->x1, (int16_t)m->y1, (int16_t)m->x2, (int16_t)m->y2 });
         }
         d->inv_p = 0;
         lv_timer_resume(refr);
