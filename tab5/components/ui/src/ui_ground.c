@@ -241,12 +241,10 @@ static void apply(void)
         lv_obj_move_background(G.strip);
     }
     if (ground == UI_GROUND_PLAIN) {
-        bool was = G.shown > UI_GROUND_PLAIN;
         G.shown = UI_GROUND_PLAIN;
         show_all(); /* nothing points at the pictures before they go */
         buf(&G.strip_px, &G.strip_bytes, 0);
         buf(&G.lines_px, &G.lines_bytes, 0);
-        if (was) ui_icon_ground_changed(); /* what sits on the ground may be opaque again */
         return;
     }
     /* the light: as far down as it reaches (the whole screen for grain), a strip tiled across */
@@ -270,10 +268,8 @@ static void apply(void)
     } else {
         buf(&G.lines_px, &G.lines_bytes, 0);
     }
-    bool was = G.shown > UI_GROUND_PLAIN;
     G.shown = ground;
     show_all();
-    if (!was) ui_icon_ground_changed(); /* what sits on it needs its alpha now */
 }
 
 lv_obj_t *ui_ground_layer(lv_obj_t *parent)
