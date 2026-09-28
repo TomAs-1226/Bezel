@@ -101,6 +101,16 @@ void ui_on_page_refresh(int page, ui_refresh_fn fn, void *user);
  * notifications not yet seen; a tap opens the control center. A message (kept as a notification) flashes it
  * amber and grows out of it as a capsule for ~3 s, then shrinks back in (Bezel's top island). */
 void ui_island_say(const char *icon, const char *text);
+/* Live activities: something going on now that the island keeps showing while it lasts -- a timer counting
+ * down ("timer · 4:59"), the assistant writing a document ("editing notes.md"). The capsule stays open on the
+ * newest one ("· +1" when there are more); a message still shows over it for its few seconds. Any thread may
+ * call these. countdown_s > 0 shows the time left after the words, updated once a second (the activity is
+ * dropped by itself 90 s after reaching zero if nobody ends it). Ending one may leave a message (`said`, or
+ * NULL for none), which is said and kept like any other. Returns the activity's id (> 0). */
+int ui_activity_begin(const char *icon, const char *text, double countdown_s);
+void ui_activity_update(int id, const char *text);
+void ui_activity_end(int id, const char *said);
+bool ui_activity_live(int id);
 
 /* App windows grow out of the icon that opened them and can be dragged down to close. */
 typedef struct {

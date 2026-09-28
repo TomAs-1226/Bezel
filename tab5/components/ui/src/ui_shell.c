@@ -13,6 +13,7 @@
 #include "ui_home_mode.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -838,7 +839,7 @@ static int s_bandn;
 static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) && strncmp(line, "phone", 5) &&
-        strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
+        strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) && strncmp(line, "act", 3) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
         strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5) &&
         strncmp(line, "cut", 3))
@@ -949,6 +950,20 @@ static void dev_run(void)
     } else if (!strncmp(s_dev_cmd, "say ", 4)) {
         /* a message out of the island, as any notification comes */
         ui_island_say(BZ_I_INFO, s_dev_cmd + 4);
+    } else if (!strncmp(s_dev_cmd, "act", 3)) {
+        /* "act N words": a live activity counting down N s (0: none) under those words; "act end [words]"
+         * ends the newest, leaving the words as a message */
+        static int ids[8], n;
+        const char *a = s_dev_cmd + 3;
+        if (!strncmp(a, " end", 4)) {
+            if (n) ui_activity_end(ids[--n], a[4] == ' ' ? a + 5 : NULL);
+        } else if (*a == ' ') {
+            char *rest;
+            double secs = strtod(a + 1, &rest);
+            while (*rest == ' ') rest++;
+            int id = ui_activity_begin(secs > 0 ? BZ_I_TIMER : BZ_I_EDIT_NOTE, *rest ? rest : "working", secs);
+            if (n < 8) ids[n++] = id;
+        }
     } else if (!strncmp(s_dev_cmd, "accent ", 7)) {
         /* "accent violet" or "accent 3" */
         const char *a = s_dev_cmd + 7;
@@ -1212,26 +1227,186 @@ static void status_refresh(void)
     else ui_text(U.st_clock, "--:--");
 }
 
-/* A message out of the orb: the words set and measured, the capsule sent to their width. A message arriving
- * while one shows reshapes the capsule from where it is and starts the hold again. */
+/* The capsule's words: set and measured, the capsule sent to their width (a change of width only; the words
+ * are re-measured only when they change). */
+static void island_words(const char *icon, const char *text)
+{
+    const char *ic = icon ? icon : BZ_I_INFO;
+    if (strcmp(lv_label_get_text(IS.icon), ic)) lv_label_set_text(IS.icon, ic);
+    if (strcmp(lv_label_get_text(IS.text), text) || IS.msg_w == ORB_D) {
+        lv_point_t sz;
+        lv_text_get_size(&sz, text, bz_font(BZ_F_LABEL), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        int room = ISL_MAX_W - ISL_PAD - ISL_ICON - 10 - (ORB_D - 4);
+        int tw = sz.x < room ? sz.x + 2 : room;
+        ui_text(IS.text, "%s", text);
+        if (lv_obj_get_width(IS.text) != tw) lv_obj_set_width(IS.text, tw);
+        lv_obj_align(IS.text, LV_ALIGN_RIGHT_MID, -(ORB_D - 4), 0);
+        lv_obj_align(IS.icon, LV_ALIGN_RIGHT_MID, -(ORB_D - 4 + tw + 10), 0);
+        IS.msg_w = ISL_PAD + ISL_ICON + 10 + tw + ORB_D - 4;
+    }
+    if (fabsf(IS.w.target - (float)IS.msg_w) > 0.5f) bz_motion_to(&IS.w, (float)IS.msg_w, BZ_RELEASE);
+}
+
+/* A message out of the orb, held a few seconds. A message arriving while one shows reshapes the capsule from
+ * where it is and starts the hold again. */
 static void island_show(const char *icon, const char *text, bool flash)
 {
     if (!IS.obj) return;
-    const char *ic = icon ? icon : BZ_I_INFO;
-    if (strcmp(lv_label_get_text(IS.icon), ic)) lv_label_set_text(IS.icon, ic);
-    lv_point_t sz;
-    lv_text_get_size(&sz, text, bz_font(BZ_F_LABEL), 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
-    int room = ISL_MAX_W - ISL_PAD - ISL_ICON - 10 - (ORB_D - 4);
-    int tw = sz.x < room ? sz.x + 2 : room;
-    ui_text(IS.text, "%s", text);
-    if (lv_obj_get_width(IS.text) != tw) lv_obj_set_width(IS.text, tw);
-    lv_obj_align(IS.text, LV_ALIGN_RIGHT_MID, -(ORB_D - 4), 0);
-    lv_obj_align(IS.icon, LV_ALIGN_RIGHT_MID, -(ORB_D - 4 + tw + 10), 0);
-    IS.msg_w = ISL_PAD + ISL_ICON + 10 + tw + ORB_D - 4;
+    island_words(icon, text);
     IS.until = g_now + ISL_HOLD_S;
-    if (fabsf(IS.w.target - (float)IS.msg_w) > 0.5f) bz_motion_to(&IS.w, (float)IS.msg_w, BZ_RELEASE);
     if (flash) IS.flash_at = g_now;
     bz_ui_keep_alive();
+}
+
+/* ---- live activities: what is going on right now, kept on the island while it lasts ----
+ *
+ * A timer counting down, the assistant writing a document. Unlike a message, an activity holds the capsule
+ * open until it ends; a message still shows over it for its few seconds, and the capsule goes back to the
+ * activity after. Any thread may begin, update and end one (the assistant's workers do): they only write
+ * this table under its lock, and the island's frame on the UI thread draws it. An activity's end can leave a
+ * message behind, which is said the ordinary way (kept as a notification). */
+#define ACT_MAX 4
+#define ACT_STALE_S 90.0 /* a countdown nobody ended, this long after it reached zero: dropped */
+static pthread_mutex_t s_act_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    int id;              /* 0: a free slot */
+    char icon[8];
+    char text[72];
+    double ends;         /* hal_seconds() a countdown reaches zero (0: not a countdown) */
+    double at;           /* when it began or last changed: the newest is the one shown */
+} s_act[ACT_MAX];
+static struct {
+    bool pending;
+    char icon[8];
+    char text[96];
+} s_act_said[ACT_MAX];
+static int s_act_next = 1;
+static unsigned s_act_gen;
+
+static int act_slot(int id)
+{
+    for (int i = 0; i < ACT_MAX; i++) if (id > 0 && s_act[i].id == id) return i;
+    return -1;
+}
+
+int ui_activity_begin(const char *icon, const char *text, double countdown_s)
+{
+    pthread_mutex_lock(&s_act_lock);
+    int slot = -1;
+    double oldest = 1e18;
+    for (int i = 0; i < ACT_MAX && slot < 0; i++) if (!s_act[i].id) slot = i;
+    if (slot < 0) /* all taken: the oldest gives way */
+        for (int i = 0; i < ACT_MAX; i++) if (s_act[i].at < oldest) { oldest = s_act[i].at; slot = i; }
+    int id = s_act_next++;
+    if (s_act_next <= 0) s_act_next = 1;
+    double now = hal_seconds();
+    s_act[slot].id = id;
+    snprintf(s_act[slot].icon, sizeof s_act[slot].icon, "%s", icon ? icon : BZ_I_AUTO_AWESOME);
+    snprintf(s_act[slot].text, sizeof s_act[slot].text, "%s", text ? text : "");
+    s_act[slot].ends = countdown_s > 0 ? now + countdown_s : 0;
+    s_act[slot].at = now;
+    s_act_gen++;
+    pthread_mutex_unlock(&s_act_lock);
+    return id;
+}
+
+void ui_activity_update(int id, const char *text)
+{
+    pthread_mutex_lock(&s_act_lock);
+    int i = act_slot(id);
+    if (i >= 0 && text && strcmp(s_act[i].text, text)) {
+        snprintf(s_act[i].text, sizeof s_act[i].text, "%s", text);
+        s_act_gen++;
+    }
+    pthread_mutex_unlock(&s_act_lock);
+}
+
+void ui_activity_end(int id, const char *said)
+{
+    pthread_mutex_lock(&s_act_lock);
+    int i = act_slot(id);
+    if (i >= 0) {
+        if (said && said[0]) {
+            s_act_said[i].pending = true;
+            snprintf(s_act_said[i].icon, sizeof s_act_said[i].icon, "%s", s_act[i].icon);
+            snprintf(s_act_said[i].text, sizeof s_act_said[i].text, "%s", said);
+        }
+        s_act[i].id = 0;
+        s_act_gen++;
+    }
+    pthread_mutex_unlock(&s_act_lock);
+}
+
+bool ui_activity_live(int id)
+{
+    pthread_mutex_lock(&s_act_lock);
+    bool live = act_slot(id) >= 0;
+    pthread_mutex_unlock(&s_act_lock);
+    return live;
+}
+
+/* UI thread, every frame: messages left by ended activities, and what the capsule shows while any is live.
+ * Words change at most once a second (a countdown), so this costs a label and nothing else. true: an
+ * activity holds the capsule open. */
+static bool s_act_force; /* a message's hold ended: what the capsule shows is decided again */
+static bool island_activities(double now)
+{
+    static unsigned gen = (unsigned)-1;
+    static int last_sec = -1;
+    static bool held;
+    int sec = (int)now;
+    if (gen == s_act_gen && sec == last_sec && !s_act_force) return held;
+    s_act_force = false;
+    held = false;
+    char said_icon[ACT_MAX][8], said_text[ACT_MAX][96];
+    int nsaid = 0;
+    char icon[8] = "", text[112] = "";
+    int live = 0;
+    pthread_mutex_lock(&s_act_lock);
+    gen = s_act_gen;
+    last_sec = sec;
+    for (int i = 0; i < ACT_MAX; i++)
+        if (s_act_said[i].pending) {
+            s_act_said[i].pending = false;
+            memcpy(said_icon[nsaid], s_act_said[i].icon, sizeof said_icon[0]);
+            memcpy(said_text[nsaid], s_act_said[i].text, sizeof said_text[0]);
+            nsaid++;
+        }
+    int show = -1;
+    for (int i = 0; i < ACT_MAX; i++) {
+        if (!s_act[i].id) continue;
+        if (s_act[i].ends > 0 && now - s_act[i].ends > ACT_STALE_S) { /* ended by nobody */
+            s_act[i].id = 0;
+            continue;
+        }
+        live++;
+        if (show < 0 || s_act[i].at > s_act[show].at) show = i;
+    }
+    if (show >= 0) {
+        snprintf(icon, sizeof icon, "%s", s_act[show].icon);
+        if (s_act[show].ends > 0) {
+            int left = (int)ceil(s_act[show].ends - now);
+            if (left < 0) left = 0;
+            if (left >= 3600)
+                snprintf(text, sizeof text, "%s \xc2\xb7 %d:%02d:%02d", s_act[show].text, left / 3600, left / 60 % 60, left % 60);
+            else snprintf(text, sizeof text, "%s \xc2\xb7 %d:%02d", s_act[show].text, left / 60, left % 60);
+        } else {
+            snprintf(text, sizeof text, "%s", s_act[show].text);
+        }
+        if (live > 1) {
+            size_t l = strlen(text);
+            snprintf(text + l, sizeof text - l, " \xc2\xb7 +%d", live - 1);
+        }
+    }
+    pthread_mutex_unlock(&s_act_lock);
+    for (int i = 0; i < nsaid; i++) ui_island_say(said_icon[i], said_text[i]);
+    if (!live) {
+        if (IS.until == 0 && IS.w.target > ORB_D) bz_motion_to(&IS.w, ORB_D, BZ_SMOOTH);
+        return false;
+    }
+    if (IS.until == 0) island_words(icon, text); /* a message holding the capsule goes first */
+    held = true;
+    return true;
 }
 
 void ui_island_say(const char *icon, const char *text)
@@ -1267,8 +1442,10 @@ static void island_frame(double now)
     if (SL.active || bz_ui_sheeting()) return; /* a picture is sliding: nothing drawn under it */
     if (IS.until && now >= IS.until) {
         IS.until = 0;
-        bz_motion_to(&IS.w, ORB_D, BZ_SMOOTH);
+        s_act_force = true;
+        bz_motion_to(&IS.w, ORB_D, BZ_SMOOTH); /* or back to a live activity, just below */
     }
+    island_activities(now);
     bool moving = bz_motion_tick(&IS.w);
     float wv = IS.w.value;
     int w = (int)lroundf(wv < ORB_D ? ORB_D : wv > ISL_MAX_W + 24 ? ISL_MAX_W + 24 : wv);
@@ -1374,6 +1551,29 @@ static lv_obj_t *app_inner(const ui_app_t *app)
         U.nbuilt++;
     }
     return inner;
+}
+
+/* The apps that are slow to build, built ahead while the tablet sits idle, one per idle spell, so that their
+ * first open is not a freeze: settings measured 396 ms to build, systemcore 187 (the rest are under 50). Built
+ * into the window while it is hidden, so nothing is drawn; ui_app_open finds them already there. */
+static void warm_apps(double now)
+{
+    static const ui_app_t *const WARM[] = { &APP_SETTINGS, &APP_SYSTEMCORE };
+    static size_t next;
+    static double idle_since;
+    if (next >= sizeof WARM / sizeof WARM[0]) return;
+    bool quiet = !U.app && U.k.value <= 0.01f && lv_obj_has_flag(U.win, LV_OBJ_FLAG_HIDDEN) && !MC.pages && !MC.window &&
+                 !bz_ui_thawing() && !ui_home_mode_active() && !ui_overlay_up() && !ui_alarm_up() && bz_ui_idle_s() > 3;
+    if (!quiet || now < 20) {
+        idle_since = now;
+        return;
+    }
+    if (now - idle_since < 1) return; /* quiet for a moment first: not the frame a finger lands */
+    double t0 = hal_seconds();
+    app_inner(WARM[next]);
+    printf("app %s: built ahead in %.0f ms\n", WARM[next]->name, (hal_seconds() - t0) * 1e3);
+    next++;
+    idle_since = now;
 }
 
 static void pill_tap(lv_obj_t *o, void *u)
@@ -2213,6 +2413,7 @@ static void shell_frame(double now, double dt, void *user)
     if (MC.pages && !paging && !bz_drag_active() && fabsf(U.offset.value + U.page * W) < 0.5f) pages_end();
     if (!bz_ui_thawing()) thaw_layers_drop();
     caches_idle();
+    warm_apps(now);
     PROF_MARK(1);
     dock_frame();
     island_frame(now);
