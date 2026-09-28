@@ -1134,7 +1134,7 @@ static bool do_documents(args_t *a, char *out, size_t n)
     bool trunc = false;
     for (int i = 0; i < 3 && !txt; i++) {
         snprintf(path, sizeof path, "%s/%s%s", dir, name, EXT[i]);
-        txt = cstore_read(path, n > 200 ? n - 200 : n, &len, &trunc);
+        txt = cstore_read(path, n > 1800 ? n - 1800 : n, &len, &trunc); /* room for JSON escaping */
     }
     if (!txt) {
         cstore_entry_t *e = malloc(sizeof *e * 48);
@@ -1146,7 +1146,7 @@ static bool do_documents(args_t *a, char *out, size_t n)
             if (dot) *dot = 0;
             if (strcasecmp(e[i].name, name) && strcasecmp(stem, name)) continue;
             snprintf(path, sizeof path, "%s/%s", dir, e[i].name);
-            txt = cstore_read(path, n > 200 ? n - 200 : n, &len, &trunc);
+            txt = cstore_read(path, n > 1800 ? n - 1800 : n, &len, &trunc); /* room for JSON escaping */
         }
         free(e);
     }

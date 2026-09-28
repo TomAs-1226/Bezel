@@ -176,6 +176,8 @@ say it and not do it.
 - The dev console (`tools/tab5_dev.py COM9 "..."`; for the console's own output use a serial reader such
   as `tab5-shots/brain/tabcmd.py`, since tab5_dev prints only its replies):
   - `ask <text>` the companion; `assist ask <text>`, `assist new`, `assist dump` the technician;
+  - `assist act <tool> <json>` runs one tablet tool as a model's call would (`assist act timer
+    {"action":"status"}`), no model needed; the notes take `{"action":"clear"}` here (never from a model);
   - `memo`, `memo a|c`, `memo digest a|c [question]`, `memo forget a|c <id>`, `memo clear a|c`,
     `memo open a|c`;
   - `assist robot <address>` points the tablet at a robot (`tools/fake_robot.py --host 0.0.0.0

@@ -1029,7 +1029,11 @@ static as_tres_t t_triage(as_env_t *e, ab_t *o, char *s, size_t sn)
     kstr(o, "columns", "[severity, area, finding, next check]");
     key(o, "findings");
     ab_puts(o, "[");
+    int shown = 0;
     for (int i = 0; i < n; i++) {
+        /* whole findings within the result's budget, the worst first: the rest counted, never cut mid-way */
+        if (o->n > AS_RESULT_MAX - 900) break;
+        shown++;
         comma(o);
         ab_puts(o, "[");
         ab_str(o, as_dg_sev_name(f[i].sev));
@@ -1042,6 +1046,7 @@ static as_tres_t t_triage(as_env_t *e, ab_t *o, char *s, size_t sn)
         ab_puts(o, "]");
     }
     ab_puts(o, "]");
+    if (shown < n) kint(o, "more_findings_not_listed", n - shown);
     if (!n) kstr(o, "note", "nothing the tablet can see is wrong; a problem it can't see (mechanical, wiring under load) needs a look or a test");
     ab_puts(o, "}");
     if (!r->connected) sum(s, sn, "robot not connected");
@@ -1274,7 +1279,10 @@ static as_tres_t t_recall(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t 
     kstr(o, "columns", "[id, kind, importance, date, text]");
     key(o, "memories");
     ab_puts(o, "[");
+    int listed = 0;
     for (int i = 0; i < k; i++) {
+        if (o->n > AS_RESULT_MAX - 1200) break; /* whole memories within the result's budget */
+        listed++;
         as_mem_item_t *it = &m->it[idx[i]];
         it->uses++; /* kept with the next change: a recall alone isn't worth a write */
         char d[16];
@@ -1289,6 +1297,7 @@ static as_tres_t t_recall(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t 
         ab_puts(o, "]");
     }
     ab_puts(o, "]");
+    if (listed < k) kint(o, "more_matches_not_listed", k - listed);
     if (!k && m->n) kstr(o, "note", "nothing matched: try other words, a kind, or no query for the most important");
     ab_puts(o, "}");
     int total = m->n;
