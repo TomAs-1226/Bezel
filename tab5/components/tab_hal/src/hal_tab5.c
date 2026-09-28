@@ -1026,6 +1026,9 @@ static void present_do(const bz_present_t *areas, int n)
         rec[nrec++] = (bz_present_t){ s_jscroll[i].a, NULL, 0 };
         rows_of(&s_jscroll[i].a, &y0, &y1);
     }
+    /* The shift first, then the strips over it. Turning the strips that don't land on the shift while it runs
+     * was tried and bought nothing (16.7 ms a frame against 16.8): both engines are bound by the same PSRAM,
+     * so overlapping them only shares it. */
     scroll_apply(fb);
     double t3 = hal_seconds();
     for (int i = 0; i < n; i++) {
@@ -1204,6 +1207,50 @@ static void blk_copy_async(uint16_t *dst, int dx, int dy, const uint16_t *src, i
         .pixel_format_unique_id = { .color_type_id = COLOR_TYPE_ID(COLOR_SPACE_RGB, COLOR_PIXEL_RGB565) },
     };
     if (esp_async_fbcpy(s_fbcpy, &t, fbcpy_done, NULL) == ESP_OK) s_fbcpy_pending = true;
+}
+
+/* A second copier, for scrolls. The DMA2D has two receive channels and a copy holds one; the PPA, which takes
+ * the other when it turns a picture, is idle while a scroll's shift runs (the rotations wait for it), so the
+ * shift is split between both copiers. "dual 0" on the dev console runs it on one, for timing. */
+static esp_async_fbcpy_handle_t s_fbcpy2;
+static SemaphoreHandle_t s_fbcpy2_done;
+static bool s_fbcpy2_pending;
+static bool s_scroll_dual = true;
+void hal_scroll_dual(bool on) { s_scroll_dual = on; }
+
+static bool fbcpy2_done(esp_async_fbcpy_handle_t h, esp_async_fbcpy_event_data_t *e, void *arg)
+{
+    (void)h; (void)e; (void)arg;
+    BaseType_t woken = pdFALSE;
+    xSemaphoreGiveFromISR(s_fbcpy2_done, &woken);
+    return woken == pdTRUE;
+}
+
+static void fbcpy2_wait(void)
+{
+    if (!s_fbcpy2_pending) return;
+    xSemaphoreTake(s_fbcpy2_done, pdMS_TO_TICKS(100));
+    s_fbcpy2_pending = false;
+}
+
+static void blk_copy_async2(uint16_t *dst, int dx, int dy, const uint16_t *src, int sx, int sy, int w, int h)
+{
+    if (!s_fbcpy2) {
+        blk_copy_async(dst, dx, dy, src, sx, sy, w, h);
+        return;
+    }
+    fbcpy2_wait();
+    if (w <= 0 || h <= 0) return;
+    esp_async_fbcpy_trans_desc_t t = {
+        .src_buffer = src, .dst_buffer = dst,
+        .src_buffer_size_x = PANEL_W, .src_buffer_size_y = PANEL_H,
+        .dst_buffer_size_x = PANEL_W, .dst_buffer_size_y = PANEL_H,
+        .src_offset_x = (size_t)sx, .src_offset_y = (size_t)sy,
+        .dst_offset_x = (size_t)dx, .dst_offset_y = (size_t)dy,
+        .copy_size_x = (size_t)w, .copy_size_y = (size_t)h,
+        .pixel_format_unique_id = { .color_type_id = COLOR_TYPE_ID(COLOR_SPACE_RGB, COLOR_PIXEL_RGB565) },
+    };
+    if (esp_async_fbcpy(s_fbcpy2, &t, fbcpy2_done, NULL) == ESP_OK) s_fbcpy2_pending = true;
 }
 
 static void blk_copy(uint16_t *dst, int dx, int dy, const uint16_t *src, int sx, int sy, int w, int h)
@@ -1436,6 +1483,11 @@ static void slide_init(void)
         ESP_LOGW(TAG, "no DMA2D copier: page slides fall back to the landscape path");
     }
     s_fbcpy_done = xSemaphoreCreateBinary();
+    s_fbcpy2_done = xSemaphoreCreateBinary();
+    if (s_fbcpy && (!s_fbcpy2_done || esp_async_fbcpy_install(&cfg, &s_fbcpy2) != ESP_OK)) {
+        s_fbcpy2 = NULL;
+        ESP_LOGW(TAG, "no second DMA2D copier: scrolls shift on one");
+    }
     /* Phone mode never takes these paths (hal_display leaves SLIDE_OPS out), and the renderer's own
      * fallback wants three screens of PSRAM of its own: four unused ones here would not fit beside them. */
     if (s_phone) return;
@@ -1524,7 +1576,7 @@ static void slide_scroll(const bz_area_t *a, int dy)
 }
 
 /* Each scrolled rect: the rows that stay in view, from the glass, dy rows further on. In the portrait
- * buffer a landscape row is a column, so it's one DMA2D rectangle. */
+ * buffer a landscape row is a column, so it's one DMA2D rectangle, split between both copiers. */
 static bool scroll_apply(void *fb)
 {
     if (!s_njscroll) return false;
@@ -1537,9 +1589,17 @@ static bool scroll_apply(void *fb)
         int dx, dyy, sx, sy, w, h;
         portrait_rect(&dst, &dx, &dyy, &w, &h);
         portrait_rect(&src, &sx, &sy, &w, &h);
-        blk_copy_async(fb, dx, dyy, front, sx, sy, w, h);
+        if (s_scroll_dual && s_fbcpy2 && h >= 64) {
+            /* the panel rows it spans, half to each copier (a landscape column is a portrait row) */
+            int h1 = h / 2;
+            blk_copy_async(fb, dx, dyy, front, sx, sy, w, h1);
+            blk_copy_async2(fb, dx, dyy + h1, front, sx, sy + h1, w, h - h1);
+        } else {
+            blk_copy_async(fb, dx, dyy, front, sx, sy, w, h);
+        }
     }
     fbcpy_wait(); /* before anything is turned over it */
+    fbcpy2_wait();
     s_njscroll = 0;
     return true;
 }

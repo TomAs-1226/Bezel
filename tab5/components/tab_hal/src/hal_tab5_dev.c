@@ -491,6 +491,10 @@ static void run(char *line)
     } else if (!strcmp(line, "flip")) {
         hal_set_flip(!hal_flip());
         say("OK\n");
+    } else if (!strncmp(line, "dual", 4) && (line[4] == 0 || line[4] == ' ')) {
+        /* "dual 0": a scroll's shift runs on one DMA2D copier, as it did; "dual 1": split between two */
+        hal_scroll_dual(!(line[4] == ' ' && line[5] == '0'));
+        say("OK\n");
     } else if (s_handler && s_handler(line)) {
         vTaskDelay(pdMS_TO_TICKS(200)); /* the UI's loop picks it up next frame */
         say("OK\n");

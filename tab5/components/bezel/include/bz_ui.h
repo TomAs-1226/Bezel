@@ -110,6 +110,11 @@ uint16_t *bz_ui_content_buf(void);
  * pixels couldn't be right: frozen, partly off screen or clipped, something drawn over the list, a
  * rounded clip, or a jump taller than the list. Returns true if the pixels were moved. */
 bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y);
+/* Chrome whose middle hides what is under it completely (a baked, opaque surface such as the dock): its
+ * rectangle inset by ix, iy. A list scrolling under it is shifted in the pieces around that core instead of
+ * through it, so the chrome's pixels are never carried along and it is not drawn again every frame; only its
+ * rounded ends (what the inset leaves) are. Top-layer objects only; up to four. */
+void bz_ui_opaque_core(lv_obj_t *o, int ix, int iy);
 
 /* ---- performance ---- */
 typedef struct {
@@ -162,6 +167,7 @@ void bz_ui_hooks_report(void);
  * where the shift put its copy) rather than making the whole list redraw. "carry 0" on the dev console
  * puts the old behaviour back, so both costs can be measured on one build. */
 void bz_ui_scroll_carry(bool on);
+void bz_ui_scroll_cut(bool on); /* "cut 0": lists carry opaque chrome through them as before (A/B timing) */
 void bz_ui_trace_inv(int frames); /* log every invalidated area for this many frames */ /* logs each frame hook's time since the last call */
 /* Near-whole-screen invalidations since the last call, and the pixels they asked for: each one costs a
  * full LVGL redraw and a full-frame rotation (~90 ms together), so this is the number to watch. */
