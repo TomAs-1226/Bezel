@@ -855,11 +855,13 @@ static void dots_minute(const struct tm *tm, bool force)
                 hm_show(o, false);
                 continue;
             }
-            int d = st == 1 ? 20 : 9;
+            /* The halo is a glow, not a second set of dots: at 150 it filled the counters of the digits (the
+             * inside of a 0, the gaps of a 2) with near-lit accent dots and the time stopped reading at a glance */
+            int d = st == 1 ? 20 : 8;
             lv_obj_set_size(o, d, d);
             lv_obj_set_pos(o, DT_X + k * DT_CELL + (DT_CELL - d) / 2, DT_Y + r * DT_CELL + (DT_CELL - d) / 2);
             fill_rgb(o, st == 1 ? ink : halo);
-            lv_obj_set_style_bg_opa(o, st == 1 ? LV_OPA_COVER : (lv_opa_t)(dark ? 150 : 70), 0);
+            lv_obj_set_style_bg_opa(o, st == 1 ? LV_OPA_COVER : (lv_opa_t)(dark ? 70 : 45), 0);
             hm_show(o, true);
         }
     char d[48], w[48];
