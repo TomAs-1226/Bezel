@@ -9,6 +9,8 @@ void ui_intel_boot(void);
 /* The insights app; ui_intel_ask opens it with the ask bar's keyboard up. */
 extern const ui_app_t APP_INTEL;
 void ui_intel_ask(lv_obj_t *from);
+/* The insights app on a view: 0 now, 1 the briefing (phone mode), 2 sources, 3 settings. */
+void ui_intel_open_view(int view, lv_obj_t *from);
 /* Settings for the core, into a flex column (the insights app's settings view). */
 void ui_intel_settings(lv_obj_t *col, int w);
 /* The control center's ask tile (ui_cc_init asks for it). */

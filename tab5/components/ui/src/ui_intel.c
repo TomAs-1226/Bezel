@@ -517,6 +517,7 @@ static struct {
     ui_kb_t *kb;
     int view;
     bool want_kb;
+    int want_view;             /* a view asked for before the app opened, + 1 */
     unsigned list_gen, sum_gen;
     char brief_shown[3072];
     double src_next;
@@ -961,6 +962,10 @@ static void intel_open(void)
     AP.list_gen = ~0u;
     make_brief();
     AP.brief_shown[0] = 0;
+    if (AP.want_view) {
+        show_view(AP.want_view - 1);
+        AP.want_view = 0;
+    }
     if (AP.want_kb) {
         AP.want_kb = false;
         ask_tap(NULL, NULL);
@@ -1028,6 +1033,17 @@ static void intel_refresh(void)
 
 const ui_app_t APP_INTEL = { .name = "insights", .icon = BZ_I_INSIGHTS, .build = intel_build, .open = intel_open,
                              .close = intel_close, .refresh = intel_refresh };
+
+void ui_intel_open_view(int view, lv_obj_t *from)
+{
+    AP.want_view = view + 1;
+    if (ui_app_is_open(&APP_INTEL)) {
+        AP.want_view = 0;
+        show_view(view);
+        return;
+    }
+    ui_app_open(&APP_INTEL, from);
+}
 
 void ui_intel_ask(lv_obj_t *from)
 {

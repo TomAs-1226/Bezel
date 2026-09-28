@@ -1430,6 +1430,7 @@ static void sa_open_companion(lv_obj_t *o, void *u)
 }
 
 static void sa_memory(lv_obj_t *o, void *u) { ui_memory_open((int)(intptr_t)u, o); }
+static void sa_intel(lv_obj_t *o, void *u) { ui_intel_open_view((int)(intptr_t)u, o); }
 
 static lv_obj_t *sa_row(lv_obj_t *parent, int w)
 {
@@ -1476,6 +1477,17 @@ void ui_assist_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     n = bz_label(col, "Each keeps its own long-term memory, and neither can read the other's: the technician its season "
                       "notebook and what it learns about the robot and the team, the companion her persona and what she "
                       "learns about you. Both on the card, in CATOS/DATA. See, delete, or forget everything there.",
+                 BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(n, w);
+    lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
+
+    bz_label(col, "the intelligence core", BZ_F_LABEL, BZ_C_DIM);
+    r = sa_row(col, w);
+    ui_button(r, BZ_I_INSIGHTS, "what it noticed", sa_intel, (void *)0);
+    ui_button(r, BZ_I_SETTINGS, "its settings", sa_intel, (void *)3);
+    n = bz_label(col, "The tablet watches the queue (Nexus), the schedule, the battery pick, the robot and its last run, and "
+                      "says what needs doing on the island, once, without nagging; a briefing each morning if you want one; "
+                      "and an ask bar for anything (a long press on the orb, or the control center).",
                  BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(n, w);
     lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
