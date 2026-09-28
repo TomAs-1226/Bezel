@@ -57,6 +57,7 @@ lv_obj_t *ui_empty_row(lv_obj_t *parent, int w, const char *icon, const char *ti
         lv_obj_t *l = bz_label(col, text, BZ_F_BODY_S, BZ_C_DIM);
         lv_obj_set_width(l, inner);
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_line_space(l, 5, 0); /* prose: the face's own leading is a value's */
     }
     return t;
 }
@@ -88,6 +89,7 @@ lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *t
         lv_obj_t *l = bz_label(t, text, BZ_F_BODY_S, BZ_C_DIM);
         lv_obj_set_width(l, tw);
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_line_space(l, 5, 0); /* prose: the face's own leading is a value's */
         lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     }
     return t;
@@ -116,6 +118,7 @@ lv_obj_t *ui_empty_center(lv_obj_t *parent, int w, int h, const char *icon, cons
         lv_obj_t *l = bz_label(t, text, BZ_F_BODY_S, BZ_C_DIM);
         lv_obj_set_width(l, w - 40 > 600 ? 600 : w - 40);
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_line_space(l, 5, 0); /* prose: the face's own leading is a value's */
         lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     }
     return t;
