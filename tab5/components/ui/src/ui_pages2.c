@@ -36,10 +36,13 @@ static void open_app_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u
 #define DRAWER_INSET 18
 static lv_obj_t *drawer(lv_obj_t *page, int x, int w)
 {
-    lv_obj_t *d = bz_tile(page, w, H - BODY_Y + DRAWER_R);
+    /* a plain surface, not a tile: a tile answers a press with its state layer, and the press that starts every
+     * swipe across this page would restyle (and redraw) the whole drawer and everything in it */
+    lv_obj_t *d = bz_box(page);
+    lv_obj_set_size(d, w, H - BODY_Y + DRAWER_R);
+    lv_obj_add_style(d, bz_style_fill(BZ_C_SURFACE1), 0);
     lv_obj_set_pos(d, x, BODY_Y);
     lv_obj_set_style_radius(d, DRAWER_R, 0);
-    lv_obj_set_style_pad_all(d, 0, 0);
     lv_obj_t *wrap = bz_box(d);
     lv_obj_set_pos(wrap, DRAWER_INSET, DRAWER_R / 2);
     return ui_scroller(wrap, w - 2 * DRAWER_INSET, H - BODY_Y - DRAWER_R / 2);
