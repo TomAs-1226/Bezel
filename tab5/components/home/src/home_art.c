@@ -28,14 +28,22 @@ const char *home_art_style_name(int style)
 static uint32_t fold(const char *s, uint32_t h)
 {
     /* lowercase, and runs of spaces as one, trimmed: "The Band " and "the band" are the same album */
-    char prev = ' ';
+    bool gap = false, any = false;
     if (!h) h = 2166136261u;
     for (; s && *s; s++) {
         char ch = (char)tolower((unsigned char)*s);
-        if (ch == ' ' && prev == ' ') continue;
+        if (ch == ' ' || ch == '\t') {
+            gap = any; /* a space counts only once, and only between words */
+            continue;
+        }
+        if (gap) {
+            h ^= (uint8_t)' ';
+            h *= 16777619u;
+            gap = false;
+        }
         h ^= (uint8_t)ch;
         h *= 16777619u;
-        prev = ch;
+        any = true;
     }
     return h;
 }

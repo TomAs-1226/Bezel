@@ -106,6 +106,21 @@ void home_pc_get(home_pc_t *out)
     pthread_mutex_unlock(&g_lock);
 }
 
+void home_pc_trim(void)
+{
+    pthread_mutex_lock(&g_lock);
+    uint16_t *old = NULL;
+    if (P && P->art) {
+        old = P->art;
+        P->art = NULL;
+        P->art_id[0] = 0; /* fetched again the next time something shows it */
+        P->st.art_gen++;
+        P->st.gen++;
+    }
+    pthread_mutex_unlock(&g_lock);
+    free(old);
+}
+
 bool home_pc_art(uint16_t *px, unsigned *gen)
 {
     bool ok = false;

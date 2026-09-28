@@ -404,6 +404,7 @@ void hm_art_trim(void)
         e->state = A_FREE;
     }
     pthread_mutex_unlock(&A.lock);
+    home_pc_trim(); /* and the PC's own art, which the Link sends at the big size */
 }
 
 /* ---------------------------------------------------------------- the dev console */

@@ -1,7 +1,10 @@
-/* Tests for home mode's two additions that don't need a card, a camera or a microphone to get right:
- * the timed photo's retention decision (home_capture_plan, home_capture_policy.c) and the room-occupied
- * hysteresis (home_presence_step, home_presence_policy.c). Called from test_main.c. */
+/* Tests for the parts of home mode that don't need a card, a camera, a microphone or a screen to get right: the
+ * timed photo's retention decision (home_capture_plan, home_capture_policy.c), the room-occupied hysteresis
+ * (home_presence_step, home_presence_policy.c), and the generated covers and their tint (home_art.c): the same
+ * album always the same cover, and text legible on any tint. Called from test_main.c. */
 #include "home.h"
+#include "home_art.h"
+#include "home_px.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -130,10 +133,63 @@ static void presence_empties_after_sustained_quiet(void)
     CHECK(t.state == HOME_PRESENCE_EMPTY);
 }
 
+/* ---- generated covers (home_art.c) ---- */
+
+static void art_key_folds(void)
+{
+    /* the same album whatever its case and spacing; a different album, a different cover; never 0 */
+    uint32_t a = home_art_key("Radiohead", "In Rainbows", "Nude"), b = home_art_key("radiohead ", "in  rainbows", "15 Step");
+    CHECK(a == b);
+    CHECK(a != home_art_key("Radiohead", "OK Computer", "Nude"));
+    CHECK(home_art_key("", "", "") != 0);
+    /* no album: the title decides */
+    CHECK(home_art_key("Someone", "", "A") != home_art_key("Someone", "", "B"));
+}
+
+static void art_is_deterministic(void)
+{
+    static uint32_t work[HOME_ART_L * HOME_ART_L];
+    static uint16_t a[HOME_ART_S * HOME_ART_S], b[HOME_ART_S * HOME_ART_S];
+    for (int style = 0; style < HOME_ART_STYLES; style++) {
+        home_art_info_t ia, ib;
+        uint32_t key = home_art_key("artist", "album", NULL) + (uint32_t)style;
+        home_art_paint(key, style, work, a, &ia);
+        home_art_paint(key, style, work, b, &ib);
+        CHECK(memcmp(a, b, sizeof a) == 0);
+        CHECK(ia.seed == ib.seed && ia.style == style);
+        /* not a flat picture: at least a few hundred distinct colours */
+        int distinct = 0;
+        static uint8_t seen[65536];
+        memset(seen, 0, sizeof seen);
+        for (int i = 0; i < HOME_ART_S * HOME_ART_S; i++)
+            if (!seen[a[i]]++) distinct++;
+        CHECK(distinct > 200);
+    }
+}
+
+static void art_tint_keeps_contrast(void)
+{
+    /* whatever the seed, text on the tinted ground and card reads at 4.5:1 or better, in both tones */
+    for (uint32_t k = 1; k < 400; k++) {
+        uint32_t seed = hpx_hash(k * 2654435761u) & 0xFFFFFF;
+        for (int dark = 0; dark < 2; dark++) {
+            home_tint_t t;
+            home_art_tint(seed, dark, &t);
+            CHECK(hpx_contrast(t.ink, t.ground) >= 450);
+            CHECK(hpx_contrast(t.ink, t.surface) >= 450);
+            CHECK(hpx_contrast(t.dim, t.ground) >= 450);
+            CHECK(hpx_contrast(t.on_accent, t.accent) >= 450);
+        }
+    }
+}
+
 void test_home(int *checks, int *fails)
 {
     g_checks = checks;
     g_fails = fails;
+    art_key_folds();
+    art_is_deterministic();
+    art_tint_keeps_contrast();
     capture_under_cap();
     capture_over_cap();
     capture_low_space();

@@ -61,6 +61,8 @@ void home_pc_fake(const char *artist, const char *album, const char *title);
 /* Copies the current art (HOME_ART² RGB565) into `px`; false when there is none. `gen` (may be NULL) gets the
  * art_gen of what was copied: a worker copying it while a new song's arrives knows which one it has. */
 bool home_pc_art(uint16_t *px, unsigned *gen);
+/* The art's memory back (~250 KB) when nothing shows it any more; fetched again when something does. */
+void home_pc_trim(void);
 /* "play", "pause", "toggle", "next", "previous", "volume_up", "volume_down", "mute"; queued. */
 void home_pc_cmd(const char *action);
 void home_pc_volume(float level01);            /* needs pycaw on the PC */
