@@ -60,7 +60,8 @@ static hm_layout_t hm_layout(void)
         l.sm_h = top - l.rb_h - BZ_GAP;
         l.quick_y = BODY_Y + top + BZ_GAP;
     }
-    l.quick_w = content / l.quick_cols;
+    /* portrait: the assistant's orb sits at the foot's right, over the last column: the row keeps clear of it */
+    l.quick_w = PORTRAIT ? (content - 90) / l.quick_cols : content / l.quick_cols;
     return l;
 }
 
@@ -283,7 +284,8 @@ void ui_page_home(lv_obj_t *page)
     HM.quick = bz_row(page, 0);
     lv_obj_set_width(HM.quick, W - 2 * PAD);
     lv_obj_set_flex_flow(HM.quick, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_flex_align(HM.quick, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_flex_align(HM.quick, PORTRAIT ? LV_FLEX_ALIGN_START : LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_START);
     lv_obj_set_pos(HM.quick, PAD, l.quick_y);
     quick_build();
     ui_on_page_refresh(PG_HOME, home_refresh, NULL);

@@ -458,8 +458,12 @@ void ui_page_overview(lv_obj_t *page)
     lv_obj_set_pos(P.offline, PAD, y2);
     lv_obj_t *oc = lv_obj_get_child(P.offline, 1); /* the words' column */
     P.off_line = bz_label(oc, "", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_set_width(P.off_line, LV_PCT(100));
     lv_obj_t *ob = bz_row(oc, 10);
     lv_obj_set_style_pad_top(ob, 6, 0);
+    /* phone mode's column is narrower than three buttons: they wrap rather than run off the card */
+    lv_obj_set_flex_flow(ob, LV_FLEX_FLOW_ROW_WRAP);
+    lv_obj_set_width(ob, LV_PCT(100));
     ui_button(ob, BZ_I_SMART_TOY, "robot settings", settings_robot_tap, NULL);
     ui_button(ob, BZ_I_CABLE, "can tap", open_app_tap, (void *)&APP_CANTAP);
     ui_button(ob, BZ_I_LINK, "link", open_app_tap, (void *)&APP_LINK);
