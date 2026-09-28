@@ -1344,6 +1344,24 @@ static bool handle(const char *action, const char *args_json, int pool, char *ou
     return ok;
 }
 
+/* One action run right here on the UI thread, as a model's call would run it: the dev console's
+ * "assist act <tool> <json>", for testing every tool (and tidying up after tests) with no model. */
+bool ui_actions_do(const char *action, const char *args_json, int pool, char *out, size_t n)
+{
+    if (!action || !out || !n) return false;
+    out[0] = 0;
+    bool ok = false;
+    if (worker_side(action, args_json ? args_json : "{}", out, n, &ok)) return ok;
+    job_t j = { 0 };
+    snprintf(j.action, sizeof j.action, "%s", action);
+    j.args = (char *)(args_json ? args_json : "{}");
+    j.out = out;
+    j.outn = n;
+    j.pool = pool;
+    apply(&j);
+    return j.ok;
+}
+
 void ui_actions_init(void)
 {
     ui_on_refresh(tick, NULL);

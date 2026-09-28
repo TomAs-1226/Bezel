@@ -25,5 +25,9 @@ bool ui_calendar_add(int ymd, int hhmm, const char *text, char *out, size_t n);
 /* ui_app_assist.c: the memory screen, opened on a pool (0 the technician's, 1 the companion's). */
 void ui_memory_open(int pool, lv_obj_t *from);
 extern const ui_app_t APP_MEMORY;
-/* ui_app_assist.c: the dev console's "assist ask|new|dump" and "memo ..." (ui_shell.c hands them over). */
+/* ui_app_assist.c: the dev console's "assist ask|new|dump|act|robot" and "memo ..." (ui_shell.c hands them
+ * over). */
 void ui_assist_dev(const char *cmd);
+/* ui_actions.c: one tablet tool run now, on this (the UI) thread, as a model's call would run it; the dev
+ * console's "assist act <tool> <json>". */
+bool ui_actions_do(const char *action, const char *args_json, int pool, char *out, size_t n);

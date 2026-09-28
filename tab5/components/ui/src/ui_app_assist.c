@@ -1793,6 +1793,22 @@ void ui_assist_dev(const char *cmd)
     } else if (!strcmp(cmd, "assist new")) {
         new_tap(NULL, NULL);
         printf("ASSIST a new conversation\n");
+    } else if (!strncmp(cmd, "assist act ", 11)) {
+        /* "assist act timer {\"action\":\"status\"}": a tablet tool, run as a model's call would run it */
+        char name[24];
+        const char *a = cmd + 11;
+        int k = 0;
+        while (*a && *a != ' ' && k < 23) name[k++] = *a++;
+        name[k] = 0;
+        while (*a == ' ') a++;
+        char *out = malloc(7000);
+        if (out) {
+            bool ok = ui_actions_do(name, *a ? a : "{}", AS_POOL_ASSIST, out, 7000);
+            char head[48];
+            snprintf(head, sizeof head, "act %s %s: ", name, ok ? "ok" : "failed");
+            dev_print("ASSIST", head, out, 6900);
+            free(out);
+        }
     } else if (!strncmp(cmd, "assist robot", 12)) {
         /* "assist robot 192.168.0.5": the robot looked for at that address first (tools/fake_robot.py on a
          * PC, for testing the technician against a robot); "assist robot" alone goes back to the team's */

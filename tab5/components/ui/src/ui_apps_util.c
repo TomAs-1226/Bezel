@@ -1109,6 +1109,12 @@ bool ui_notes_do(const char *act, const char *text, char *out, size_t n)
         snprintf(out, n, "%s", NT.buf[0] ? NT.buf : "(the notebook is empty)");
         return true;
     }
+    if (!strcmp(act, "clear")) { /* the dev console's only: the tool's schema doesn't offer it to a model */
+        NT.buf[0] = 0;
+        notes_store();
+        snprintf(out, n, "the notebook is empty");
+        return true;
+    }
     if (!text || !text[0]) {
         snprintf(out, n, "nothing to write: give the text");
         return false;
