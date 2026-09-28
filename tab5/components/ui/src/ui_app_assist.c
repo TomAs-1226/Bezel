@@ -1793,6 +1793,15 @@ void ui_assist_dev(const char *cmd)
     } else if (!strcmp(cmd, "assist new")) {
         new_tap(NULL, NULL);
         printf("ASSIST a new conversation\n");
+    } else if (!strncmp(cmd, "assist robot", 12)) {
+        /* "assist robot 192.168.0.5": the robot looked for at that address first (tools/fake_robot.py on a
+         * PC, for testing the technician against a robot); "assist robot" alone goes back to the team's */
+        const char *a = cmd + 12;
+        while (*a == ' ') a++;
+        snprintf(S.address, sizeof S.address, "%s", a);
+        ui_settings_save();
+        ui_apply_addresses();
+        printf("ASSIST robot address: %s\n", S.address[0] ? S.address : "the team's (no override)");
     } else if (!strncmp(cmd, "assist dump", 11)) {
         static const char *const KIND[] = { "you", "answer", "thinking", "tool", "note", "error" };
         assist_lock();
