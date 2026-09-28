@@ -44,6 +44,8 @@ uint32_t bz_color(bz_color_role_t r)
     case BZ_C_SURFACE3: return P->surface3;
     case BZ_C_AMBER: return P->amber;
     case BZ_C_LEAF: return P->leaf;
+    /* dark: the surface with a breath of the accent; light: a pale container of it (M3's primary container) */
+    case BZ_C_CONTAINER: return bz_mix(P->surface1, P->ice, P->ground == BZ_PAL_LIGHT.ground ? 0.50f : 0.13f);
     default: return P->ink;
     }
 }
@@ -169,11 +171,28 @@ void bz_theme_init(void)
     lv_obj_set_style_text_font(bz_ui_glass(), FONTS[BZ_F_BODY], 0);
 }
 
-/* Called by bz_ui_set_mode: rewrite the shared styles and let LVGL restyle what uses them. */
+/* Whoever baked colours into pictures (app icons, the ground) and has to bake them again. */
+#define MAX_THEME_HOOKS 8
+static void (*g_theme_hooks[MAX_THEME_HOOKS])(void);
+
+void bz_theme_on_change(void (*fn)(void))
+{
+    for (int i = 0; i < MAX_THEME_HOOKS; i++) {
+        if (g_theme_hooks[i] == fn) return;
+        if (!g_theme_hooks[i]) {
+            g_theme_hooks[i] = fn;
+            return;
+        }
+    }
+}
+
+/* Called by bz_ui_set_mode and bz_ui_set_accent: rewrite the shared styles, let the baked pictures catch up,
+ * and let LVGL restyle what uses them. */
 void bz_theme_changed(void)
 {
     if (!inited) return;
     bz_theme_init();
+    for (int i = 0; i < MAX_THEME_HOOKS && g_theme_hooks[i]; i++) g_theme_hooks[i]();
     lv_obj_report_style_change(NULL);
 }
 

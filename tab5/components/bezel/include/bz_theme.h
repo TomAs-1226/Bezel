@@ -27,12 +27,16 @@ typedef enum {
     BZ_C_INK, BZ_C_DIM, BZ_C_FAINT, BZ_C_SIGNAL, BZ_C_ON_SIGNAL, BZ_C_ICE, BZ_C_ON_ICE,
     BZ_C_OK, BZ_C_WARN, BZ_C_FAULT, BZ_C_STALE, BZ_C_GROUND, BZ_C_SURFACE1, BZ_C_SURFACE2,
     BZ_C_SURFACE3, BZ_C_AMBER, BZ_C_LEAF,
+    BZ_C_CONTAINER, /* the accent's tonal container: a surface with the accent in it (a hero card, a lit panel) */
     BZ_C_COUNT
 } bz_color_role_t;
 
 typedef enum { BZ_OK, BZ_WARN, BZ_FAULT, BZ_STALE, BZ_INFO } bz_status_t;
 
 void bz_theme_init(void);
+/* fn runs whenever the tone or the accent changes, after the palette and before LVGL restyles: for whoever baked
+ * palette colours into a picture and has to bake it again. At most eight. */
+void bz_theme_on_change(void (*fn)(void));
 uint32_t bz_color(bz_color_role_t role);
 lv_color_t bz_lv(bz_color_role_t role);
 /* A raw 0xRRGGBB (a mix of roles, bz_mix) as the panel shows it: rounded to 565 without turning greys. */
