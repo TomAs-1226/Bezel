@@ -55,7 +55,8 @@ and times it with `mt_times` (`intel.h`, host-tested):
 
 ## Insights
 
-A pass every 2 s on the UI thread's 10 Hz refresh (never per frame; 0.3 ms measured on the tablet): a
+A pass every 2 s on the UI thread's 10 Hz refresh (never per frame, and held while a finger moves something
+or a page slides; 0.3-1 ms measured on the tablet, 3 ms the worst seen): a
 snapshot of everything above (`intel_in_t`), the rules (`intel_rules.c`), the store's merge, at most one
 island message. Each enabled run is followed at 10 Hz for its brownouts, lowest voltage and every swerve
 module's following (actual velocity along the commanded one, so a module reporting its 180-degree twin
@@ -75,6 +76,7 @@ still follows).
 | a camera without NT or not answering; hot | 2; 1 | "limelight-left: no NT session" |
 | one device model on two firmwares (Phoenix) | 1 (2 on an event day) | "Talon FX on two firmwares: 26.1.0.0 x2, 26.70.0.0 x1" |
 | a Nexus announcement in the last 45 min | 2 | "event: lunch until 13:00" |
+| another team's parts request on Nexus, last 30 min | 1 | "team 1234 needs a 1/2 in hex bearing" |
 | EPA and rank | 1 | "EPA 31.2, #312 of 3700 (top 9%) · rank 45 of 60 here" |
 | the calendar within the hour; rain | 2 within 20 min, 1; 1 | |
 | the tablet low | 2 | "this tablet is at 18%: charge it" |
