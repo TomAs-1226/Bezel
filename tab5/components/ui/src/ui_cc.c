@@ -350,9 +350,18 @@ static void notes_build(lv_obj_t *m, int w, int h)
     lv_obj_set_pos(nh, 0, 0);
     C.notes_clear = ui_button(m, BZ_I_CLOSE, "clear", notes_clear_tap, NULL);
     lv_obj_align(C.notes_clear, LV_ALIGN_TOP_RIGHT, 0, -12);
-    C.notes_empty = bz_label(m, "Nothing yet. What the island tells you stays here.", BZ_F_BODY_S, BZ_C_DIM);
-    lv_obj_set_pos(C.notes_empty, 0, 44);
+    /* nothing yet: a bell in a disc and a line, centred in the tile, rather than a sentence in its corner */
     int iw = w - 2 * BZ_PAD_TILE;
+    C.notes_empty = bz_col(m, 10);
+    lv_obj_set_size(C.notes_empty, iw, h - 2 * BZ_PAD_TILE);
+    lv_obj_set_flex_align(C.notes_empty, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t *disc = bz_box(C.notes_empty);
+    lv_obj_set_size(disc, 72, 72);
+    lv_obj_add_style(disc, bz_style_fill(BZ_C_SURFACE2), 0);
+    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+    lv_obj_center(bz_icon(disc, BZ_I_NOTIFICATIONS, 32, BZ_C_DIM));
+    bz_label(C.notes_empty, "no notifications", BZ_F_BODY, BZ_C_INK);
+    bz_label(C.notes_empty, "what the island tells you stays here", BZ_F_LABEL, BZ_C_DIM);
     C.note_shown = (h - 2 * BZ_PAD_TILE - 48) / 40;
     if (C.note_shown > NOTE_ROWS) C.note_shown = NOTE_ROWS;
     if (C.note_shown < 1) C.note_shown = 1;
@@ -398,6 +407,74 @@ static void notes_refresh(lv_obj_t *m)
     if (n) lv_obj_remove_flag(C.notes_clear, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(C.notes_clear, LV_OBJ_FLAG_HIDDEN);
 }
+
+/* the owner's favourite apps (settings > look > quick launch), from anywhere: their icons, a tap opens one once
+ * the sheet is away. Rebuilt when the favourites change. */
+#define CC_APPS 4
+static struct {
+    lv_obj_t *row;
+    unsigned gen;
+    const ui_app_t *pending;
+} CA = { .gen = ~0u };
+
+static void apps_open_pending(void)
+{
+    if (CA.pending) ui_app_launch(CA.pending, NULL);
+    CA.pending = NULL;
+}
+
+static void apps_tap(lv_obj_t *o, void *u)
+{
+    (void)o;
+    CA.pending = (const ui_app_t *)u;
+    ui_cc_after_close(apps_open_pending);
+}
+
+static void apps_fill(void)
+{
+    lv_obj_clean(CA.row);
+    const ui_look_t *l = ui_look();
+    int shown = 0;
+    for (int i = 0; i < l->nquick && shown < CC_APPS; i++) {
+        const ui_app_t *app = NULL;
+        for (int k = 0; k < ui_app_count(); k++)
+            if (!strcmp(ui_app_entry(k)->label, l->quick[i])) app = ui_app_entry(k)->app;
+        if (!app) continue;
+        lv_obj_t *c = bz_box(CA.row);
+        lv_obj_set_size(c, 76, 76);
+        lv_obj_set_style_radius(c, 22, 0);
+        lv_obj_add_style(c, bz_style_fill(BZ_C_SURFACE3), LV_STATE_PRESSED);
+        lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_t *ic = ui_app_icon(c, app, 64);
+        lv_obj_center(ic);
+        bz_on_tap(c, apps_tap, (void *)app);
+        shown++;
+    }
+    if (!shown) bz_label(CA.row, "favourites: settings · look", BZ_F_LABEL, BZ_C_DIM);
+    CA.gen = l->quick_gen;
+}
+
+static void apps_build(lv_obj_t *m, int w, int h)
+{
+    (void)w; (void)h;
+    lv_obj_set_style_pad_all(m, 0, 0);
+    lv_obj_set_style_radius(m, 36, 0);
+    CA.row = bz_row(m, 6);
+    lv_obj_set_size(CA.row, LV_PCT(100), LV_PCT(100));
+    lv_obj_set_flex_align(CA.row, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    apps_fill();
+}
+
+static void apps_refresh(lv_obj_t *m)
+{
+    (void)m;
+    if (CA.gen != ui_look()->quick_gen) apps_fill();
+}
+
+static const ui_cc_control_t CTL_APPS = {
+    .name = "apps", .icon = BZ_I_APPS, .kind = UI_CC_TILE, .cols = 3, .rows = 1,
+    .build = apps_build, .refresh = apps_refresh,
+};
 
 static const ui_cc_control_t CTL_NOTES = {
     .name = "notifications", .icon = BZ_I_NOTIFICATIONS, .kind = UI_CC_TILE, .cols = 99, .rows = 2,
@@ -809,6 +886,7 @@ void ui_cc_init(void)
     for (int i = 0; i < g_nadded; i++) add(g_added[i]);
     add(&CTL_SLEEP);
     add(&CTL_POWER);
+    add(&CTL_APPS); /* the favourites, in the cells the toggles leave on their row */
     add(&CTL_NOTES);
     cc_place();
     for (int i = 0; i < C.nctl; i++) {

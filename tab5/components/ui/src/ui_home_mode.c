@@ -686,13 +686,22 @@ static void press_cb(lv_event_t *e);
 
 /* A launcher tile's picture: its glyph over its word. The one place the launcher draws an icon, so the shell's
  * own icon style can take it over. */
+/* The app's own icon, the one the library and the home page show (ui_icon.c: 64 px is baked already and
+ * shared); the way back to the catalyst pages, which is no app, keeps its glyph. */
 static void launcher_icon(lv_obj_t *t, const hm_app_t *a)
 {
-    lv_obj_t *ic = bz_icon(t, a->icon, 32, BZ_C_INK);
-    lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 16);
+    lv_obj_t *ic = a->app ? ui_app_icon(t, a->app, 64) : ui_icon_named(t, a->label, 64);
+    if (ic) {
+        lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 9);
+    } else {
+        ic = bz_icon(t, a->icon, 32, BZ_C_INK);
+        lv_obj_align(ic, LV_ALIGN_TOP_MID, 0, 22);
+    }
+    lv_obj_add_flag(ic, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_remove_flag(ic, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_t *lb = bz_label_line(t, a->label, BZ_F_CAPTION, BZ_C_DIM, LN_W - 6);
     lv_obj_set_style_text_align(lb, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(lb, LV_ALIGN_BOTTOM_MID, 0, -15);
+    lv_obj_align(lb, LV_ALIGN_BOTTOM_MID, 0, -9);
 }
 
 static void build_launcher(lv_obj_t *r)

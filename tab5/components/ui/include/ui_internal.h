@@ -127,6 +127,72 @@ void ui_app_close(void);
 bool ui_app_is_open(const ui_app_t *app);
 bool ui_app_any_open(void); /* some app is open (or opening) */
 const ui_app_t *ui_app_find(const char *name); /* by its library label or window name */
+/* The library (ui_pages2.c): every app in its order, with the label and hint it shows there. The home mode tile
+ * is in it too (its app has no build: open it with ui_app_launch, not ui_app_open). */
+typedef struct { const ui_app_t *app; const char *label; const char *hint; int group; } ui_app_entry_t;
+int ui_app_count(void);
+const ui_app_entry_t *ui_app_entry(int i);
+const char *ui_app_label(const ui_app_t *app); /* the library's name for it, or NULL */
+void ui_app_launch(const ui_app_t *app, lv_obj_t *from); /* ui_app_open, or home mode for its tile */
+/* A launcher cell `w` wide: the app's icon (`icon` px) over its name, and the hint under it (NULL: none); a press
+ * shows a platter; a tap launches it, the window growing out of the icon. */
+lv_obj_t *ui_app_cell(lv_obj_t *parent, const ui_app_t *app, const char *label, const char *hint, int w, int icon);
+
+/* App icons (ui_icon.c): each app a squircle of its own colour with its glyph, lit from the top left, baked once
+ * per size into a small PSRAM picture that every place showing it shares. The style is settings > look > icons:
+ * colour, tinted (the accent's tonal container, Material You's themed icons) or mono (surface and ink). */
+enum { UI_ICON_COLOUR, UI_ICON_TINTED, UI_ICON_MONO, UI_ICON_NSTYLES };
+lv_obj_t *ui_app_icon(lv_obj_t *parent, const ui_app_t *app, int size); /* an lv_image, size x size */
+/* By library label or window name ("music", "home mode"); NULL when there is no such icon. */
+lv_obj_t *ui_icon_named(lv_obj_t *parent, const char *name, int size);
+/* One app's icon in a given style whatever the setting (settings' style chooser). */
+lv_obj_t *ui_icon_preview(lv_obj_t *parent, const char *name, int size, int style);
+const lv_image_dsc_t *ui_icon_image(const ui_app_t *app, int size);
+int ui_icon_style(void);
+void ui_icon_set_style(int style); /* saved (kv "icons"), every icon baked again, one redraw */
+size_t ui_icon_bytes(void);
+
+/* The look preferences (ui_look.c, settings > look), read once from kv. */
+#define UI_QUICK_MAX 6
+enum { UI_GROUND_PLAIN, UI_GROUND_GLOW, UI_GROUND_AURORA, UI_GROUND_GRAIN, UI_GROUND_CONTOUR, UI_GROUND_COUNT };
+typedef struct {
+    bool h24;          /* kv clock24: 20:46, or 8:46 */
+    bool batt_pct;     /* kv battpct: the status band's battery percent */
+    bool dock_labels;  /* kv docklbl: the dock's words under its icons */
+    char quick[UI_QUICK_MAX][16]; /* kv quick: the home page's quick-launch row, library labels, in order */
+    int nquick;
+    unsigned quick_gen; /* moves whenever the quick-launch apps change */
+    bool tone_auto;    /* kv toneauto: light from 7 am, dark from 7 pm */
+    int ground;        /* kv ground: UI_GROUND_* */
+} ui_look_t;
+const ui_look_t *ui_look(void);
+ui_look_t *ui_look_edit(void); /* change, then ui_look_save() and apply */
+void ui_look_save(void);
+bool ui_look_is_quick(const char *label);
+void ui_look_dev(const char *args); /* the dev console's "look <what> <value>" */
+/* With the tone on its schedule, the tone the hour asks for (checked twice a minute; `now`: at once). */
+void ui_look_tone_tick(bool now);
+void ui_look_boot(void); /* once the pages are built: the ground, and the tone's schedule */
+/* Settings > look's own choices (icons, ground, quick launch, status band and dock), into its scrolling column. */
+void ui_look_settings(lv_obj_t *col, int w);
+void ui_look_settings_open(void); /* the choices as they are now, when settings opens */
+/* "20:46" or "8:46", as the owner reads the clock */
+void ui_fmt_hm(char *out, size_t n, const struct tm *tm);
+/* Who shows a look preference applies it when told (the settings pane calls these after a change). */
+void ui_home_quick_changed(void);     /* ui_home.c: the quick-launch row laid out again */
+void ui_status_look_changed(void);    /* ui_shell.c: the status band's clock and battery, the dock's labels */
+
+/* The ground under the pages (ui_ground.c): plain or a picture baked from the tone and the accent. Lists that
+ * scroll keep an opaque surface over it: a list moves pixels already drawn. */
+void ui_ground_init(void);            /* once the pages are built */
+void ui_ground_set(int ground);       /* saved, baked, one redraw */
+bool ui_ground_active(void);
+const char *ui_ground_name(int ground);
+void ui_ground_thumb(int ground, uint16_t *buf, int w, int h); /* a chooser's picture of it */
+/* The same ground behind another full-screen surface (the lock screen): layers at the back of `parent`, sharing the
+ * baked pictures, kept in step with every change. At most three. */
+lv_obj_t *ui_ground_layer(lv_obj_t *parent);
+size_t ui_ground_bytes(void);
 
 /* Pages. */
 void ui_go(int page);
@@ -271,14 +337,20 @@ void ui_chip_set(lv_obj_t *chip, bool on);
 /* An empty state: a tile `w` wide that grows with its words, a title (name face) over a caption, 12 px apart.
  * One look for every "not connected" / "nothing yet" in the robot's pages and apps (ui_pages.c). */
 lv_obj_t *ui_empty(lv_obj_t *parent, int w, const char *title, const char *text);
+/* The same with its own glyph in the disc (NULL: none). Across an app's whole width it fills the body and centres;
+ * ui_empty_row keeps the row (a card among others). */
+lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text);
+lv_obj_t *ui_empty_row(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text);
+/* No card of its own, for a surface that is one already: centred in w x h. */
+lv_obj_t *ui_empty_center(lv_obj_t *parent, int w, int h, const char *icon, const char *title, const char *text);
 /* A vertical scroller: returns the content container; drags coast and rubber-band at the ends. */
 lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h);
 /* Brings a scroller's end into view on the `smooth` spring (a transcript following its newest line).
  * Returns false, and does nothing, while a finger holds it or when it's been scrolled away from the end
  * (the reader is looking back). */
 bool ui_scroller_follow(lv_obj_t *content);
-/* Back to its top, at once (a settings section opened again starts where it starts). */
-void ui_scroller_top(lv_obj_t *content);
+/* Back to the top at once (a page's list, reset while the page is off screen; a settings section opened again). */
+void ui_scroller_reset(lv_obj_t *content);
 
 /* A keyboard sheet over the bottom of an app, for one entry at a time. */
 typedef struct ui_kb ui_kb_t;

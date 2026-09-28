@@ -29,6 +29,10 @@
  * asking (bz_glass already moves it in sixteenths). */
 const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa);
 
+/* Each bz_frost() is a reference to the picture it returns: a piece that stops showing one (a new size, a new
+ * colour, no surface at all) releases it, and only a picture nobody holds is ever evicted for a new one. */
+void bz_frost_release(const lv_image_dsc_t *d);
+
 /* Drop every baked surface: the palette changed, so the colours in them are wrong. */
 void bz_frost_flush(void);
 

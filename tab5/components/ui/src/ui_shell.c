@@ -333,13 +333,16 @@ bool ui_scroller_follow(lv_obj_t *content)
     return false;
 }
 
-void ui_scroller_top(lv_obj_t *content)
+/* Back to the top at once, no motion: a list whose page is off screen (the library, left scrolled), or a
+ * settings section opened again. The caller makes sure nothing is drawing a picture of it (no slide or sheet
+ * under way). */
+void ui_scroller_reset(lv_obj_t *content)
 {
     for (int i = 0; i < MAX_SCROLLERS; i++) {
         scroller_t *s = g_scrollers[i];
         if (!s || s->content != content || s->dragging) continue;
-        bz_motion_set(&s->y, 0, 0);
         s->away = false;
+        bz_motion_set(&s->y, 0, 0);
         if (lv_obj_get_y(content) != 0) lv_obj_set_y(content, 0);
         return;
     }
@@ -632,6 +635,13 @@ static void pg_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
 
 /* ------------------------------------------------------------------ dock */
 
+#define PLATTER_OPA (bz_ui_dark() ? 56 : 255)
+/* the tone changed: the platter's strength with it */
+static void dock_theme(void)
+{
+    if (U.platter) lv_obj_set_style_bg_opa(U.platter, PLATTER_OPA, 0);
+}
+
 static float item_cx(int i)
 {
     return (W - DOCK_W) / 2.0f + DOCK_PAD + i * (DOCK_ITEM_W + DOCK_GAP) + DOCK_ITEM_W / 2.0f;
@@ -703,12 +713,14 @@ static void build_dock(void)
      * than carrying it along and drawing it again every frame (the rounded ends are still carried) */
     bz_ui_opaque_core(U.dock, BZ_R_DOCK, 0);
 
-    /* the platter under the current item: 7.5 % ink at rest (Bezel's droplet, landed) */
+    /* the platter under the current item: the accent, as M3's navigation indicator is -- a breath of it on the dark
+     * tone, its full container on the light one (Bezel's droplet, landed) */
     U.platter = lv_obj_create(U.dock);
     lv_obj_remove_style_all(U.platter);
     lv_obj_set_size(U.platter, DOCK_ITEM_W, DOCK_ITEM_H);
-    lv_obj_add_style(U.platter, bz_style_fill(BZ_C_INK), 0);
-    lv_obj_set_style_bg_opa(U.platter, 19, 0);
+    lv_obj_add_style(U.platter, bz_style_fill(BZ_C_ICE), 0);
+    lv_obj_set_style_bg_opa(U.platter, PLATTER_OPA, 0);
+    bz_theme_on_change(dock_theme);
     lv_obj_set_style_radius(U.platter, BZ_R_DOCK_ITEM, 0);
     lv_obj_remove_flag(U.platter, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(U.platter, LV_OBJ_FLAG_IGNORE_LAYOUT);
@@ -721,6 +733,7 @@ static void build_dock(void)
         lv_obj_set_ext_click_area(it, 8);
         U.dock_icons[i] = bz_icon(it, PAGE_ICONS[i], 32, BZ_C_DIM);
         U.dock_labels[i] = bz_label(it, PAGE_NAMES[i], BZ_F_CAPTION, BZ_C_DIM);
+        if (!ui_look()->dock_labels) lv_obj_add_flag(U.dock_labels[i], LV_OBJ_FLAG_HIDDEN);
         U.dock_items[i] = it;
         bz_on_tap(it, dock_tap, (void *)(intptr_t)i);
     }
@@ -768,10 +781,10 @@ static void dock_frame(void)
         float h = DOCK_ITEM_H * (1 + 0.42f * lift) / (1 + st / (1.6f * DOCK_ITEM_W));
         float cy = H - DOCK_BOTTOM - DOCK_H / 2.0f - 2 * lift;
         bz_glass_set_rect(U.droplet_glass, true, U.drop_x.value - w / 2, cy - h / 2, w, h);
-        lv_obj_set_style_bg_opa(U.platter, (lv_opa_t)(19 * (1 - lift)), 0);
+        lv_obj_set_style_bg_opa(U.platter, (lv_opa_t)(PLATTER_OPA * (1 - lift)), 0);
     } else if (bz_glass_strength(U.droplet_glass) > 0.5f && !U.drop_dragging) {
         bz_glass_show(U.droplet_glass, false);
-        if (lv_obj_get_style_bg_opa(U.platter, 0) != 19) lv_obj_set_style_bg_opa(U.platter, 19, 0);
+        if (lv_obj_get_style_bg_opa(U.platter, 0) != PLATTER_OPA) lv_obj_set_style_bg_opa(U.platter, PLATTER_OPA, 0);
     }
 
     /* the dock tucks away while an app is open, and after 4 s idle on a page (panel.js:34,166) */
@@ -859,7 +872,7 @@ static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) && strncmp(line, "phone", 5) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) && strncmp(line, "act", 3) &&
-        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
+        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) && strncmp(line, "look ", 5) &&
         strncmp(line, "docwrite", 8) && strncmp(line, "assist", 6) && strncmp(line, "memo", 4) && strncmp(line, "carry", 5) &&
         strncmp(line, "cut", 3) && strncmp(line, "hm", 2))
         return false;
@@ -992,6 +1005,8 @@ static void dev_run(void)
         if (k >= 0) ui_set_accent(k);
     } else if (!strncmp(s_dev_cmd, "settings ", 9)) {
         ui_settings_show(s_dev_cmd + 9);
+    } else if (!strncmp(s_dev_cmd, "look ", 5)) {
+        ui_look_dev(s_dev_cmd + 5); /* "look ground aurora", "look icons tinted", "look tone light"... */
     } else if (!strncmp(s_dev_cmd, "bms", 3)) {
         /* the battery fleet: "bms" ranks it; scan, pick <label>, demo, reset, gpt, json */
         ui_batt_dev(s_dev_cmd + 3);
@@ -1170,6 +1185,7 @@ static void build_island(void)
     U.st_link = bz_icon(U.status, BZ_I_LINK_OFF, 24, BZ_C_DIM);
     U.st_batt_icon = bz_icon(U.status, BZ_I_BATTERY_FULL, 24, BZ_C_INK);
     U.st_batt = bz_label(U.status, "", BZ_F_LABEL, BZ_C_INK);
+    if (!ui_look()->batt_pct) lv_obj_add_flag(U.st_batt, LV_OBJ_FLAG_HIDDEN);
     U.st_clock = bz_label(U.status, "--:--", BZ_F_BODY, BZ_C_INK);
     lv_obj_update_layout(U.status);
     /* centred on the orb */
@@ -1253,8 +1269,26 @@ static void status_refresh(void)
     time_t now = time(NULL);
     struct tm tm;
     localtime_r(&now, &tm);
-    if (tm.tm_year > 120) ui_text(U.st_clock, "%d:%02d", tm.tm_hour, tm.tm_min);
-    else ui_text(U.st_clock, "--:--");
+    if (tm.tm_year > 120) {
+        char hm[16];
+        ui_fmt_hm(hm, sizeof hm, &tm);
+        ui_text(U.st_clock, "%s", hm);
+    } else {
+        ui_text(U.st_clock, "--:--");
+    }
+}
+
+/* settings > look changed the clock's hours, the battery's percent or the dock's words: shown now */
+void ui_status_look_changed(void)
+{
+    const ui_look_t *l = ui_look();
+    if (l->batt_pct) lv_obj_remove_flag(U.st_batt, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(U.st_batt, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < NPAGES; i++) {
+        if (l->dock_labels) lv_obj_remove_flag(U.dock_labels[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(U.dock_labels[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    status_refresh();
 }
 
 /* The capsule's words: set and measured, the capsule sent to their width (a change of width only; the words
@@ -2646,6 +2680,7 @@ void ui_init(const ui_config_t *cfg)
     ui_page_power(U.pages[PG_POWER]);
     ui_page_motion(U.pages[PG_MOTION]);
     ui_page_tools(U.pages[PG_APPS]);
+    ui_look_boot(); /* the owner's ground under the pages, the tone's schedule (settings > look) */
 
     build_windows();
     build_dock();

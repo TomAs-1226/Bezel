@@ -28,10 +28,39 @@
 
 static void open_app_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
 
+/* A drawer: Material's surface container for what scrolls -- a panel from under the band past the foot of the
+ * screen (only its top corners round), the list inside it clear of the corners (a scroller's clip must be a plain
+ * rectangle). Opaque on purpose: a list scrolls by moving pixels already drawn, so whatever is behind it has to be
+ * one flat colour, and the ground may be a picture. Cards inside it take surface2. Returns the list. */
+#define DRAWER_R 36
+#define DRAWER_INSET 18
+static lv_obj_t *drawer(lv_obj_t *page, int x, int w)
+{
+    /* a plain surface, not a tile: a tile answers a press with its state layer, and the press that starts every
+     * swipe across this page would restyle (and redraw) the whole drawer and everything in it */
+    lv_obj_t *d = bz_box(page);
+    lv_obj_set_size(d, w, H - BODY_Y + DRAWER_R);
+    lv_obj_add_style(d, bz_style_fill(BZ_C_SURFACE1), 0);
+    lv_obj_set_pos(d, x, BODY_Y);
+    lv_obj_set_style_radius(d, DRAWER_R, 0);
+    lv_obj_t *wrap = bz_box(d);
+    lv_obj_set_pos(wrap, DRAWER_INSET, DRAWER_R / 2);
+    return ui_scroller(wrap, w - 2 * DRAWER_INSET, H - BODY_Y - DRAWER_R / 2);
+}
+#define DRAWER_IN(w) ((w) - 2 * DRAWER_INSET)
+
+/* An empty state on a drawer: no card of its own (the drawer is the card), centred in what shows of it above the
+ * dock -- a glyph in a disc, the title, the words under it -- rather than a strip at the top of an empty panel. */
+static lv_obj_t *drawer_empty(lv_obj_t *list, int w, const char *icon, const char *title, const char *text)
+{
+    return ui_empty_center(list, w, BODY_BOTTOM - BODY_Y - DRAWER_R, icon, title, text);
+}
+
 /* ================================================================== devices */
 
 #define DEV_COLS 3
-#define DEV_COL_W ((W - 2 * PAD - (DEV_COLS - 1) * BZ_GAP) / DEV_COLS)
+#define DEV_W DRAWER_IN(W - 2 * PAD)
+#define DEV_COL_W ((DEV_W - (DEV_COLS - 1) * BZ_GAP) / DEV_COLS)
 
 static struct {
     lv_obj_t *scroll, *summary;
@@ -78,6 +107,7 @@ static void devices_rebuild(const cat_robot_t *r)
         D.bus_meters[b] = NULL;
         if (b >= nb) continue;
         lv_obj_t *t = bz_tile(grid, DEV_COL_W, LV_SIZE_CONTENT);
+        bz_tile_set_fill(t, BZ_C_SURFACE2);
         lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
         lv_obj_set_style_pad_row(t, 10, 0);
         D.cols[b] = t;
@@ -115,8 +145,9 @@ static void devices_rebuild(const cat_robot_t *r)
         }
     }
     if (!nb)
-        ui_empty(D.scroll, W - 2 * PAD, R->connected ? "the robot declares no can devices" : "not connected",
-                 "Catalyst publishes /Catalyst/CAN/Devices from 1.12; the can tap app hears the bus directly.");
+        drawer_empty(D.scroll, DEV_W, R->connected ? BZ_I_HUB : BZ_I_LINK_OFF,
+                     R->connected ? "the robot declares no can devices" : "not connected",
+                     "Catalyst publishes /Catalyst/CAN/Devices from 1.12; the can tap app hears the bus directly.");
 }
 
 static void devices_refresh(void *u)
@@ -153,9 +184,7 @@ void ui_page_devices(lv_obj_t *page)
 {
     lv_obj_t *right = ui_head(page, "Devices", NULL);
     D.summary = bz_label_line(right, "", BZ_F_LABEL, BZ_C_DIM, ui_head_width("Devices"));
-    lv_obj_t *wrap = bz_box(page);
-    lv_obj_set_pos(wrap, PAD, BODY_Y);
-    D.scroll = ui_scroller(wrap, W - 2 * PAD, BODY_H);
+    D.scroll = drawer(page, PAD, W - 2 * PAD);
     D.sig = 1;
     ui_on_page_refresh(PG_DEVICES, devices_refresh, NULL);
 }
@@ -221,9 +250,11 @@ static void power_refresh(void *u)
             ui_text(PW.names[ch], "%s", c->what);
             bz_set_color(PW.names[ch], BZ_C_INK);
         } else {
-            ui_text(PW.names[ch], "free");
+            /* "free" is a claim about the robot's wiring: without the robot, the channel is just its number */
+            ui_text(PW.names[ch], "%s", r->connected ? "free" : " ");
             bz_set_color(PW.names[ch], BZ_C_FAINT);
         }
+        bz_set_color(PW.nums[ch], r->connected ? BZ_C_DIM : BZ_C_FAINT);
         double amps = r->pd_amps[ch];
         if (amps == amps) {
             ui_text(PW.amps[ch], "%.1f", amps);
@@ -391,9 +422,11 @@ static void motion_rebuild(const cat_robot_t *r)
 {
     lv_obj_clean(MO.grid);
     MO.nm = r->nmechs < CAT_MAX_MECHS ? r->nmechs : CAT_MAX_MECHS;
-    int w = (W - 2 * PAD - MO_SWERVE - BZ_GAP - BZ_GAP) / 2;
+    int gw = DRAWER_IN(W - 2 * PAD - MO_SWERVE - BZ_GAP);
+    int w = (gw - BZ_GAP) / 2;
     for (int i = 0; i < MO.nm; i++) {
         lv_obj_t *t = bz_tile(MO.grid, w, 186);
+        bz_tile_set_fill(t, BZ_C_SURFACE2);
         MO.mt[i] = t;
         /* the name and the state share the top line: each cut to its half, never over the other */
         MO.mname[i] = bz_label_line(t, r->mechs[i].name, BZ_F_LABEL, BZ_C_DIM, w - 2 * BZ_PAD_TILE - 158);
@@ -417,8 +450,9 @@ static void motion_rebuild(const cat_robot_t *r)
         lv_obj_align(MO.mfoot[i], LV_ALIGN_BOTTOM_LEFT, 0, 0);
     }
     if (!r->nmechs)
-        ui_empty(MO.grid, 2 * w + BZ_GAP, R->connected ? "no mechanisms published" : "not connected",
-                 "Catalyst mechanisms publish AngleDegrees, PositionMeters or VelocityRPS under /Catalyst/<name>/.");
+        drawer_empty(MO.grid, gw, R->connected ? BZ_I_PRECISION_MANUFACTURING : BZ_I_LINK_OFF,
+                     R->connected ? "no mechanisms published" : "not connected",
+                     "Catalyst mechanisms publish AngleDegrees, PositionMeters or VelocityRPS under /Catalyst/<name>/.");
 }
 
 static void motion_refresh(void *u)
@@ -487,10 +521,8 @@ void ui_page_motion(lv_obj_t *page)
     lv_obj_align(MO.speed, LV_ALIGN_BOTTOM_RIGHT, 0, 0);
 
     /* the mechanisms scroll: a third row of them sat under the dock, and past six they weren't shown at all */
-    int gw = W - 2 * PAD - MO_SWERVE - BZ_GAP;
-    lv_obj_t *wrap = bz_box(page);
-    lv_obj_set_pos(wrap, PAD + MO_SWERVE + BZ_GAP, BODY_Y);
-    lv_obj_t *col = ui_scroller(wrap, gw, BODY_H);
+    int dw = W - 2 * PAD - MO_SWERVE - BZ_GAP, gw = DRAWER_IN(dw);
+    lv_obj_t *col = drawer(page, PAD + MO_SWERVE + BZ_GAP, dw);
     MO.grid = bz_row(col, BZ_GAP);
     lv_obj_set_flex_flow(MO.grid, LV_FLEX_FLOW_ROW_WRAP);
     lv_obj_set_flex_align(MO.grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -505,128 +537,172 @@ void ui_page_motion(lv_obj_t *page)
 
 /* ================================================================== apps */
 
-/* The app library: every app, in four groups — the robot through Catalyst, diagnosing it from the
- * outside, the tablet's own tools, and Catalyst OS's everyday apps. Scrolls when it outgrows the screen. */
-typedef struct { const ui_app_t *app; const char *icon; const char *label; const char *hint; } app_entry_t;
+/* The app library: every app, in four groups -- the robot through Catalyst, diagnosing it from the outside, the
+ * tablet's own tools, and Catalyst OS's everyday apps -- as icons with their names, on a drawer (Material's app
+ * drawer: a surface container over the ground) that scrolls. The drawer is opaque on purpose: a list scrolls by
+ * moving pixels already drawn, so anything behind it that isn't one flat colour (a ground picture) would scroll
+ * with it. */
 /* Home mode is a mode, not an app window: its tile enters it (ui_home_mode.h) and nothing opens it by name. */
 static const ui_app_t HOME_MODE_TILE = { .name = "home mode", .icon = BZ_I_HOME };
-static const app_entry_t APPS_ROBOT[] = {
-    { &APP_PREFLIGHT, BZ_I_CHECKLIST, "preflight", "go / no-go" },
-    { &APP_ALERTS, BZ_I_WARNING, "alerts", "errors, health" },
-    { &APP_TUNE, BZ_I_TUNE, "tune", "tunables" },
-    { &APP_AUTO, BZ_I_FLAG, "auto", "chooser" },
-    { &APP_FIELD, BZ_I_STADIUM, "field", "pose, vision" },
-    { &APP_ROBOT, BZ_I_SMART_TOY, "robot", "spec, versions" },
-    { &APP_MOTORS, BZ_I_HISTORY, "motors", "lifetime, wear" },
-    { &APP_STATES, BZ_I_ACCOUNT_TREE, "states", "timelines" },
-    { &APP_CONTROLS, BZ_I_SPORTS_ESPORTS, "controls", "bindings" },
-    { &APP_TBA, BZ_I_BAR_CHART, "blue alliance", "matches, ranks" },
-    { &APP_BATT, BZ_I_BATTERY_CHARGING_FULL, "batteries", "fleet, the pick" },
+static const char *const GROUP_NAME[4] = { "robot", "diagnose", "this tablet", "everyday" };
+static const ui_app_entry_t APPS[] = {
+    { &APP_PREFLIGHT, "preflight", "go / no-go", 0 },
+    { &APP_ALERTS, "alerts", "errors, health", 0 },
+    { &APP_TUNE, "tune", "tunables", 0 },
+    { &APP_AUTO, "auto", "chooser", 0 },
+    { &APP_FIELD, "field", "pose, vision", 0 },
+    { &APP_ROBOT, "robot", "spec, versions", 0 },
+    { &APP_MOTORS, "motors", "lifetime, wear", 0 },
+    { &APP_STATES, "states", "timelines", 0 },
+    { &APP_CONTROLS, "controls", "bindings", 0 },
+    { &APP_TBA, "blue alliance", "matches, ranks", 0 },
+    { &APP_BATT, "batteries", "fleet, the pick", 0 },
+    { &APP_SYSTEMCORE, "systemcore", "cores, buses", 1 },
+    { &APP_CANTAP, "can tap", "bus sniffer", 1 },
+    { &APP_RECORDER, "recorder", "black box", 1 },
+    { &APP_LOGS, "logs", "ds logs, sd", 1 },
+    { &APP_LEVEL, "level", "imu angle", 1 },
+    { &APP_LENS, "lens", "camera, clips", 1 },
+    { &APP_GEAR, "gearing", "speed, torque", 1 },
+    { &APP_RULER, "ruler", "mm, inches", 1 },
+    { &APP_REF, "reference", "wiring, can", 1 },
+    { &APP_ASSIST, "assist", "ai technician", 2 },
+    { &APP_LINK, "link", "pc, patches", 2 },
+    { &APP_PAIR, "pair pc", "a code, once", 2 },
+    { &APP_COMPANION, "companion", "desk mode", 2 },
+    { &HOME_MODE_TILE, "home mode", "desk, music", 2 },
+    { &APP_TIMER, "timer", "match, laps", 2 },
+    { &APP_CALC, "calculator", "ratios, units", 2 },
+    { &APP_NOTES, "notes", "pit notebook", 2 },
+    { &APP_CHECK, "checklist", "before a match", 2 },
+    { &APP_LIGHT, "flashlight", "white, red", 2 },
+    { &APP_FILES, "files", "microsd", 2 },
+    { &APP_SYSMON, "system", "this tablet", 2 },
+    { &APP_SETTINGS, "settings", "everything", 2 },
+    { &APP_CLOCK, "clock", "alarms, world", 3 },
+    { &APP_CALENDAR, "calendar", "month, events", 3 },
+    { &APP_DOCS, "documents", "txt, md", 3 },
+    { &APP_PHOTOS, "photos", "pictures", 3 },
+    { &APP_STORAGE, "storage", "card usage", 3 },
+    { &APP_MUSIC, "music", "card, the pc", 3 },
+    { &APP_SMARTHOME, "smart home", "lights, rooms", 3 },
+    { &APP_WEATHER, "weather", "hours, the week", 3 },
 };
-static const app_entry_t APPS_DIAG[] = {
-    { &APP_SYSTEMCORE, BZ_I_DEVELOPER_BOARD, "systemcore", "cores, buses" },
-    { &APP_CANTAP, BZ_I_CABLE, "can tap", "bus sniffer" },
-    { &APP_RECORDER, BZ_I_FIBER_MANUAL_RECORD, "recorder", "black box" },
-    { &APP_LOGS, BZ_I_RECEIPT_LONG, "logs", "ds logs, sd" },
-    { &APP_LEVEL, BZ_I_STRAIGHTEN, "level", "imu angle" },
-    { &APP_LENS, BZ_I_PHOTO_CAMERA, "lens", "camera, clips" },
-    { &APP_GEAR, BZ_I_SPEED, "gearing", "speed, torque" },
-    { &APP_RULER, BZ_I_STRAIGHTEN, "ruler", "mm, inches" },
-    { &APP_REF, BZ_I_HANDYMAN, "reference", "wiring, can" },
-};
-static const app_entry_t APPS_TABLET[] = {
-    { &APP_ASSIST, BZ_I_AUTO_AWESOME, "assist", "ai technician" },
-    { &APP_LINK, BZ_I_COMPUTER, "link", "pc, patches" },
-    { &APP_PAIR, BZ_I_LINK, "pair pc", "a code, once" },
-    { &APP_COMPANION, BZ_I_VISIBILITY, "companion", "desk mode" },
-    { &HOME_MODE_TILE, BZ_I_HOME, "home mode", "desk, music" },
-    { &APP_TIMER, BZ_I_TIMER, "timer", "match, laps" },
-    { &APP_CALC, BZ_I_CALCULATE, "calculator", "ratios, units" },
-    { &APP_NOTES, BZ_I_EDIT_NOTE, "notes", "pit notebook" },
-    { &APP_CHECK, BZ_I_CHECKLIST_RTL, "checklist", "before a match" },
-    { &APP_LIGHT, BZ_I_FLASHLIGHT_ON, "flashlight", "white, red" },
-    { &APP_FILES, BZ_I_FOLDER, "files", "microsd" },
-    { &APP_SYSMON, BZ_I_MONITORING, "system", "this tablet" },
-    { &APP_SETTINGS, BZ_I_SETTINGS, "settings", "everything" },
-};
-static const app_entry_t APPS_EVERYDAY[] = {
-    { &APP_CLOCK, BZ_I_SCHEDULE, "clock", "alarms, world" },
-    { &APP_CALENDAR, BZ_I_GRID_VIEW, "calendar", "month, events" },
-    { &APP_DOCS, BZ_I_DESCRIPTION, "documents", "txt, md" },
-    { &APP_PHOTOS, BZ_I_CAMERA, "photos", "pictures" },
-    { &APP_STORAGE, BZ_I_SD_CARD, "storage", "card usage" },
-    { &APP_MUSIC, BZ_I_GRAPHIC_EQ, "music", "card, the pc" },
-    { &APP_SMARTHOME, BZ_I_LIGHTBULB, "smart home", "lights, rooms" },
-    { &APP_WEATHER, BZ_I_LIGHT_MODE, "weather", "hours, the week" },
-};
+#define NAPPS ((int)(sizeof APPS / sizeof APPS[0]))
 
-const ui_app_t *ui_app_find(const char *name)
+int ui_app_count(void) { return NAPPS; }
+const ui_app_entry_t *ui_app_entry(int i) { return i >= 0 && i < NAPPS ? &APPS[i] : NULL; }
+
+const char *ui_app_label(const ui_app_t *app)
 {
-    const app_entry_t *groups[4] = { APPS_ROBOT, APPS_DIAG, APPS_TABLET, APPS_EVERYDAY };
-    int counts[4] = { (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0]), (int)(sizeof APPS_DIAG / sizeof APPS_DIAG[0]),
-                      (int)(sizeof APPS_TABLET / sizeof APPS_TABLET[0]),
-                      (int)(sizeof APPS_EVERYDAY / sizeof APPS_EVERYDAY[0]) };
-    for (int g = 0; g < 4; g++)
-        for (int i = 0; i < counts[g]; i++)
-            if (groups[g][i].app != &HOME_MODE_TILE &&
-                (!strcmp(groups[g][i].label, name) || !strcmp(groups[g][i].app->name, name)))
-                return groups[g][i].app;
+    for (int i = 0; i < NAPPS; i++)
+        if (APPS[i].app == app) return APPS[i].label;
     return NULL;
 }
 
-/* What a tile needs to show its name and hint without an ellipsis, measured against the longest of
- * them ("preflight", "systemcore", "recorder"): 18 px of padding each side and about 140 px of word.
- * The column COUNT follows from the frame -- six across the landscape frame, three across phone
- * mode's -- because a fixed six in a 720 px frame is a 105 px tile and every label becomes "pre...". */
-#define APPS_TILE_MIN 176
-#define APPS_COLS (((W) - 2 * PAD + BZ_GAP) / (APPS_TILE_MIN + BZ_GAP) < 2 \
-                   ? 2 : ((W) - 2 * PAD + BZ_GAP) / (APPS_TILE_MIN + BZ_GAP))
-#define APP_TILE_H 140
-
-static void apps_group(lv_obj_t *col, const char *title, const app_entry_t *e, int n)
+const ui_app_t *ui_app_find(const char *name)
 {
-    lv_obj_t *l = bz_label(col, title, BZ_F_LABEL, BZ_C_DIM);
-    lv_obj_set_style_pad_top(l, 6, 0);
-    int w = (W - 2 * PAD - (APPS_COLS - 1) * BZ_GAP) / APPS_COLS;
-    lv_obj_t *grid = bz_row(col, BZ_GAP);
-    lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
-    lv_obj_set_style_pad_row(grid, BZ_GAP, 0);
-    lv_obj_set_width(grid, W - 2 * PAD);
-    for (int i = 0; i < n; i++) {
-        lv_obj_t *t = bz_tile(grid, w, APP_TILE_H);
-        lv_obj_add_flag(t, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_set_style_pad_all(t, 18, 0);
-        lv_obj_t *ic = bz_tile(t, 56, 56);
-        lv_obj_add_style(ic, bz_style_fill(BZ_C_SURFACE3), 0);
-        lv_obj_set_style_radius(ic, 18, 0);
-        lv_obj_set_style_pad_all(ic, 0, 0);
-        lv_obj_t *g = bz_icon(ic, e[i].icon, 32, BZ_C_INK);
-        lv_obj_center(g);
-        lv_obj_t *lb = bz_label_line(t, e[i].label, BZ_F_BODY, BZ_C_INK, w - 36);
-        lv_obj_align(lb, LV_ALIGN_BOTTOM_LEFT, 0, -22);
-        lv_obj_t *h = bz_label_line(t, e[i].hint, BZ_F_CAPTION, BZ_C_DIM, w - 36);
-        lv_obj_align(h, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-        if (e[i].app == &HOME_MODE_TILE) bz_on_tap(t, ui_home_mode_tap, NULL);
-        else bz_on_tap(t, open_app_tap, (void *)e[i].app);
+    for (int i = 0; i < NAPPS; i++)
+        if (APPS[i].app != &HOME_MODE_TILE && (!strcmp(APPS[i].label, name) || !strcmp(APPS[i].app->name, name)))
+            return APPS[i].app;
+    return NULL;
+}
+
+void ui_app_launch(const ui_app_t *app, lv_obj_t *from)
+{
+    if (app == &HOME_MODE_TILE) ui_home_mode_tap(from, NULL);
+    else if (app) ui_app_open(app, from);
+}
+
+/* A cell: the icon over the name, the hint under it. The window grows out of the icon, not the cell. */
+static void cell_tap(lv_obj_t *o, void *u)
+{
+    lv_obj_t *icon = lv_obj_get_child(o, 0);
+    ui_app_launch((const ui_app_t *)u, icon ? icon : o);
+}
+
+#define LIB_ICON 64
+#define LIB_CELL_MIN 150 /* seven across the landscape frame, four across phone mode's */
+
+lv_obj_t *ui_app_cell(lv_obj_t *parent, const ui_app_t *app, const char *label, const char *hint, int w, int icon)
+{
+    lv_obj_t *c = bz_col(parent, 0);
+    lv_obj_set_width(c, w);
+    lv_obj_set_flex_align(c, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_top(c, 14, 0);
+    lv_obj_set_style_pad_bottom(c, 12, 0);
+    lv_obj_set_style_radius(c, 28, 0);
+    /* the press: a platter under the whole cell (a transparent cell has nothing for the state layer to tint) */
+    lv_obj_add_style(c, bz_style_fill(BZ_C_SURFACE3), LV_STATE_PRESSED);
+    lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+    ui_app_icon(c, app, icon);
+    lv_obj_t *l = bz_label_line(c, label, BZ_F_BODY_S, BZ_C_INK, w - 12);
+    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_pad_top(l, 10, 0);
+    lv_obj_set_height(l, lv_font_get_line_height(bz_font(BZ_F_BODY_S)) + 10);
+    if (hint) {
+        lv_obj_t *h = bz_label_line(c, hint, BZ_F_CAPTION, BZ_C_DIM, w - 12);
+        lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
     }
+    bz_on_tap(c, cell_tap, (void *)app);
+    return c;
+}
+
+static struct {
+    lv_obj_t *list;
+    bool dirty;      /* scrolled since the page was last left */
+} LIB;
+
+/* Coming back to the library finds it at its top. Reset while it is off screen and nothing is drawing a
+ * picture of it, so neither a slide nor the page on screen sees the jump. */
+static void lib_watch(void *u)
+{
+    (void)u;
+    if (ui_page() == PG_APPS) {
+        LIB.dirty = true;
+        return;
+    }
+    if (!LIB.dirty || bz_ui_sliding() || bz_ui_sheeting()) return;
+    LIB.dirty = false;
+    ui_scroller_reset(LIB.list);
 }
 
 void ui_page_tools(lv_obj_t *page)
 {
     lv_obj_t *right = ui_head(page, "Apps", NULL);
     char n[16];
-    snprintf(n, sizeof n, "%d apps", (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0] + sizeof APPS_DIAG / sizeof APPS_DIAG[0] +
-                                           sizeof APPS_TABLET / sizeof APPS_TABLET[0] +
-                                           sizeof APPS_EVERYDAY / sizeof APPS_EVERYDAY[0]));
+    snprintf(n, sizeof n, "%d apps", NAPPS);
     bz_label_line(right, n, BZ_F_LABEL, BZ_C_DIM, ui_head_width("Apps"));
-    lv_obj_t *wrap = bz_box(page);
-    lv_obj_set_pos(wrap, PAD, BODY_Y);
-    lv_obj_t *col = ui_scroller(wrap, W - 2 * PAD, BODY_H);
-    apps_group(col, "robot", APPS_ROBOT, (int)(sizeof APPS_ROBOT / sizeof APPS_ROBOT[0]));
-    apps_group(col, "diagnose", APPS_DIAG, (int)(sizeof APPS_DIAG / sizeof APPS_DIAG[0]));
-    apps_group(col, "this tablet", APPS_TABLET, (int)(sizeof APPS_TABLET / sizeof APPS_TABLET[0]));
-    apps_group(col, "everyday", APPS_EVERYDAY, (int)(sizeof APPS_EVERYDAY / sizeof APPS_EVERYDAY[0]));
+
+    int iw = DRAWER_IN(W - 2 * PAD);
+    LIB.list = drawer(page, PAD, W - 2 * PAD);
+    lv_obj_set_style_pad_row(LIB.list, 0, 0);
+
+    int cols = (iw + 4) / (LIB_CELL_MIN + 4);
+    if (cols < 3) cols = 3;
+    int cw = (iw - (cols - 1) * 4) / cols;
+    for (int g = 0; g < 4; g++) {
+        int count = 0;
+        for (int i = 0; i < NAPPS; i++) count += APPS[i].group == g;
+        lv_obj_t *hd = bz_row(LIB.list, 10);
+        lv_obj_set_style_pad_top(hd, g ? 22 : 8, 0);
+        lv_obj_set_style_pad_bottom(hd, 6, 0);
+        lv_obj_set_style_pad_left(hd, 14, 0);
+        bz_label(hd, GROUP_NAME[g], BZ_F_LABEL, BZ_C_DIM);
+        char c[8];
+        snprintf(c, sizeof c, "%d", count);
+        bz_label(hd, c, BZ_F_LABEL, BZ_C_FAINT);
+        lv_obj_t *grid = bz_row(LIB.list, 4);
+        lv_obj_set_flex_flow(grid, LV_FLEX_FLOW_ROW_WRAP);
+        lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+        lv_obj_set_style_pad_row(grid, 4, 0);
+        lv_obj_set_width(grid, iw);
+        for (int i = 0; i < NAPPS; i++)
+            if (APPS[i].group == g) ui_app_cell(grid, APPS[i].app, APPS[i].label, APPS[i].hint, cw, LIB_ICON);
+    }
     /* room to scroll the last row clear of the dock */
-    lv_obj_t *sp = bz_box(col);
+    lv_obj_t *sp = bz_box(LIB.list);
     lv_obj_set_height(sp, DOCK_CLEAR);
+    ui_on_refresh(lib_watch, NULL);
 }
+

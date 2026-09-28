@@ -31,6 +31,7 @@ struct bz_glass {
     int lite_opa;      /* calm: the solid background last given to obj (-1: none) */
     int lite_amt, lite_tint; /* and the tint mixed into it, in sixteenths */
     bool lite_dark;
+    const lv_image_dsc_t *lite_img; /* the baked surface it shows (a reference held on it, bz_frost.h) */
 };
 
 static struct {
@@ -670,6 +671,8 @@ static bool update_glass(void)
                 const lv_image_dsc_t *fr = NULL;
                 int gw = lv_obj_get_width(g->obj), gh = lv_obj_get_height(g->obj);
                 if (opa > 0 && gw > 0 && gh > 0) fr = bz_frost(gw, gh, (int)g->radius, c, opa);
+                bz_frost_release(g->lite_img); /* after taking the new one: the same picture is kept, not freed */
+                g->lite_img = fr;
                 if (fr) {
                     lv_obj_set_style_bg_opa(g->obj, LV_OPA_TRANSP, 0);
                     lv_obj_set_style_bg_image_src(g->obj, fr, 0);
@@ -685,6 +688,9 @@ static bool update_glass(void)
         if (g->lite_opa >= 0) {
             g->lite_opa = -1;
             lv_obj_set_style_bg_opa(g->obj, LV_OPA_TRANSP, 0);
+            lv_obj_set_style_bg_image_src(g->obj, NULL, 0);
+            bz_frost_release(g->lite_img);
+            g->lite_img = NULL;
         }
         if (g->strength.value < 0.002f || !visible(g->obj)) continue;
         bz_glass_shape_t *s = &shapes[n++];

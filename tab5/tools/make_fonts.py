@@ -93,6 +93,8 @@ network_check signal_cellular_alt usb_off conversion_path schema videocam_off mo
 calculate edit_note folder folder_open draft flashlight_on flashlight_off home notifications grid_view
 monitoring screen_rotation screen_lock_rotation lock bedtime palette avg_pace timer_off laps checklist_rtl
 backspace percent memory_alt display_settings volume_off info_i
+mode_fan leaderboard menu_book alarm calendar_month photo_library music_note partly_cloudy_day
+wallpaper star check sports_score article interests texture widgets label gradient waves grain
 """.split()
 
 ICON_SIZES = [("outline", "sym_outline.ttf", [24, 30, 32, 40, 48]), ("fill", "sym_fill.ttf", [32, 40])]
@@ -211,6 +213,8 @@ def conv(name, path, size, ranges, extra_symbols=None, fallback=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--fonts", default=os.environ.get("BZ_FONT_DIR", "/opt/fonts"))
+    # only the icon faces and the header: adding a glyph shouldn't rewrite every text face
+    ap.add_argument("--icons-only", action="store_true")
     a = ap.parse_args()
     fetch(a.fonts)
     os.makedirs(OUT, exist_ok=True)
@@ -229,7 +233,7 @@ def main():
         icons.append((n, by_name[n]))
     icon_ranges = ",".join(hex(cp) for _, cp in icons)
 
-    for name, src, size, ranges, frozen in TEXT_FONTS:
+    for name, src, size, ranges, frozen in ([] if a.icons_only else TEXT_FONTS):
         path = tnum(src, a.fonts) if frozen else os.path.join(a.fonts, src)
         print("font", name)
         fallback = os.path.join(a.fonts, "code400.ttf") if src.startswith("flex") else None

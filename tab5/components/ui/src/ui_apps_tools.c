@@ -732,13 +732,9 @@ static void lg_scan(void)
         }
         closedir(dp);
     }
-    if (!LG.nfiles) {
-        lv_obj_t *t = bz_tile(LG.files, W - 2 * PAD, 130);
-        bz_label(t, "no logs on the card", BZ_F_NAME, BZ_C_INK);
-        lv_obj_t *l = bz_label(t, "Looked in the root and logs/ for .wpilog, .dslog and .dsevents, and in runs/ for the recorder's .csv.",
-                               BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    }
+    if (!LG.nfiles)
+        ui_empty_icon(LG.files, W - 2 * PAD, BZ_I_RECEIPT_LONG, "no logs on the card",
+                      "Looked in the root and logs/ for .wpilog, .dslog and .dsevents, and in runs/ for the recorder's .csv.");
 }
 
 static void lg_show(void)
@@ -1075,7 +1071,7 @@ const ui_app_t APP_LOGS = { .name = "logs", .icon = BZ_I_RECEIPT_LONG, .build = 
 /* ================================================================== settings */
 
 static struct {
-    lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *calm_chip, *flip_chip, *phone_chip, *perf_chip, *about, *wifi_list,
+    lv_obj_t *team, *addr_chips[5], *bright, *vol, *dark_chip, *light_chip, *auto_chip, *calm_chip, *flip_chip, *phone_chip, *perf_chip, *about, *wifi_list,
         *wifi_state, *usb_state;
     ui_kb_t *pwkb;                 /* the Wi-Fi password: the shell's one keyboard */
     char entry[8];
@@ -1148,15 +1144,29 @@ static void st_level(lv_obj_t *lv, float v, bool final, void *u)
 
 static void sx_swatches(void);
 
+static void st_tone_chips(void)
+{
+    bool au = ui_look()->tone_auto;
+    ui_chip_set(ST.dark_chip, S.dark && !au);
+    ui_chip_set(ST.light_chip, !S.dark && !au);
+    ui_chip_set(ST.auto_chip, au);
+}
+
 static void st_tone(lv_obj_t *o, void *u)
 {
     (void)o;
-    S.dark = (intptr_t)u == 0;
-    bz_ui_set_mode(S.dark, S.calm);
-    ui_chip_set(ST.dark_chip, S.dark);
-    ui_chip_set(ST.light_chip, !S.dark);
+    int k = (int)(intptr_t)u;
+    /* dark or light by hand ends the schedule; auto takes the tone the hour asks for now */
+    ui_look_edit()->tone_auto = k == 2;
+    ui_look_save();
+    if (k == 2) ui_look_tone_tick(true);
+    else {
+        S.dark = k == 0;
+        bz_ui_set_mode(S.dark, S.calm);
+        ui_settings_save();
+    }
+    st_tone_chips();
     sx_swatches();
-    ui_settings_save();
 }
 
 static void st_autorot(lv_obj_t *o, void *u)
@@ -1524,6 +1534,17 @@ static lv_obj_t *sx_pane(lv_obj_t *b, int i, int x, int w)
     return t;
 }
 
+/* The rest of a pane as a scrolling column, for a section taller than the pane (a scan's list of networks, the
+ * look's choices): nothing runs off the pane's foot. */
+static lv_obj_t *sx_scroll(lv_obj_t *pane, int w)
+{
+    lv_obj_update_layout(pane);
+    int lh = lv_obj_get_content_height(pane) - 60;
+    lv_obj_t *col = ui_scroller(pane, w, lh > 200 ? lh : 200);
+    lv_obj_set_style_pad_row(col, 12, 0);
+    return col;
+}
+
 static lv_obj_t *sx_wrap_row(lv_obj_t *parent, int w)
 {
     lv_obj_t *r = bz_row(parent, 10);
@@ -1540,8 +1561,7 @@ static void settings_open(void)
     for (int k = 0; k < ADDR_N; k++) ui_chip_set(ST.addr_chips[k], !strcmp(S.address, ADDR_VALUE[k]));
     bz_level_set(ST.bright, S.brightness, false);
     bz_level_set(ST.vol, S.volume, false);
-    ui_chip_set(ST.dark_chip, S.dark);
-    ui_chip_set(ST.light_chip, !S.dark);
+    st_tone_chips();
 #if BZ_LEAN
     ui_chip_set(ST.calm_chip, S.auto_rotate);
     ui_chip_set(ST.flip_chip, S.flip);
@@ -1560,6 +1580,7 @@ static void settings_open(void)
     ui_assist_settings_open();
     ui_home_settings_open();
     ui_home_look_settings_open();
+    ui_look_settings_open();
     sx_swatches();
     if (ui_home_settings_wanted()) SX.cur = SS_HOME; /* "settings" from home mode */
     if (SX.wanted >= 0) SX.cur = SX.wanted;
@@ -1624,17 +1645,16 @@ static void settings_build(lv_obj_t *b)
     bz_label(t, "brightness", BZ_F_LABEL, BZ_C_DIM);
     ST.bright = bz_level(t, iw, 52, 0.05f, 1, 0.01f);
     bz_level_on_change(ST.bright, st_level, (void *)(intptr_t)0);
-    bz_label(t, "overlay", BZ_F_LABEL, BZ_C_DIM);
+    /* the picture: which way up, and the frame-rate overlay (one row: the pane ran out under the dim chips) */
+    bz_label(t, "the picture", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *r = sx_wrap_row(t, iw);
-    ST.perf_chip = ui_chip(r, "frame-rate overlay", st_perf, NULL);
-    bz_label(t, "turn the picture", BZ_F_LABEL, BZ_C_DIM);
-    r = sx_wrap_row(t, iw);
 #if BZ_LEAN
     ST.calm_chip = ui_chip(r, "auto-rotate", st_autorot, NULL);
     ST.flip_chip = ui_chip(r, "upside down", st_flip, NULL);
 #else
     ST.calm_chip = ui_chip(r, "calm", st_calm, NULL);
 #endif
+    ST.perf_chip = ui_chip(r, "frame-rate overlay", st_perf, NULL);
     bz_label(t, "the frame the interface is laid out in", BZ_F_LABEL, BZ_C_DIM);
     r = sx_wrap_row(t, iw);
     ST.phone_chip = ui_chip(r, "phone mode · portrait", st_phone, NULL);
@@ -1644,15 +1664,13 @@ static void settings_build(lv_obj_t *b)
 
     /* look: the tone, the accent, and home mode's face (a scroller: it runs past the pane) */
     t = sx_pane(b, SS_LOOK, px, pw);
-    lv_obj_update_layout(t);
     {
-        int lh = lv_obj_get_content_height(t) - 60;
-        lv_obj_t *col = ui_scroller(t, iw, lh > 200 ? lh : 200);
-        lv_obj_set_style_pad_row(col, 12, 0);
+        lv_obj_t *col = sx_scroll(t, iw);
         bz_label(col, "tone", BZ_F_LABEL, BZ_C_DIM);
         r = sx_wrap_row(col, iw);
         ST.dark_chip = ui_chip(r, "dark", st_tone, (void *)(intptr_t)0);
         ST.light_chip = ui_chip(r, "light", st_tone, (void *)(intptr_t)1);
+        ST.auto_chip = ui_chip(r, "light by day, dark from 7 pm", st_tone, (void *)(intptr_t)2);
         bz_label(col, "accent", BZ_F_LABEL, BZ_C_DIM);
         r = sx_wrap_row(col, iw);
         for (int i = 0; i < BZ_NACCENTS; i++) {
@@ -1674,6 +1692,7 @@ static void settings_build(lv_obj_t *b)
                                      "The signal orange stays for the one thing to do and for the team itself.",
                                 BZ_F_CAPTION, BZ_C_DIM);
         lv_obj_set_width(an, iw);
+        ui_look_settings(col, iw); /* icons, ground, quick launch, status band and dock */
         ui_home_look_settings(col, iw);
         lv_obj_t *sp = bz_box(col);
         lv_obj_set_height(sp, 40);
@@ -1718,6 +1737,7 @@ static void settings_build(lv_obj_t *b)
 
     /* network */
     t = sx_pane(b, SS_NETWORK, px, pw);
+    t = sx_scroll(t, iw); /* a scan's list and the dns notes run past the pane */
     bz_label(t, "wi-fi", BZ_F_LABEL, BZ_C_DIM);
     ST.wifi_state = bz_label_line(t, "", BZ_F_BODY, BZ_C_INK, iw);
     ui_button(t, BZ_I_WIFI, "scan for networks", st_scan, NULL);
@@ -1740,6 +1760,8 @@ static void settings_build(lv_obj_t *b)
                                "blocks by address instead.",
                             BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(dn, iw);
+    lv_obj_t *nsp = bz_box(t);
+    lv_obj_set_height(nsp, 40);
 
     /* pc link and the assistant: their own apps hold the detail */
     t = sx_pane(b, SS_LINK, px, pw);
@@ -1799,6 +1821,15 @@ static void settings_build(lv_obj_t *b)
 
     /* about */
     t = sx_pane(b, SS_ABOUT, px, pw);
+    /* the tablet as a thing with a name: its icon, what it is, whose it is */
+    lv_obj_t *ab = bz_row(t, 20);
+    lv_obj_set_style_pad_ver(ab, 8, 0);
+    ui_icon_named(ab, "system", 64);
+    lv_obj_t *abc = bz_col(ab, 2);
+    bz_label(abc, "Catalyst Tab", BZ_F_TITLE, BZ_C_INK);
+    char abl[48];
+    snprintf(abl, sizeof abl, "version %s \xc2\xb7 team %d's pit tablet", CATALYST_TAB_VERSION, S.team);
+    bz_label(abc, abl, BZ_F_LABEL, BZ_C_DIM);
     ST.about = bz_label(t, "", BZ_F_BODY, BZ_C_DIM);
     lv_obj_set_width(ST.about, iw);
     lv_label_set_long_mode(ST.about, LV_LABEL_LONG_WRAP);

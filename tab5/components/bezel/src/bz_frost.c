@@ -65,10 +65,11 @@ int8_t bz_grain_at(int x, int y)
 
 /* Enough for the chrome that is on screen at once -- the dock, the orb, the island, a few cards -- with
  * room for both a light and a dark palette's worth before anything is evicted. */
-#define FROST_MAX 12
+#define FROST_MAX 20
 
 typedef struct {
     bool used;
+    int refs;         /* glass pieces showing it: never evicted while any does */
     int w, h, radius, opa;
     uint32_t base;
     uint32_t age; /* when it was last handed out, for eviction */
@@ -237,14 +238,19 @@ const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa)
         }
         if (f->w == w && f->h == h && f->radius == radius && f->base == base && f->opa == opa) {
             f->age = frost_clock;
+            f->refs++;
             return &f->dsc;
         }
-        if (!oldest || f->age < oldest->age) oldest = f;
+        /* only a surface nobody shows may go. Evicting by age alone recycled the control center's link panel
+         * (asked for once, so always the oldest) into a pill-sized picture while the panel still pointed at it:
+         * the panel lost its surface and a stray capsule appeared in the middle of it */
+        if (f->refs <= 0 && (!oldest || f->age < oldest->age)) oldest = f;
     }
 
     frost_t *f = free_slot;
     if (!f) {
-        /* every slot taken: the one that has gone longest without being asked for goes */
+        /* every slot taken: the unused one that has gone longest without being asked for goes */
+        if (!oldest) return NULL; /* all in use: the caller keeps its flat fill */
         f = oldest;
         BIG_FREE(f->px);
         memset(f, 0, sizeof *f);
@@ -264,6 +270,7 @@ const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa)
     f->base = base;
     f->opa = opa;
     f->age = frost_clock;
+    f->refs = 1;
     bake(f);
 
     f->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
@@ -274,6 +281,13 @@ const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa)
     f->dsc.data_size = (uint32_t)n;
     f->dsc.data = f->px;
     return &f->dsc;
+}
+
+void bz_frost_release(const lv_image_dsc_t *d)
+{
+    if (!d) return;
+    for (int i = 0; i < FROST_MAX; i++)
+        if (F[i].used && &F[i].dsc == d && F[i].refs > 0) F[i].refs--;
 }
 
 void bz_frost_flush(void)

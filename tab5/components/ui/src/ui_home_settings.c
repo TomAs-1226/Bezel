@@ -668,7 +668,7 @@ void ui_home_settings_open(void)
     if (!HS.list) return;
     ui_kb_hide(HS.kb);
     /* from the top, every time: left scrolled, it opened with a row of chips cut off under the pane's head */
-    ui_scroller_top(HS.col);
+    ui_scroller_reset(HS.col);
     HS.ha_gen = 0;
     HS.tag_shown = -2;
     show();

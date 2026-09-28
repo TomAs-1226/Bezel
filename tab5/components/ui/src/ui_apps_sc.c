@@ -251,13 +251,8 @@ static lv_obj_t *empty_tile(lv_obj_t *parent, int w, int h, const char *title, c
 {
     /* a column that grows with its text: at the tablet's type size a fixed height let the explanation
      * run up into the title */
-    lv_obj_t *t = bz_tile(parent, w, LV_SIZE_CONTENT);
-    lv_obj_set_style_min_height(t, h, 0);
-    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(t, 12, 0);
-    bz_label(t, title, BZ_F_NAME, BZ_C_INK);
-    lv_obj_t *l = bz_label(t, text, BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_set_width(l, IN(w));
+    lv_obj_t *t = ui_empty(parent, w, title, text); /* the shared look: a glyph in a disc, the words in the body face */
+    if (lv_obj_get_style_min_height(t, 0) < h) lv_obj_set_style_min_height(t, h, 0);
     return t;
 }
 

@@ -773,7 +773,10 @@ void ui_light_cc_add(void)
 
 static struct {
     lv_obj_t *v[16], *cpu_meter[2], *ram_meter, *psram_meter;
+    lv_obj_t *hero[4], *hero_sub[4];
 } SY;
+
+#define SY_HERO_H 150
 
 enum { SY_UPTIME, SY_TEMP, SY_CPU0, SY_CPU1, SY_SRAM, SY_PSRAM, SY_BATT, SY_POWER, SY_WIFI, SY_IP, SY_TETHER, SY_FPS,
        SY_FRAME, SY_FW, SY_SD, SY_BOOT };
@@ -792,16 +795,32 @@ static lv_obj_t *sy_tile(lv_obj_t *grid, const char *title, int w)
     lv_obj_t *t = bz_tile(grid, w, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(t, 10, 0);
-    lv_obj_set_style_min_height(t, APP_H, 0);
+    lv_obj_set_style_min_height(t, APP_H - SY_HERO_H - BZ_GAP, 0);
     bz_label(t, title, BZ_F_LABEL, BZ_C_DIM);
     return t;
+}
+
+/* the four numbers read at a glance, big, over the tables that explain them */
+static void sy_hero(lv_obj_t *row, int i, const char *label, int w)
+{
+    lv_obj_t *t = bz_tile(row, w, SY_HERO_H);
+    bz_label(t, label, BZ_F_LABEL, BZ_C_DIM);
+    SY.hero[i] = bz_label(t, "—", BZ_F_VALUE, BZ_C_INK);
+    lv_obj_set_pos(SY.hero[i], 0, 28);
+    SY.hero_sub[i] = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, IN(w));
+    lv_obj_align(SY.hero_sub[i], LV_ALIGN_BOTTOM_LEFT, 0, 0);
 }
 
 static void sys_build(lv_obj_t *b)
 {
     int cw = (W - 2 * PAD - 2 * BZ_GAP) / 3;
+    int hw = (W - 2 * PAD - 3 * BZ_GAP) / 4;
+    lv_obj_t *heroes = bz_row(b, BZ_GAP);
+    lv_obj_set_pos(heroes, PAD, APP_Y);
+    static const char *const HL[4] = { "battery", "memory", "cores", "up for" };
+    for (int i = 0; i < 4; i++) sy_hero(heroes, i, HL[i], hw);
     lv_obj_t *grid = bz_row(b, BZ_GAP);
-    lv_obj_set_pos(grid, PAD, APP_Y);
+    lv_obj_set_pos(grid, PAD, APP_Y + SY_HERO_H + BZ_GAP);
     lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
     lv_obj_t *t = sy_tile(grid, "the tablet", cw);
     SY.v[SY_UPTIME] = sy_kv(t, "uptime", IN(cw));
@@ -865,6 +884,19 @@ static void sys_refresh(void)
     hal_boot_t pb;
     hal_boot_prev(&pb);
     ui_text(SY.v[SY_BOOT], "%s%s", pb.failed ? "failed: " : "", pb.reason);
+
+    /* the heroes */
+    if (bt.ok) {
+        ui_text(SY.hero[0], "%d%%", bt.percent);
+        ui_text(SY.hero_sub[0], "%.2f v · %s", bt.volts, bt.charging ? "charging" : bt.external ? "plugged in" : "on battery");
+    }
+    ui_text(SY.hero[1], "%.1f mb", s.psram_free / 1048576.0);
+    ui_text(SY.hero_sub[1], "psram free · internal %u kb", (unsigned)(s.sram_free / 1024));
+    ui_text(SY.hero[2], "%.0f%%", (s.cpu[0] + s.cpu[1]) * 50);
+    ui_text(SY.hero_sub[2], "busy · chip %.0f °c", s.temp_c);
+    if (up >= 3600) ui_text(SY.hero[3], "%dh %02dm", (int)up / 3600, (int)up / 60 % 60);
+    else ui_text(SY.hero[3], "%dm %02ds", (int)up / 60, (int)up % 60);
+    ui_text(SY.hero_sub[3], "since %s", pb.reason[0] ? pb.reason : "power on");
 }
 
 const ui_app_t APP_SYSMON = { .name = "system", .icon = BZ_I_MONITORING, .build = sys_build, .refresh = sys_refresh };
