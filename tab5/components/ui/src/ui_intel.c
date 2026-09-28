@@ -489,7 +489,9 @@ static void tick(void *u)
         IX.next_1s = now + 1;
         sources_tick(now);
     }
-    if (now >= IX.next_pass) {
+    /* not while a finger moves something or a page slides: a pass is under a millisecond, but a frame in a
+     * gesture has none to spare, and the pass can wait half a second */
+    if (now >= IX.next_pass && !bz_drag_active() && !bz_ui_sliding() && !bz_ui_sheeting()) {
         IX.next_pass = now + PASS_S;
         pass(now);
     }
