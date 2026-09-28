@@ -526,6 +526,10 @@ static void run(char *line)
         /* "dual 0": a scroll's shift runs on one DMA2D copier, as it did; "dual 1": split between two */
         hal_scroll_dual(!(line[4] == ' ' && line[5] == '0'));
         say("OK\n");
+    } else if (!strncmp(line, "mask", 4) && (line[4] == 0 || line[4] == ' ')) {
+        /* "mask 0": a slide holds each piece of chrome as its whole rectangle, as it did; "mask 1": its pixels */
+        hal_slide_mask(!(line[4] == ' ' && line[5] == '0'));
+        say("OK\n");
     } else if (s_handler && s_handler(line)) {
         vTaskDelay(pdMS_TO_TICKS(200)); /* the UI's loop picks it up next frame */
         say("OK\n");

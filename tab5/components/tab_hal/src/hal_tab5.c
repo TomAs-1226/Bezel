@@ -1409,9 +1409,18 @@ static void run_copy(uint16_t *fb, const uint16_t *src, int src_dy, int y0, int 
         nr = out;
         for (int i = 0; i < nr; i++) r[i] = q[i];
     }
-    for (int i = 0; i < nr; i++)
-        blk_copy_async(fb, r[i].x, r[i].y, src, r[i].x, r[i].y + src_dy, r[i].w, r[i].h);
+    for (int i = 0; i < nr; i++) {
+        /* a big block's rows split between both copiers, as a scroll's are ("dual 0" for one) */
+        if (s_scroll_dual && s_fbcpy2 && r[i].h >= 64 && r[i].w * r[i].h >= 65536) {
+            int h1 = r[i].h / 2;
+            blk_copy_async(fb, r[i].x, r[i].y, src, r[i].x, r[i].y + src_dy, r[i].w, h1);
+            blk_copy_async2(fb, r[i].x, r[i].y + h1, src, r[i].x, r[i].y + h1 + src_dy, r[i].w, r[i].h - h1);
+        } else {
+            blk_copy_async(fb, r[i].x, r[i].y, src, r[i].x, r[i].y + src_dy, r[i].w, r[i].h);
+        }
+    }
     fbcpy_wait();
+    fbcpy2_wait();
 }
 
 /* ---- the chrome held still through a slide, as its own pixels and nothing else ----
@@ -1441,6 +1450,8 @@ static struct {
     int npiece;
 } CM;
 
+static bool s_mask_on = true; /* dev console "mask 0": the chrome held as its rectangles, as before */
+void hal_slide_mask(bool on) { s_mask_on = on; }
 static void cm_reset(void) { CM.ready = false; }
 
 static void cm_sync(uint16_t *buf, int y0, int y1, int dir)
@@ -1456,7 +1467,7 @@ static void cm_build(const bz_area_t *chrome, int nchrome)
     CM.ready = true;
     CM.n = CM.ncore = CM.npiece = 0;
     if (!CM.span) CM.span = heap_caps_malloc(sizeof(cm_span_t) * CM_SPANS, MALLOC_CAP_SPIRAM);
-    CM.failed = !CM.span;
+    CM.failed = !CM.span || !s_mask_on;
     if (CM.failed) return;
     for (int i = 0; i < nchrome && i < BZ_SLIDE_CHROME; i++) {
         int x, y, w, h;
