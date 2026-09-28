@@ -1839,14 +1839,24 @@ void ui_app_open(const ui_app_t *app, lv_obj_t *from)
     U.app = app;
     if (from) lv_obj_get_coords(from, &U.from);
     else U.from = (lv_area_t){ W / 2 - 60, H / 2 - 60, W / 2 + 60, H / 2 + 60 };
+    /* A tap that opens an app freezes the interface for as long as these take, so a slow one says which part
+     * was slow (the first open builds the app; after that, open and refresh are the whole cost). */
+    double t0 = hal_seconds();
     U.win_inner = app_inner(app);
+    double t1 = hal_seconds();
     lv_obj_remove_flag(U.win_inner, LV_OBJ_FLAG_HIDDEN);
     for (int i = 0; i < U.nbuilt; i++) if (U.built[i].inner != U.win_inner) lv_obj_add_flag(U.built[i].inner, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(U.win);
+    double t2 = t1, t3 = t1;
     if (!reopening || U.k.target == 0) {
         if (app->open) app->open();
+        t2 = hal_seconds();
         if (app->refresh) app->refresh();
+        t3 = hal_seconds();
     }
+    if (t3 - t0 > 0.025)
+        printf("app %s: build %.0f open %.0f refresh %.0f ms\n", app->name, (t1 - t0) * 1e3, (t2 - t1) * 1e3,
+               (t3 - t2) * 1e3);
     if (U.k.value < 0.02f) window_begin(true);
     /* grows out of the icon on the release spring; a closing window caught here reopens from where it is */
     bz_motion_to(&U.k, 1, BZ_RELEASE);
