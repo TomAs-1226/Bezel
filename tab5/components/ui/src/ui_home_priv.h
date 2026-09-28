@@ -114,6 +114,8 @@ void hm_cmd(const char *action);                 /* the transport, for whichever
  * generation changes whenever the answer does (a new song, the tone, the setting). */
 const home_tint_t *hm_tint(unsigned *gen);
 double hm_now(void);
+/* a weather condition drawn (ui_home_wx.c): WMO code, day or night, on a flat ground of the tile's 565 value */
+void hm_wx_glyph(uint16_t *px, int w, int h, uint16_t ground, int code, bool day, bool dark);
 
 /* ---- covers (ui_home_art.c) ---- */
 const hm_art_t *hm_art_pc(const home_pc_t *pc);

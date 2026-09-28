@@ -1809,26 +1809,34 @@ static void saver_tick(void)
  * A plain switch, not a slide: nobody is watching it happen. ---- */
 static void night_tick(double now)
 {
-    static double next;
-    if (now < next) return;
-    next = now + 1.0;
+    static double next, since, left;
     if (!HM.active || HM.sheet || SL.active || hm_faces_moving()) return;
-    bool night = HM.night_force >= 0 ? HM.night_force == 1 : hm_faces_night();
     double idle = bz_ui_idle_s();
-    if (!HM.night_on) {
-        if (!night || (idle < NIGHT_IDLE_S && HM.night_force != 1) || ui_app_any_open() || HM.saver_on) return;
-        HM.night_on = true;
-        HM.night_page = HM.page;
-        HM.night_face = hm_faces_face();
-        hm_faces_set(HM_FACE_NIGHT);
-        page_set(HM_PG_CLOCK);
+    if (HM.night_on) {
+        /* every frame, not once a second: a touch is under a second old for only a second, and a check once a
+         * second missed half of them */
+        bool night = HM.night_force >= 0 ? HM.night_force == 1 : now >= next ? hm_faces_night() : true;
+        if (now >= next) next = now + 1.0;
+        if (night && !(idle < 0.5 && now - since > 1.0)) return;
+        HM.night_on = false;
+        left = now;
+        hm_faces_set(HM.night_face >= 0 && HM.night_face < HM_NFACES ? HM.night_face : hm_cfg()->face);
+        page_set(HM.night_page);
         dots_set(HM.page);
         return;
     }
-    if (night && idle >= 1.0 && HM.night_force != 0) return;
-    HM.night_on = false;
-    hm_faces_set(HM.night_face >= 0 && HM.night_face < HM_NFACES ? HM.night_face : hm_cfg()->face);
-    page_set(HM.night_page);
+    if (now < next) return;
+    next = now + 1.0;
+    bool night = HM.night_force >= 0 ? HM.night_force == 1 : hm_faces_night();
+    /* a minute untouched; the dev console's forced night comes back five seconds after a touch sent it away */
+    bool quiet = idle >= NIGHT_IDLE_S || (HM.night_force == 1 && now - left > 5.0);
+    if (!night || !quiet || ui_app_any_open() || HM.saver_on) return;
+    HM.night_on = true;
+    since = now;
+    HM.night_page = HM.page;
+    HM.night_face = hm_faces_face();
+    hm_faces_set(HM_FACE_NIGHT);
+    page_set(HM_PG_CLOCK);
     dots_set(HM.page);
 }
 
@@ -1952,14 +1960,16 @@ static void press_tick(void)
 }
 
 /* the dev console's "hm prof": where hm_frame's time goes, by part, since it last asked */
-static double s_prof[8];
-static const char *const PROF_NAME[8] = { "stand+tag", "enter+slide", "faces", "night", "camera", "presence",
-                                          "saver+eyes+voice", "roll+press" };
+static double s_prof[10], s_prof_max[10];
+static const char *const PROF_NAME[10] = { "stand+tag", "enter+slide", "faces", "night", "camera", "presence",
+                                           "saver", "roll+press", "eyes", "voice" };
 #define PROF(i, stmt)                                                                                              \
     do {                                                                                                           \
         double t0_ = hal_seconds();                                                                                \
         stmt;                                                                                                      \
-        s_prof[i] += hal_seconds() - t0_;                                                                          \
+        double d_ = hal_seconds() - t0_;                                                                           \
+        s_prof[i] += d_;                                                                                           \
+        if (d_ > s_prof_max[i]) s_prof_max[i] = d_;                                                                \
     } while (0)
 
 static void hm_frame(double now, double dt, void *user)
@@ -1999,7 +2009,9 @@ static void hm_frame(double now, double dt, void *user)
     }
     PROF(4, cap_tick(now));
     PROF(5, home_presence_tick(now));
-    PROF(6, saver_tick(); eyes_tick(now); voice_tick(now));
+    PROF(6, saver_tick());
+    PROF(8, eyes_tick(now));
+    PROF(9, voice_tick(now));
     PROF(7, if (HM.page == HM_PG_DESK) roll_tick(); press_tick());
 }
 
@@ -2081,9 +2093,9 @@ void ui_home_mode_dev(const char *a)
         else home_pc_fake(f[0], NULL, f[1] ? f[1] : f[0]);
         printf("hm: made-up song \"%s\"\n", f[2] ? f[2] : f[1] ? f[1] : f[0]);
     } else if (!strncmp(a, "prof", 4)) {
-        for (int i = 0; i < 8; i++) {
-            printf("hm prof: %-16s %6.1f ms\n", PROF_NAME[i], s_prof[i] * 1000);
-            s_prof[i] = 0;
+        for (int i = 0; i < 10; i++) {
+            printf("hm prof: %-12s %7.1f ms, worst %5.1f ms\n", PROF_NAME[i], s_prof[i] * 1000, s_prof_max[i] * 1000);
+            s_prof[i] = s_prof_max[i] = 0;
         }
     } else if (!strncmp(a, "art", 3)) {
         hm_art_dev(a + 3);

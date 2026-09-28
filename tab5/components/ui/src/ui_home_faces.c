@@ -347,26 +347,35 @@ static void dial_hands(float hours, float minutes)
     line_to(&FC.D.hand[1], DCX - ms * 30, DCY - mc * 30, DCX + ms * 252, DCY + mc * 252);
 }
 
-/* the small boxes along the hand at an angle, redrawn where it was and where it goes */
-static void sec_invalidate(float turns)
+/* The small boxes along the hand, each covering where that piece was and where it goes (a frame of the tick
+ * moves it a degree or two): one call a piece, since every invalidation has its own cost. */
+static void sec_invalidate(float from, float to)
 {
-    if (turns < 0) return;
-    lv_area_t o;
-    lv_obj_get_coords(FC.D.sec, &o);
-    float a = turns * TAU, s = sinf(a), c = -cosf(a);
+    if (to < 0) return;
+    if (from < 0) from = to;
+    float sa = sinf(from * TAU), ca = -cosf(from * TAU), sb = sinf(to * TAU), cb = -cosf(to * TAU);
     for (int i = 0; i < SEC_SEGS; i++) {
         float r0 = -SEC_TAIL + (float)(SEC_TIP + SEC_TAIL) * i / SEC_SEGS;
         float r1 = -SEC_TAIL + (float)(SEC_TIP + SEC_TAIL) * (i + 1) / SEC_SEGS;
-        float x0 = DCX + s * r0, y0 = DCY + c * r0, x1 = DCX + s * r1, y1 = DCY + c * r1;
-        lv_area_t ar = { (int32_t)floorf(fminf(x0, x1)) - 4, (int32_t)floorf(fminf(y0, y1)) - 4,
-                         (int32_t)ceilf(fmaxf(x0, x1)) + 4, (int32_t)ceilf(fmaxf(y0, y1)) + 4 };
-        /* the face's coordinates are the screen's (it fills it from 0, 0) */
+        float xs[4] = { DCX + sa * r0, DCX + sa * r1, DCX + sb * r0, DCX + sb * r1 };
+        float ys[4] = { DCY + ca * r0, DCY + ca * r1, DCY + cb * r0, DCY + cb * r1 };
+        float x1 = xs[0], x2 = xs[0], y1 = ys[0], y2 = ys[0];
+        for (int k = 1; k < 4; k++) {
+            x1 = fminf(x1, xs[k]);
+            x2 = fmaxf(x2, xs[k]);
+            y1 = fminf(y1, ys[k]);
+            y2 = fmaxf(y2, ys[k]);
+        }
+        /* the face's coordinates are the screen's (it fills it from 0, 0); the cap is in the piece at the centre */
+        lv_area_t ar = { (int32_t)floorf(x1) - 4, (int32_t)floorf(y1) - 4, (int32_t)ceilf(x2) + 4, (int32_t)ceilf(y2) + 4 };
+        if (r0 < 0 && r1 > 0) {
+            ar.x1 = LV_MIN(ar.x1, DCX - 10);
+            ar.y1 = LV_MIN(ar.y1, DCY - 10);
+            ar.x2 = LV_MAX(ar.x2, DCX + 10);
+            ar.y2 = LV_MAX(ar.y2, DCY + 10);
+        }
         lv_obj_invalidate_area(FC.D.sec, &ar);
     }
-    /* the cap at the centre */
-    lv_area_t cap = { DCX - 10, DCY - 10, DCX + 10, DCY + 10 };
-    lv_obj_invalidate_area(FC.D.sec, &cap);
-    (void)o;
 }
 
 /* The second hand drawn by the object over the dial, clipped by LVGL to whatever is being redrawn: moving it
@@ -400,9 +409,8 @@ static void sec_draw(lv_event_t *e)
 static void dial_second(float turns)
 {
     if (fabsf(turns - FC.D.drawn) < 0.0004f) return;
-    sec_invalidate(FC.D.drawn);
+    sec_invalidate(FC.D.drawn, turns);
     FC.D.drawn = turns;
-    sec_invalidate(turns);
 }
 
 static void dial_minute(const struct tm *tm)
