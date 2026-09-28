@@ -143,8 +143,13 @@ static void tool_insights(const char *args, char *out, size_t n)
 {
     bool brief = !strstr(args ? args : "", "\"briefing\"") || arg_bool(args, "briefing");
     pthread_mutex_lock(&g_lock);
-    snprintf(out, n, "noticed (most important first; prio 3 act now, 2 worth a look, 1 good to know):\n%s",
-             g_insights && g_insights[0] ? g_insights : "nothing right now");
+    /* the first line is the transcript's summary of the call: what matters most */
+    int k = 0;
+    for (const char *p = g_insights; p && *p; p++) k += *p == '\n';
+    if (g_insights && g_insights[0])
+        snprintf(out, n, "%d noticed, the most important first (prio 3 act now, 2 worth a look, 1 good to know):\n%s", k + 1,
+                 g_insights);
+    else snprintf(out, n, "nothing noticed right now");
     if (brief) ix_addf(out, n, "\n\nbriefing:\n%s", g_brief && g_brief[0] ? g_brief : "not made yet");
     pthread_mutex_unlock(&g_lock);
     char (*lines)[96] = malloc(sizeof *lines * 4);

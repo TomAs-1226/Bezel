@@ -74,7 +74,9 @@ size_t intel_briefing(const intel_in_t *in, char *out, size_t n)
     for (int i = 0; i < in->nup && i < 3; i++) match_line(in, &in->up[i], out, n, i == 0 ? "next:" : "then:");
     if (in->nexus == NX_READY && in->now_queuing[0]) {
         ix_addf(out, n, "queue: now queuing %s", in->now_queuing);
-        if (in->nup > 0 && in->up[0].away >= 0) ix_addf(out, n, " \xc2\xb7 %s in %d", in->up[0].label, in->up[0].away);
+        if (in->nup > 0 && in->up[0].away > 0)
+            ix_addf(out, n, " \xc2\xb7 %s is %d match%s after it", in->up[0].label, in->up[0].away, in->up[0].away == 1 ? "" : "es");
+        else if (in->nup > 0 && in->up[0].away == 0) ix_addf(out, n, " \xc2\xb7 that's %s", in->up[0].label);
         if (in->behind_min >= 5) ix_addf(out, n, " \xc2\xb7 the field runs ~%d min behind", in->behind_min);
         ix_addf(out, n, " (nexus)\n");
     } else if (in->event_live && !in->nexus_key) {

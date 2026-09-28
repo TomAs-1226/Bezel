@@ -536,7 +536,7 @@ static void briefing(void)
     CHECK(strstr(out, "event: Silicon Valley Regional (today) \xc2\xb7 rank 12 of 40 (7-3-0)"));
     CHECK(strstr(out, "statbotics: EPA 31.2, #312 of 3700 (top 9%)"));
     CHECK(strstr(out, "next: Q34 ~") && strstr(out, "(nexus) \xc2\xb7 red with 1234 against 111 \xc2\xb7 62% to win"));
-    CHECK(strstr(out, "queue: now queuing Q31 \xc2\xb7 Q34 in 3 \xc2\xb7 the field runs ~8 min behind (nexus)"));
+    CHECK(strstr(out, "queue: now queuing Q31 \xc2\xb7 Q34 is 3 matches after it \xc2\xb7 the field runs ~8 min behind (nexus)"));
     CHECK(strstr(out, "battery: #7") && strstr(out, "robot: not connected") && out[l - 1] != '\n');
     /* a tiny buffer never overflows */
     char tiny[16];

@@ -75,6 +75,7 @@ static struct {
     intel_in_t *in;            /* PSRAM */
     intel_insight_t *fresh;    /* PSRAM, INTEL_MAX */
     char *brief;               /* PSRAM, the briefing's text */
+    char *brief_full;          /* PSRAM, and what the tablet noticed after it */
     char *list_text;           /* PSRAM, the insights for the tools */
     unsigned posted_gen;
     double pass_ms, pass_max_ms;
@@ -384,7 +385,7 @@ static void post_text(void)
         size_t o = strlen(t);
         snprintf(t + o, cap - o, "%sprio %d \xc2\xb7 %s (%s)", shown++ ? "\n" : "", l[i].prio, l[i].text, l[i].why);
     }
-    intel_post_text(t, IX.brief);
+    intel_post_text(t, IX.brief_full);
     /* the top one in every question's context line */
     char ctx[200] = "";
     for (int i = 0; i < n; i++)
@@ -444,19 +445,21 @@ static void pass(double now)
     IX.passes++;
 }
 
+/* The briefing: the facts (IX.brief, what the app shows beside the list), and the same with what the tablet
+ * noticed after them (IX.brief_full, for the AIs' tool and the model's summary, which have no list beside) */
 static void make_brief(void)
 {
-    if (!IX.in || !IX.brief) return;
+    if (!IX.in || !IX.brief || !IX.brief_full) return;
     intel_briefing(IX.in, IX.brief, 3072);
-    /* what the tablet noticed, after the facts */
+    snprintf(IX.brief_full, 3584, "%s", IX.brief);
     intel_insight_t *l = IX.fresh;
     int n = intel_list(l, INTEL_MAX), shown = 0;
     for (int i = 0; i < n && shown < 4; i++)
         if (!l[i].dismissed && l[i].prio >= 2) {
-            size_t o = strlen(IX.brief);
-            snprintf(IX.brief + o, 3072 - o, "%s%s", shown++ ? "\n  " : "\nnoticed: ", l[i].text);
+            size_t o = strlen(IX.brief_full);
+            snprintf(IX.brief_full + o, 3584 - o, "%s%s", shown++ ? "\n  " : "\nnoticed: ", l[i].text);
         }
-    intel_post_text(IX.list_text, IX.brief);
+    intel_post_text(IX.list_text, IX.brief_full);
 }
 
 /* the daily briefing: at the set time, or on an event day's morning, once a day */
@@ -473,7 +476,7 @@ static void brief_due(void)
     IX.briefed_yday = tm.tm_yday + 1;
     make_brief();
     ui_island_say(BZ_I_ARTICLE, event_morning ? "the event day's briefing is ready: insights" : "your briefing is ready: insights");
-    if (IX.cfg.ai) intel_summarize(IX.brief, S.team, tm.tm_yday, NULL, 0);
+    if (IX.cfg.ai) intel_summarize(IX.brief_full, S.team, tm.tm_yday, NULL, 0);
     printf("intel: the daily briefing\n");
 }
 
@@ -852,7 +855,7 @@ static void sum_tap(lv_obj_t *o, void *u)
     struct tm tm;
     localtime_r(&wall, &tm);
     char why[96];
-    if (intel_summarize(IX.brief, S.team, tm.tm_yday, why, sizeof why)) result("asking for a summary");
+    if (intel_summarize(IX.brief_full, S.team, tm.tm_yday, why, sizeof why)) result("asking for a summary");
     else result("no summary: %s", why);
 }
 
@@ -1010,6 +1013,10 @@ static void intel_refresh(void)
             int st = intel_summary(s, sizeof s);
             if (st == 1) lv_label_set_text(AP.summary, "asking for a summary...");
             else if (st >= 2) lv_label_set_text(AP.summary, s);
+            static int was;
+            if (was == 1 && st == 2) result("the summary is in, above the briefing");
+            else if (was == 1 && st == 3) result("no summary: %.80s", s);
+            was = st;
             if (st) lv_obj_remove_flag(AP.summary, LV_OBJ_FLAG_HIDDEN);
         }
     }
@@ -1206,6 +1213,7 @@ void ui_intel_boot(void)
     IX.in = calloc(1, sizeof *IX.in);
     IX.fresh = calloc(INTEL_MAX, sizeof *IX.fresh);
     IX.brief = calloc(1, 3072);
+    IX.brief_full = calloc(1, 3584);
     IX.list_text = calloc(1, 4096);
     IX.vmin = IX.vmin_last = NAN;
     for (int i = 0; i < 4; i++) IX.follow_last[i] = NAN;
@@ -1314,7 +1322,7 @@ void ui_intel_dev(const char *args)
         show_view(atoi(a + 4));
     } else if (!strcmp(a, "brief")) {
         make_brief();
-        for (char *s = IX.brief, *nl; s && *s; s = nl ? nl + 1 : NULL) {
+        for (char *s = IX.brief_full, *nl; s && *s; s = nl ? nl + 1 : NULL) {
             nl = strchr(s, '\n');
             printf("BRIEF | %.*s\n", nl ? (int)(nl - s) : (int)strlen(s), s);
         }
