@@ -206,6 +206,39 @@ lv_obj_t *ui_button(lv_obj_t *parent, const char *icon, const char *text, bz_tap
     return b;
 }
 
+/* Bezel's FAB: the one primary action of a view, a round of the signal colour with its glyph (icons only: small
+ * text on signal fails contrast in the light tone). 72 round -- Bezel's 66 on this denser panel -- the glyph filled.
+ * The glyph is the button's only child; ui_fab_set changes it (only when it differs: a set restyles). */
+lv_obj_t *ui_fab(lv_obj_t *parent, const char *icon, bz_tap_fn fn, void *user)
+{
+    lv_obj_t *b = bz_tile(parent, 72, 72);
+    bz_tile_set_fill(b, BZ_C_SIGNAL);
+    lv_obj_set_style_radius(b, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_pad_all(b, 0, 0);
+    lv_obj_set_ext_click_area(b, 10);
+    lv_obj_t *ic = bz_icon(b, icon, 28, BZ_C_ON_SIGNAL);
+    bz_icon_set(ic, icon, 28, true);
+    lv_obj_center(ic);
+    if (fn) bz_on_tap(b, fn, user);
+    return b;
+}
+
+void ui_fab_set(lv_obj_t *fab, const char *icon)
+{
+    lv_obj_t *ic = lv_obj_get_child(fab, 0);
+    if (!ic || !strcmp(lv_label_get_text(ic), icon)) return;
+    bz_icon_set(ic, icon, 28, true);
+}
+
+/* A section's name in a pane or a list: the lowercase mono label, dim, with a section's worth of room above it and a
+ * row's below (the column's own gap), so it reads as the head of what follows, not the foot of what came before. */
+lv_obj_t *ui_section(lv_obj_t *parent, const char *text)
+{
+    lv_obj_t *l = bz_label(parent, text, BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_set_style_pad_top(l, 12, 0);
+    return l;
+}
+
 lv_obj_t *ui_chip(lv_obj_t *parent, const char *text, bz_tap_fn fn, void *user)
 {
     lv_obj_t *b = ui_button(parent, NULL, text, fn, user);
@@ -264,6 +297,11 @@ static void sc_begin(lv_obj_t *o, lv_point_t p, void *u)
 {
     (void)o; (void)p;
     scroller_t *s = u;
+    /* A drag that starts cancels the press it began on (Bezel's press rule, and LVGL's own scrolls do the same):
+     * the row under the finger drops its platter instead of riding the list up the screen lit. One restyle, once. */
+    lv_indev_t *in = lv_indev_active();
+    lv_obj_t *act = in ? lv_indev_get_active_obj() : NULL;
+    if (act && lv_obj_has_state(act, LV_STATE_PRESSED)) lv_obj_remove_state(act, LV_STATE_PRESSED);
     s->dragging = true;
     s->start = s->y.value;
     bz_motion_set(&s->y, s->y.value, 0);

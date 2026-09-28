@@ -151,7 +151,6 @@ lv_obj_t *ui_app_icon(lv_obj_t *parent, const ui_app_t *app, int size); /* an lv
 lv_obj_t *ui_app_icon_on(lv_obj_t *parent, const ui_app_t *app, int size, int bg);
 /* A cell that shows the surface3 platter while pressed: its icon (from ui_app_icon_on) follows the platter. */
 void ui_icon_press_with(lv_obj_t *cell, lv_obj_t *icon);
-void ui_icon_ground_changed(void); /* ui_ground.c: what sits on the ground is baked with or without alpha */
 /* By library label or window name ("music", "home mode"); NULL when there is no such icon. */
 lv_obj_t *ui_icon_named(lv_obj_t *parent, const char *name, int size);
 /* One app's icon in a given style whatever the setting (settings' style chooser). */
@@ -342,6 +341,9 @@ double ui_now(void);
 lv_obj_t *ui_button(lv_obj_t *parent, const char *icon, const char *text, bz_tap_fn fn, void *user);
 /* A chip that is on (ice fill, on-ice ink) or off (surface2). */
 lv_obj_t *ui_chip(lv_obj_t *parent, const char *text, bz_tap_fn fn, void *user);
+lv_obj_t *ui_section(lv_obj_t *parent, const char *text); /* a pane's section name, room above it */
+lv_obj_t *ui_fab(lv_obj_t *parent, const char *icon, bz_tap_fn fn, void *user); /* the one primary action: signal */
+void ui_fab_set(lv_obj_t *fab, const char *icon);
 void ui_chip_set(lv_obj_t *chip, bool on);
 /* An empty state: a tile `w` wide that grows with its words, a title (name face) over a caption, 12 px apart.
  * One look for every "not connected" / "nothing yet" in the robot's pages and apps (ui_pages.c). */
