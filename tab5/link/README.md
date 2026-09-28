@@ -137,7 +137,7 @@ the subscription anyway (the key is then withheld from Claude Code, so it can't 
 
 The tablet can also skip the Link and this PC entirely, and use OpenAI directly over Wi-Fi with an
 OpenAI API key — settings → assistant, or the Link app, under "openai key"; the model is a setting
-too, default `gpt-4o-mini`. That route doesn't go through the Link at all, so nothing above applies to it.
+too, default `gpt-5`. That route doesn't go through the Link at all, so nothing above applies to it.
 
 ### Letting the PC's agent pick up work orders by itself
 

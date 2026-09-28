@@ -37,7 +37,7 @@ typedef struct {
     char api_key[160];     /* the Anthropic key (AS_ROUTE_DIRECT) */
     char model[48];        /* Claude's model; "" → "claude-opus-5" */
     char oai_key[256];     /* the OpenAI key (AS_ROUTE_OPENAI) */
-    char oai_model[48];    /* "" → "gpt-4o-mini" */
+    char oai_model[48];    /* "" → "gpt-5" (AS_OAI_DEFAULT_MODEL) */
 } assist_config_t;
 
 typedef enum {
@@ -100,7 +100,7 @@ void assist_config(assist_config_t *out);
 void assist_use(as_route_t route);
 void assist_set_anthropic(const char *key, const char *model);
 void assist_set_openai(const char *key, const char *model);
-/* "Claude through the PC", "Claude (key on tablet)", "OpenAI gpt-4o-mini" */
+/* "Claude through the PC", "Claude (key on tablet)", "OpenAI gpt-5" */
 const char *assist_provider_name(as_route_t r);
 /* false with a reason when it can't run: no Link and no key, Link unreachable… */
 bool assist_ready(char *why, size_t n);
@@ -231,7 +231,7 @@ char *assist_mem_digest(as_pool_t pool, const char *query);
  * another job is queued or running. Any thread. */
 bool assist_post_job(void (*fn)(void *), void *arg);
 /* OpenAI's Chat Completions URL, the headers with the stored key ("oai_key") for a plain JSON answer, and the
- * model from settings ("oai_model", default gpt-4o-mini). false when no key is stored. The caller wipes hdr
+ * model from settings ("oai_model", default gpt-5). false when no key is stored. The caller wipes hdr
  * after use. Any thread. */
 bool assist_oai_endpoint(char *url, size_t un, char *hdr, size_t hn, char *model, size_t mn);
 

@@ -1,8 +1,11 @@
 /* voice — the companion's own conversation, spoken and heard.
  *
  * Separate from the Assist app's technician conversation (assist.h): its own history, its own system
- * prompt (a friendly desk companion that is also a capable general assistant), its own worker. It still
- * reads the robot, the code and Claude Code's sessions through the assistant's read-only tools when asked.
+ * prompt (as_prompts.c: a warm young woman with a persona of her own, who is also a capable general
+ * assistant), its own long-term memory (docs/assistant.md), its own worker. It reads the robot, the code and
+ * Claude Code's sessions through the assistant's read-only tools, and does the tablet's own things (a timer,
+ * a note, the lights) through its device tools. Closing her face stops her listening and speaking, never a
+ * question she is answering: its tools and writes finish, and the answer goes to the island.
  *
  *   wake word ("Hi ESP", on the tablet) or a tap → record until a pause (energy VAD) → OpenAI transcription
  *   (multipart upload; gpt-4o-mini-transcribe, whisper-1 when refused) → Chat Completions with a JSON
