@@ -13,7 +13,18 @@
  * but the overlap put the dock inside the scrolled rectangle, which means every frame of every
  * scroll either re-blurs the whole dock (6 ms, most frames down to 30 fps) or re-blurs part of it
  * and leaves a seam across the rest. Ending above it buys back both. */
-#define BODY_H (H - BODY_Y - DOCK_CLEAR + 11)
+/* Bodies run to the bottom edge of the screen, under the dock and past it on both sides.
+ *
+ * Stopping them above the dock is cheaper -- the dock is opaque and inside the rectangle a scroll
+ * shifts, so leaving it there means repainting it every frame -- but it cuts the page off partway up the
+ * screen and leaves a dead band across the foot of it. Scrolled halfway, a row of apps is sliced in half
+ * against nothing. That is the wrong trade: a page that ends where the screen ends, at a lower frame
+ * rate, beats a fast one with a black bar ruled across it.
+ *
+ * The scroll path pays for it in bz_ui_scroll, which repaints the chrome it carried. Making that cheap
+ * again means shifting around the chrome rather than through it, which is worth doing and is not done
+ * yet. */
+#define BODY_H (H - BODY_Y)
 
 static void open_app_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
 
