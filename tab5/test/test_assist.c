@@ -1115,6 +1115,19 @@ static void prompts_and_tools(void)
     aj_free(d);
     as_hist_free(&h);
 
+    /* the island's words: every tool has a label; writes are work, with a name once the input has one */
+    for (int i = 0; i < AS_NTOOLS; i++) CHECK(strcmp(as_tool_label(AS_TOOLS[i].name), "working") != 0);
+    aj_t *w = parse("{\"action\":\"write\",\"name\":\"pit-plan\"}"), *rd = parse("{\"action\":\"read\"}");
+    char wt[80];
+    CHECK(as_tool_work("documents", w) && !strcmp(as_tool_work("documents", w), "edit") && !as_tool_work("documents", rd));
+    CHECK(!as_tool_work("documents", NULL) && as_tool_work("propose_patch", NULL) && !as_tool_work("triage", NULL));
+    as_tool_work_text("documents", w, wt, sizeof wt);
+    CHECK(!strcmp(wt, "editing pit-plan"));
+    as_tool_work_text("documents", NULL, wt, sizeof wt);
+    CHECK(!strcmp(wt, "editing a document"));
+    aj_free(w);
+    aj_free(rd);
+
     /* the music tool can reach the PC (its schema used to refuse "where") */
     aj_t *sc = parse(as_tool_find("music")->schema), *in = parse("{\"action\":\"pause\",\"where\":\"pc\"}");
     char err[160];
