@@ -231,7 +231,8 @@ static void run(char *line)
          * Secrets are reported as set and never printed. A key read onto this console ends up in
          * somebody's terminal scrollback and in whatever log it was piped to. */
         static const char *const SECRET[] = { "openai", "oai_key", "ha_token", "tba_key",
-                                              "link_token", "anthropic", "wifi_pass" };
+                                              "link_token", "anthropic", "wifi_pass", "nexus_key", "frc_ev_token",
+                                              "token", "_key" };
         const char *k = line + 3;
         bool secret = false;
         for (size_t i = 0; i < sizeof SECRET / sizeof *SECRET; i++)

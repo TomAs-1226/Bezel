@@ -23,6 +23,7 @@
  * it would turn on is not worth having. */
 #include "ui_internal.h"
 #include "ui_home_mode.h"
+#include "ui_intel.h"
 #include "ui_storage.h"
 #include "ui_sys.h"
 
@@ -40,6 +41,7 @@
 #include "assist.h"
 #include "hal.h"
 #include "home.h"
+#include "intel.h"
 #include "json_lite.h"
 #include "voice.h"
 
@@ -385,6 +387,10 @@ static bool do_open_app(args_t *a, int pool, char *out, size_t n)
         return true;
     }
     const ui_app_t *app = ui_app_find(name);
+    /* the intelligence core's app by the names people give it */
+    if (!app && (!strcmp(name, "insights") || !strcmp(name, "briefing") || !strcmp(name, "intelligence") ||
+                 !strcmp(name, "ask")))
+        app = &APP_INTEL;
     if (!app) {
         /* Name what was asked for: the model can then try the label it actually saw on the icon. */
         snprintf(out, n, "there is no app called \"%.20s\" on this tablet", name);
@@ -1258,9 +1264,14 @@ static bool do_weather(char *out, size_t n)
     return true;
 }
 
-/* Runs here on the worker, never parked for the UI: card reads and writes, and the weather's wait. */
+/* Runs here on the worker, never parked for the UI: card reads and writes, the weather's wait, and the
+ * intelligence core's reads (which may ask the network again and wait a few seconds). */
 static bool worker_side(const char *action, const char *args_json, char *out, size_t n, bool *ok)
 {
+    if (intel_is_tool(action)) {
+        *ok = intel_tool(action, args_json, out, n);
+        return true;
+    }
     bool docs = !strcmp(action, "documents"), weather = !strcmp(action, "weather");
     bool cal_list = false;
     if (!docs && !weather && strcmp(action, "calendar") != 0) return false;

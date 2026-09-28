@@ -19,6 +19,7 @@
 #include "ccwatch.h"
 #include "link.h"
 #include "ui_companion.h"
+#include "ui_intel.h"
 #include "ui_md.h"
 #include "ui_sys.h"
 #include "voice.h"
@@ -556,6 +557,12 @@ static void ask(const char *q)
     else ui_island_say(BZ_I_HOURGLASS_TOP, "still working on the last one");
 }
 
+void ui_assist_ask(const char *q, lv_obj_t *from)
+{
+    if (!ui_app_is_open(&APP_ASSIST)) ui_app_open(&APP_ASSIST, from);
+    if (q && q[0]) ask(q);
+}
+
 static void chip_tap(lv_obj_t *o, void *u)
 {
     (void)o;
@@ -887,11 +894,23 @@ static struct {
     bz_motion_t breath;
     as_phase_t last;
     bool asked;
+    double held_at;          /* a long press opened the ask bar: the release's tap is not a tap */
 } ORB;
+
+/* a long press: the ask bar (insights), the system's one place to ask or do anything */
+static void orb_hold(lv_event_t *e)
+{
+    (void)e;
+    ORB.held_at = hal_seconds();
+    bz_ui_wake();
+    hal_tone(900, 14, S.volume * 0.4f);
+    ui_intel_ask(ORB.obj);
+}
 
 static void orb_tap(lv_obj_t *o, void *u)
 {
     (void)u;
+    if (hal_seconds() - ORB.held_at < 1.5) return;
     bz_ui_wake();
     /* Claude Code finished or wants something: the companion's panel says what; else as settings say */
     if (ccw_attention(NULL)) ui_companion_open(true, o);
@@ -966,6 +985,7 @@ void ui_orb_init(void)
     ORB.icon = bz_icon(ORB.obj, BZ_I_AUTO_AWESOME, 32, BZ_C_INK);
     lv_obj_center(ORB.icon);
     bz_on_tap(ORB.obj, orb_tap, NULL);
+    lv_obj_add_event_cb(ORB.obj, orb_hold, LV_EVENT_LONG_PRESSED, NULL);
     ORB.last = AS_PHASE_IDLE;
     bz_ui_on_frame(orb_frame, NULL);
 }
@@ -1786,7 +1806,9 @@ static void dev_print(const char *tag, const char *head, const char *text, size_
 
 void ui_assist_dev(const char *cmd)
 {
-    if (!strncmp(cmd, "assist ask ", 11)) {
+    if (!strncmp(cmd, "assist intel", 12) || !strncmp(cmd, "assist nexus", 12)) {
+        ui_intel_dev(cmd + 7); /* "intel ..." or "nexus ..." (ui_intel.c) */
+    } else if (!strncmp(cmd, "assist ask ", 11)) {
         if (!ui_app_is_open(&APP_ASSIST)) ui_app_open(&APP_ASSIST, NULL);
         ask(cmd + 11);
         printf("ASSIST asked: %s\n", cmd + 11);

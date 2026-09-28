@@ -32,6 +32,7 @@
 
 #include "home_px.h"
 #include "ui_companion.h"
+#include "ui_intel.h"
 #include "voice.h"
 
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
@@ -1261,8 +1262,10 @@ static void refresh_clock(void)
         char *dd = strstr(d, "  "); /* %e pads a single day with a space */
         if (dd) memmove(dd, dd + 1, strlen(dd));
         ui_text(HM.date, "%s", d);
-        ui_text(HM.greet, "%s", tm.tm_hour < 5 ? "late night" : tm.tm_hour < 12 ? "good morning"
-                                : tm.tm_hour < 18 ? "good afternoon" : "good evening");
+        char il[160];
+        if (ui_intel_line(il, sizeof il)) ui_text(HM.greet, "%s", il); /* what matters now (ui_intel.h) */
+        else ui_text(HM.greet, "%s", tm.tm_hour < 5 ? "late night" : tm.tm_hour < 12 ? "good morning"
+                                     : tm.tm_hour < 18 ? "good afternoon" : "good evening");
     } else {
         ui_text(HM.clock, "--:--");
         ui_text(HM.date, "the clock isn't set");
