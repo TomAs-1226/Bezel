@@ -1303,6 +1303,8 @@ static void portrait_rect(const bz_area_t *a, int *x, int *y, int *w, int *h)
     *h = a->x2 - a->x1 + 1;
 }
 
+static void cm_reset(void);
+
 static bool slide_begin(uint32_t ground_rgb, const bz_area_t *chrome, int nchrome)
 {
     present_sync();
@@ -1323,6 +1325,7 @@ static bool slide_begin(uint32_t ground_rgb, const bz_area_t *chrome, int nchrom
     /* done here, once, at touch-down: the frames that follow run their DMA2D copies on core 0, and a
      * wait for this one from the UI's core could take their completion instead */
     fbcpy_wait();
+    cm_reset(); /* the chrome's mask, made again at this slide's first frame (cm_build) */
     SLD.active = true;
     return true;
 }
@@ -1411,34 +1414,177 @@ static void run_copy(uint16_t *fb, const uint16_t *src, int src_dy, int y0, int 
     fbcpy_wait();
 }
 
+/* ---- the chrome held still through a slide, as its own pixels and nothing else ----
+ *
+ * Each piece of chrome (the dock, the assistant's orb, the island, the status cluster) used to be held as its
+ * whole rectangle, copied from the glass as it was. A rectangle is not the dock: its rounded ends left four
+ * corners of the page the slide started on standing still round the dock -- a black box, plainest over a grey
+ * page -- and the status cluster's rectangle cut the incoming page's title off at the clock.
+ *
+ * The slide already holds both pictures that tell the chrome from the page under it: SLD.chrome, the glass
+ * (page and chrome), and SLD.snap under each piece, the page drawn again alone (bz_ui_slide_begin's patches).
+ * Where they differ is the chrome, to the pixel. So at a slide's first frame the rectangles are turned into a
+ * mask -- per portrait row (a landscape column), the runs where the two differ -- and each frame the page is
+ * copied everywhere but under each piece's solid middle (its rows that the chrome covers end to end: the
+ * dock's straight run), that middle goes by DMA, and the rest of each piece (rounded ends, an orb's disc, the
+ * status cluster's glyphs; a few thousand pixels) by the CPU along its runs. */
+#define CM_SPANS 8192
+typedef struct {
+    uint16_t x, y, n; /* portrait: row y, from column x, n pixels */
+} cm_span_t;
+static struct {
+    bool ready, failed;
+    int n, ncore;
+    cm_span_t *span;
+    rc_t core[BZ_SLIDE_CHROME];
+    int rows0[BZ_SLIDE_CHROME], rows1[BZ_SLIDE_CHROME]; /* each piece's rows written by the CPU: [rows0, rows1) */
+    int npiece;
+} CM;
+
+static void cm_reset(void) { CM.ready = false; }
+
+static void cm_sync(uint16_t *buf, int y0, int y1, int dir)
+{
+    if (y1 <= y0) return;
+    uintptr_t b0 = (uintptr_t)(buf + (size_t)y0 * PANEL_W) & ~(uintptr_t)127;
+    uintptr_t b1 = ((uintptr_t)(buf + (size_t)y1 * PANEL_W) + 127) & ~(uintptr_t)127;
+    esp_cache_msync((void *)b0, b1 - b0, dir);
+}
+
+static void cm_build(const bz_area_t *chrome, int nchrome)
+{
+    CM.ready = true;
+    CM.n = CM.ncore = CM.npiece = 0;
+    if (!CM.span) CM.span = heap_caps_malloc(sizeof(cm_span_t) * CM_SPANS, MALLOC_CAP_SPIRAM);
+    CM.failed = !CM.span;
+    if (CM.failed) return;
+    for (int i = 0; i < nchrome && i < BZ_SLIDE_CHROME; i++) {
+        int x, y, w, h;
+        portrait_rect(&chrome[i], &x, &y, &w, &h);
+        /* both pictures were written by the DMA and the PPA: read them fresh */
+        cm_sync(SLD.chrome, y, y + h, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        cm_sync(SLD.snap, y, y + h, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+        int first = CM.n, best0 = -1, best1 = -1, run0 = -1;
+        for (int r = y; r <= y + h; r++) {
+            bool full = false;
+            if (r < y + h) {
+                const uint16_t *a = SLD.chrome + (size_t)r * PANEL_W, *s = SLD.snap + (size_t)r * PANEL_W;
+                int c = x, end = x + w, row_first = CM.n;
+                while (c < end) {
+                    while (c < end && a[c] == s[c]) c++;
+                    if (c == end) break;
+                    int c0 = c;
+                    /* a run, and gaps of two pixels or less inside it (copying those changes nothing) */
+                    for (;;) {
+                        while (c < end && a[c] != s[c]) c++;
+                        int g = c;
+                        while (g < end && g - c < 3 && a[g] == s[g]) g++;
+                        if (g < end && g - c < 3 && a[g] != s[g]) c = g;
+                        else break;
+                    }
+                    if (CM.n == CM_SPANS) {
+                        CM.failed = true; /* too many: hold the rectangles as before */
+                        return;
+                    }
+                    CM.span[CM.n++] = (cm_span_t){ (uint16_t)c0, (uint16_t)r, (uint16_t)(c - c0) };
+                }
+                full = CM.n == row_first + 1 && CM.span[row_first].x == x && CM.span[row_first].n == w;
+            }
+            /* the longest block of rows the chrome covers end to end: the piece's solid middle */
+            if (full && run0 < 0) run0 = r;
+            if (!full && run0 >= 0) {
+                if (r - run0 > best1 - best0) {
+                    best0 = run0;
+                    best1 = r;
+                }
+                run0 = -1;
+            }
+        }
+        CM.rows0[CM.npiece] = y;
+        CM.rows1[CM.npiece] = y + h;
+        CM.npiece++;
+        if (best0 >= 0 && best1 - best0 >= 16 && (best1 - best0) * w >= 16384) {
+            CM.core[CM.ncore++] = (rc_t){ x, best0, w, best1 - best0 };
+            /* those rows go by DMA: out of the CPU's list */
+            int k = first;
+            for (int j = first; j < CM.n; j++)
+                if (CM.span[j].y < best0 || CM.span[j].y >= best1) CM.span[k++] = CM.span[j];
+            CM.n = k;
+        }
+    }
+}
+
+/* the chrome by its mask: solid middles by DMA, the rest along its runs by the CPU (the frame's DMA copies are
+ * all done by now: nothing else writes these rows while the CPU does) */
+static void cm_draw(uint16_t *fb)
+{
+    for (int i = 0; i < CM.ncore; i++) rect_copy(fb, SLD.chrome, CM.core[i].x, CM.core[i].y, CM.core[i].w, CM.core[i].h);
+    if (!CM.n) return;
+    for (int p = 0; p < CM.npiece; p++) cm_sync(fb, CM.rows0[p], CM.rows1[p], ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    for (int j = 0; j < CM.n; j++) {
+        const cm_span_t *s = &CM.span[j];
+        size_t o = (size_t)s->y * PANEL_W + s->x;
+        memcpy(fb + o, SLD.chrome + o, (size_t)s->n * 2);
+    }
+    for (int p = 0; p < CM.npiece; p++)
+        esp_cache_msync(fb + (size_t)CM.rows0[p] * PANEL_W, (size_t)(CM.rows1[p] - CM.rows0[p]) * PANEL_W * 2,
+                        ESP_CACHE_MSYNC_FLAG_DIR_C2M | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+}
+
+/* the page copies' holes: each piece's solid middle once the mask is known, the whole rectangles before */
+static int cm_holes(const bz_area_t *chrome, int nchrome, bz_area_t *out)
+{
+    if (!CM.ready || CM.failed) {
+        for (int i = 0; i < nchrome; i++) out[i] = chrome[i];
+        return nchrome;
+    }
+    for (int i = 0; i < CM.ncore; i++) {
+        /* back from portrait to the landscape rectangle portrait_rect would turn into this one */
+        const rc_t *c = &CM.core[i];
+        if (!s_flip) out[i] = (bz_area_t){ (int16_t)(HAL_W - c->y - c->h), (int16_t)c->x, (int16_t)(HAL_W - 1 - c->y),
+                                           (int16_t)(c->x + c->w - 1) };
+        else out[i] = (bz_area_t){ (int16_t)c->y, (int16_t)(HAL_H - c->x - c->w), (int16_t)(c->y + c->h - 1),
+                                   (int16_t)(HAL_H - 1 - c->x) };
+    }
+    return CM.ncore;
+}
+
 static void slide_frame_do(int dx, int side, const bz_area_t *chrome, int nchrome)
 {
     int b = fb_pick();
     double tf0 = hal_seconds();
     uint16_t *fb = T.fb[b];
+    if (!CM.ready) cm_build(chrome, nchrome);
+    bz_area_t holes[BZ_SLIDE_CHROME];
+    int nholes = cm_holes(chrome, nchrome, holes);
     int W = HAL_W; /* portrait rows */
     if (dx > W) dx = W;
     if (dx < -W) dx = -W;
     /* back row r shows landscape x; the page's pixel came from x - dx, which is row r + s·dx */
     int s = s_flip ? -1 : 1, sd = s * dx;
     int r0 = sd < 0 ? -sd : 0, r1 = sd > 0 ? W - sd : W;
-    run_copy(fb, SLD.snap, sd, r0, r1 - r0, chrome, nchrome);
+    run_copy(fb, SLD.snap, sd, r0, r1 - r0, holes, nholes);
     /* the gap: the neighbour where it's drawn and on that side, else ground. dx > 0 opens the left
      * (the previous page), dx < 0 the right (the next) */
     int need = dx > 0 ? -1 : 1;
     if (sd > 0) {
-        if (side == need) run_copy(fb, SLD.nb, -(W - sd), W - sd, sd, chrome, nchrome);
+        if (side == need) run_copy(fb, SLD.nb, -(W - sd), W - sd, sd, holes, nholes);
         else rows_fill(fb, W - sd, sd, SLD.ground);
     } else if (sd < 0) {
-        if (side == need) run_copy(fb, SLD.nb, W + sd, 0, -sd, chrome, nchrome);
+        if (side == need) run_copy(fb, SLD.nb, W + sd, 0, -sd, holes, nholes);
         else rows_fill(fb, 0, -sd, SLD.ground);
     }
-    /* the chrome stays where it is: straight from the glass as it was */
+    fbcpy_wait();
+    /* the chrome stays where it is: its own pixels, from the glass as it was */
     double tc0 = hal_seconds();
-    for (int i = 0; i < nchrome; i++) {
-        int x, y, w, h;
-        portrait_rect(&chrome[i], &x, &y, &w, &h);
-        rect_copy(fb, SLD.chrome, x, y, w, h);
+    if (CM.failed) {
+        for (int i = 0; i < nchrome; i++) {
+            int x, y, w, h;
+            portrait_rect(&chrome[i], &x, &y, &w, &h);
+            rect_copy(fb, SLD.chrome, x, y, w, h);
+        }
+    } else {
+        cm_draw(fb);
     }
     slide_note(tf0, hal_seconds() - tc0);
     present_end(b);
@@ -1470,6 +1616,7 @@ static void slide_frame(int dx, int side, const bz_area_t *chrome, int nchrome)
 {
     if (!SLD.active) return;
     if (side) rot_wait(); /* the neighbour is shown once all of it is drawn: its last band may be turning */
+    if (!CM.ready) rot_wait(); /* the page under the chrome, patched in at the slide's start, is its mask's other half */
     present_sync();
     SJ.dx = dx;
     SJ.side = side;
