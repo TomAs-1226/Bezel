@@ -152,6 +152,7 @@ typedef struct {
     char quick[UI_QUICK_MAX][16]; /* kv quick: the home page's quick-launch row, library labels, in order */
     int nquick;
     unsigned quick_gen; /* moves whenever the quick-launch apps change */
+    bool tone_auto;    /* kv toneauto: light from 7 am, dark from 7 pm */
     int ground;        /* kv ground: UI_GROUND_* */
 } ui_look_t;
 const ui_look_t *ui_look(void);
@@ -159,6 +160,9 @@ ui_look_t *ui_look_edit(void); /* change, then ui_look_save() and apply */
 void ui_look_save(void);
 bool ui_look_is_quick(const char *label);
 void ui_look_dev(const char *args); /* the dev console's "look <what> <value>" */
+/* With the tone on its schedule, the tone the hour asks for (checked twice a minute; `now`: at once). */
+void ui_look_tone_tick(bool now);
+void ui_look_boot(void); /* once the pages are built: the ground, and the tone's schedule */
 /* Settings > look's own choices (icons, ground, quick launch, status band and dock), into its scrolling column. */
 void ui_look_settings(lv_obj_t *col, int w);
 void ui_look_settings_open(void); /* the choices as they are now, when settings opens */

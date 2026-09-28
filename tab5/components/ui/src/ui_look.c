@@ -51,6 +51,7 @@ static void look_load(void)
             snprintf(g_look.quick[i], sizeof g_look.quick[0], "%s", QUICK_DEFAULT[i]);
         g_look.nquick = (int)(sizeof QUICK_DEFAULT / sizeof QUICK_DEFAULT[0]);
     }
+    g_look.tone_auto = hal_kv_get("toneauto", buf, sizeof buf) && buf[0] == '1';
     g_look.ground = 0;
     if (hal_kv_get("ground", buf, sizeof buf))
         for (int i = 0; i < UI_GROUND_COUNT; i++)
@@ -80,6 +81,36 @@ void ui_look_save(void)
         o += (size_t)snprintf(q + o, sizeof q - o, "%s%s", i ? "," : "", g_look.quick[i]);
     hal_kv_set("quick", q);
     hal_kv_set("ground", ui_ground_name(g_look.ground));
+    hal_kv_set("toneauto", g_look.tone_auto ? "1" : "0");
+}
+
+/* The tone on a schedule: light from 7 am, dark from 7 pm. Looked at twice a minute from the 10 Hz refresh; a
+ * change is the one full redraw a tone change always is, and it waits while anything slides or the screen sleeps. */
+static void tone_watch(void *u)
+{
+    (void)u;
+    ui_look_tone_tick(false);
+}
+
+void ui_look_tone_tick(bool now)
+{
+    static double last;
+    static bool hooked;
+    if (!hooked) {
+        hooked = true;
+        ui_on_refresh(tone_watch, NULL);
+    }
+    if (!ui_look()->tone_auto) return;
+    double t = ui_now();
+    if (!now && t - last < 30) return;
+    if (!now && (ui_asleep() || bz_ui_sliding() || bz_ui_sheeting())) return;
+    last = t;
+    time_t wall = time(NULL);
+    struct tm tm;
+    localtime_r(&wall, &tm);
+    if (tm.tm_year <= 120) return; /* no clock yet: leave the tone as it is */
+    bool dark = tm.tm_hour >= 19 || tm.tm_hour < 7;
+    if (dark != S.dark) ui_set_tone(dark, S.calm);
 }
 
 bool ui_look_is_quick(const char *label)
@@ -114,6 +145,10 @@ void ui_look_dev(const char *args)
         else l->dock_labels = on;
         ui_look_save();
         ui_status_look_changed();
+    } else if (!strcmp(what, "mem")) {
+        /* "look mem 1": what the look holds in PSRAM */
+        printf("LOOK icons %u bytes (style %d), ground %u bytes (%s)\n", (unsigned)ui_icon_bytes(), ui_icon_style(),
+               (unsigned)ui_ground_bytes(), ui_ground_name(l->ground));
     } else if (!strcmp(what, "quick")) {
         quick_parse(val);
         ui_look_save();
@@ -379,4 +414,10 @@ void ui_look_settings(lv_obj_t *col, int w)
     LS.pct = ui_chip(r, "battery percent", toggle_tap, (void *)(intptr_t)1);
     LS.labels = ui_chip(r, "dock labels", toggle_tap, (void *)(intptr_t)2);
     ui_look_settings_open();
+}
+
+void ui_look_boot(void)
+{
+    ui_ground_init();
+    ui_look_tone_tick(true);
 }

@@ -2377,7 +2377,7 @@ void ui_init(const ui_config_t *cfg)
     ui_page_power(U.pages[PG_POWER]);
     ui_page_motion(U.pages[PG_MOTION]);
     ui_page_tools(U.pages[PG_APPS]);
-    ui_ground_init(); /* the owner's ground under the pages (settings > look) */
+    ui_look_boot(); /* the owner's ground under the pages, the tone's schedule (settings > look) */
 
     build_windows();
     build_dock();

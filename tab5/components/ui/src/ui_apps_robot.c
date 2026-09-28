@@ -628,7 +628,10 @@ static void field_draw(lv_event_t *e)
     lv_draw_rect_dsc_init(&rd);
     rd.bg_color = bz_lv(BZ_C_SURFACE1);
     rd.bg_opa = LV_OPA_COVER;
-    rd.radius = 12;
+    rd.radius = 24;
+    /* the field's edge: a hairline inside the tile, so the carpet reads as a place and not a panel */
+    rd.border_color = bz_lv(BZ_C_SURFACE3);
+    rd.border_width = 2;
     lv_draw_rect(layer, &rd, &a);
     /* alliance zones: a low-contrast tint of each alliance colour is not a status colour, so they're
      * drawn as outlines in dim ink with the words beside them */
@@ -738,6 +741,11 @@ static void fd_build(lv_obj_t *b)
     lv_obj_set_size(FD.map, (int)(FIELD_L * FIELD_SCALE), (int)(FIELD_W * FIELD_SCALE));
     lv_obj_set_pos(FD.map, PAD, APP_Y);
     lv_obj_add_event_cb(FD.map, field_draw, LV_EVENT_DRAW_MAIN, NULL);
+    /* which end is which, in words at each wall */
+    lv_obj_t *bl = bz_label(FD.map, "blue", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_align(bl, LV_ALIGN_TOP_LEFT, 16, 12);
+    lv_obj_t *rl = bz_label(FD.map, "red", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_align(rl, LV_ALIGN_TOP_RIGHT, -16, 12);
     int sx = PAD + (int)(FIELD_L * FIELD_SCALE) + BZ_GAP;
     lv_obj_t *t = bz_tile(b, W - PAD - sx, (int)(FIELD_W * FIELD_SCALE));
     lv_obj_set_pos(t, sx, APP_Y);
