@@ -2,6 +2,8 @@
  *
  * Core 1 runs the UI: LVGL renders the page and the glass ink, the Bezel compositor frosts and lights
  * the glass, the PPA turns each finished frame onto the portrait panel, and the loop waits for vsync.
+ * In phone mode the frame is the panel's own portrait one and nothing is turned; everything is laid out
+ * from hal_frame_w/hal_frame_h, which hal_init() has already settled by the time anything here runs.
  * Core 0 runs everything that waits on the outside world: the NetworkTables client, and the HAL's
  * microphone, tone, camera and CAN workers. LVGL's software renderer spreads its own work over both
  * cores (two draw units, lv_conf.h). */
@@ -142,7 +144,7 @@ static void boot_task(void *arg)
         if (nb) {
             bz_present_t p[16];
             for (int i = 0; i < nb; i++) {
-                p[i] = (bz_present_t){ box[i], buf + (size_t)box[i].y1 * HAL_W + box[i].x1, HAL_W };
+                p[i] = (bz_present_t){ box[i], buf + (size_t)box[i].y1 * hal_frame_w + box[i].x1, hal_frame_w };
                 px += (uint32_t)(box[i].x2 - box[i].x1 + 1) * (uint32_t)(box[i].y2 - box[i].y1 + 1);
             }
             s_boot_at = 2;
@@ -198,7 +200,7 @@ void app_main(void)
     char kv[4];
     hal_set_flip(hal_kv_get("flip", kv, sizeof kv) && kv[0] == '1');
     s_boot_autorot = !(hal_kv_get("autorot", kv, sizeof kv) && kv[0] == '0');
-    s_boot = ui_boot_create(d.out, HAL_W, HAL_H, &prev, safe);
+    s_boot = ui_boot_create(d.out, hal_frame_w, hal_frame_h, &prev, safe);
     ui_boot_set(s_boot, 0.1f, "starting");
     s_boot_done = xSemaphoreCreateBinary();
     xTaskCreatePinnedToCore(boot_task, "boot", 8192, d.out, 6, NULL, 1);
@@ -207,7 +209,7 @@ void app_main(void)
     hal_start();
 
     bz_ui_config_t cfg = {
-        .w = HAL_W, .h = HAL_H, .content = d.content, .ink = d.ink, .out = d.out,
+        .w = hal_frame_w, .h = hal_frame_h, .content = d.content, .ink = d.ink, .out = d.out,
         .present = hal_present, .read_touch = hal_touch, .ops = d.ops, .async_present = d.async_present,
         .slide = d.slide,
     };

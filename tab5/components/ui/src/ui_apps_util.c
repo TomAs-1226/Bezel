@@ -678,6 +678,26 @@ static void light_close(void) { hal_set_brightness(S.brightness); }
 const ui_app_t APP_LIGHT = { .name = "flashlight", .icon = BZ_I_FLASHLIGHT_ON, .build = light_build,
                              .open = light_open, .close = light_close };
 
+/* The flashlight, on the control center: a panel at full brightness is what a pit needs at 9 pm, and it
+ * is two taps away otherwise. The registry is how it gets there — the control center knows nothing about
+ * this app, and nothing here knows how the sheet is laid out. */
+static bool torch_on(void) { return ui_app_is_open(&APP_LIGHT); }
+static void torch_open(void) { ui_app_open(&APP_LIGHT, NULL); }
+static void torch_tap(void)
+{
+    if (ui_app_is_open(&APP_LIGHT)) ui_app_close();
+    else ui_cc_after_close(torch_open);
+}
+
+void ui_light_cc_add(void)
+{
+    static const ui_cc_control_t CTL = {
+        .name = "torch", .icon = BZ_I_FLASHLIGHT_ON, .kind = UI_CC_TOGGLE, .cols = 1, .rows = 1,
+        .on = torch_on, .tap = torch_tap,
+    };
+    ui_cc_add(&CTL);
+}
+
 /* ================================================================== system */
 
 static struct {

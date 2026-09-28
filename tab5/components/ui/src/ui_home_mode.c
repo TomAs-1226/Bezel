@@ -1301,6 +1301,25 @@ static void hm_frame(double now, double dt, void *user)
     press_tick();
 }
 
+/* Home mode, on the control center. The header has always said a toggle belonged there ("home" /
+ * "catalyst"); the registry is what it took. */
+static bool hm_cc_on(void) { return HM.active; }
+static void hm_cc_enter(void) { ui_home_mode_enter(); }
+static void hm_cc_tap(void)
+{
+    if (HM.active) ui_home_mode_exit();
+    else ui_cc_after_close(hm_cc_enter);
+}
+
+void ui_home_mode_cc_add(void)
+{
+    static const ui_cc_control_t CTL = {
+        .name = "home", .icon = BZ_I_HOME, .kind = UI_CC_TOGGLE, .cols = 1, .rows = 1,
+        .on = hm_cc_on, .tap = hm_cc_tap,
+    };
+    ui_cc_add(&CTL);
+}
+
 void ui_home_mode_init(ui_home_mode_fn on_change)
 {
     HM.on_change = on_change;

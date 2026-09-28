@@ -41,6 +41,8 @@ def reply(s, timeout=20):
             f = text.split()
             w, h, n = f[1], f[2], f[3]
             flip = len(f) > 4 and f[4] == "1"
+            # phone mode: the picture is already the way up it reads, whatever its shape
+            upright = len(f) > 5 and f[5] == "1"
             data = b""
             n = int(n)
             # a noisy picture (the camera) barely compresses: ~1.5 MB at the port's pace takes a while
@@ -52,7 +54,7 @@ def reply(s, timeout=20):
                         raise SystemExit("shot: timed out after %d of %d bytes" % (len(data), n))
                     continue
                 data += chunk
-            return ("shot", int(w), int(h), data, flip)
+            return ("shot", int(w), int(h), data, flip, upright)
         if text.startswith("AP "):
             print(text[3:])  # a network from "scan"
             continue
@@ -67,7 +69,7 @@ def reply(s, timeout=20):
     return ("none",)
 
 
-def save(w, h, rle, path, flip=False):
+def save(w, h, rle, path, flip=False, upright=False):
     px = bytearray(w * h * 3)
     o = 0
     for i in range(0, len(rle), 4):
@@ -78,7 +80,7 @@ def save(w, h, rle, path, flip=False):
         px[o:o + run * 3] = bytes((r, g, b)) * run
         o += run * 3
     im = Image.frombytes("RGB", (w, h), bytes(px))
-    if h > w:
+    if h > w and not upright:
         im = im.rotate(90 if flip else -90, expand=True)  # the panel's portrait buffer, the way up it reads
     im.save(path)
 
@@ -97,7 +99,7 @@ def main():
             r = reply(s)
             if r[0] != "shot":
                 continue
-            save(r[1], r[2], r[3], parts[1] if len(parts) > 1 else "shot.png", r[4])
+            save(r[1], r[2], r[3], parts[1] if len(parts) > 1 else "shot.png", r[4], len(r) > 5 and r[5])
             reply(s)
             print("saved", parts[1] if len(parts) > 1 else "shot.png", "(turned: flip)" if r[4] else "")
             continue

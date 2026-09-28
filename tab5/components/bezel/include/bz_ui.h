@@ -158,6 +158,10 @@ bool bz_ui_sliding(void);   /* a slide holds the glass: bz_ui_slide_begin took *
 void bz_ui_sheet_end(void);
 double bz_ui_clock(void);    /* monotonic seconds, for timing */
 void bz_ui_hooks_report(void);
+/* A card or a hint drawn over a scrolling list is carried with it (drawn again where it was and
+ * where the shift put its copy) rather than making the whole list redraw. "carry 0" on the dev console
+ * puts the old behaviour back, so both costs can be measured on one build. */
+void bz_ui_scroll_carry(bool on);
 void bz_ui_trace_inv(int frames); /* log every invalidated area for this many frames */ /* logs each frame hook's time since the last call */
 /* Near-whole-screen invalidations since the last call, and the pixels they asked for: each one costs a
  * full LVGL redraw and a full-frame rotation (~90 ms together), so this is the number to watch. */
