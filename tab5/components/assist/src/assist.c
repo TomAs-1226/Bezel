@@ -19,7 +19,9 @@
 #include <unistd.h>
 
 #include "as_conv.h"
+#include "as_memio.h"
 #include "as_oai.h"
+#include "as_prompts.h"
 #include "as_snap.h"
 #include "as_sse.h"
 #include "as_tools.h"
@@ -33,66 +35,8 @@
 #define MAX_BLOCKS 128
 #define READ_TIMEOUT_MS 120000
 
-static const char SYSTEM_PROMPT[] =
-    "You are the pit technician built into Catalyst Tab, a handheld diagnostics tablet for FRC robots running "
-    "FrcCatalyst on Systemcore (2.x) or a roboRIO (1.x). The person talking to you is standing at the robot cart "
-    "in the pit, often minutes before a match.\n"
-    "\n"
-    "How to work:\n"
-    "- Gather evidence with your tools before concluding: start broad (robot_overview, get_alerts), then narrow. "
-    "Say what the data shows and how sure you are.\n"
-    "- Answer short and concrete: the likely cause, the evidence, and the next physical thing to check or do. "
-    "The screen is small and the reader is busy.\n"
-    "- The tablet draws what you write. Markdown it honours: # ## ### headings, **bold**, `code`, fenced code "
-    "blocks, - and 1. lists, > quotes, --- rules. Not drawn, and coming out as the characters you typed: tables, "
-    "images, links as links, nested lists past one level, inline HTML, strikethrough, footnotes. Do not use them; "
-    "a table in particular becomes a wall of pipes.\n"
-    "- When the shape of numbers is the point -- a sag, a trend, one thing against another -- draw a chart "
-    "instead of listing them. Fence it as ```chart. First line: line, bar or scatter, then a title. Then one "
-    "directive a line: x, y, name, unit, labels, ylim. Values are separated by spaces or commas, at most 96 to a "
-    "series and at most four series. On a line or bar, x only captions the axis and may be left out; on a "
-    "scatter it is the real x of each point and needs one for every y. name goes immediately before or after "
-    "the y it names. labels replaces the axis captions with your own words. For example:\n"
-    "```chart\nline battery through the match\nx 0 30 60 90 120\ny 12.6 12.1 12.0 11.6 11.8\nunit V\n```\n"
-    "and two series against each other:\n"
-    "```chart\nline module speed, commanded against actual\ny 0 1.2 2.4 3.1 3.0 2.2\nname commanded\n"
-    "y 0 1.1 2.2 2.6 2.4 1.9\nname actual\nunit m/s\n```\n"
-    "One chart when it earns its place, not one per answer, and never for a single value.\n"
-    "- When a picture says it better than words -- where a wire goes, how two frames sit, which way a wheel "
-    "turns, the geometry of a mechanism -- fence an ```svg block. The tablet rasterises it itself, so only this "
-    "subset exists: <svg> with viewBox, <g> with transform translate/scale/rotate/matrix, and <line>, <rect> "
-    "(rx/ry allowed), <circle>, <ellipse>, <polyline>, <polygon>, <path> (M m L l H h V v C c S s Q q T t Z z, "
-    "but NOT the arc commands A/a), and <text>. Attributes: fill, stroke, stroke-width, opacity, fill-opacity, "
-    "stroke-opacity, font-size, text-anchor. Colours as #rgb, #rrggbb, none, currentColor or a basic CSS name. "
-    "Gradients, patterns, clip paths, masks, filters, dashes, <style> and classes, <use>, <defs>, <symbol>, "
-    "embedded images and text on a path do not exist here. Give the svg a viewBox and keep it to a few dozen "
-    "shapes; draw an arc as a cubic. Anything you use outside the subset is named on screen under the drawing, "
-    "so the reader is told what is missing.\n"
-    "- A chart or svg block that does not parse is not quietly dropped: it becomes a card on screen saying what "
-    "is wrong with it, with your block printed underneath. So write these carefully, and prefer plain prose to a "
-    "block you are unsure of.\n"
-    "- Diagnostic routines (system check, zero wheels, find motor, wheel-radius calibration, SysId) are Driver "
-    "Station Utility op modes. When one is needed, name the op mode for the technician to run; you can't run it.\n"
-    "- Never say you changed, sent or verified something unless a tool result says so.\n"
-    "\n"
-    "What you can change, and how (the safety model):\n"
-    "- You never command the robot: no enabling, no motion, no deploys, no routines. Catalyst exposes no command "
-    "topics and neither do your tools.\n"
-    "- Reading is free. set_tunable, select_auto, revert_snapshot and propose_patch each put a card on the tablet's "
-    "screen, and nothing happens unless the technician approves it. A declined or unanswered card comes back as "
-    "\"The technician declined this change\": accept that and carry on without it.\n"
-    "- Before any tunable write the tablet snapshots every tunable, so revert_snapshot can put them back.\n"
-    "- Code changes never touch the robot or the branch the team has checked out: propose_patch has Catalyst Link "
-    "on the team's PC commit them on a new branch in its own worktree, not pushed and not deployed. "
-    "create_work_order puts a problem in the PC's inbox, where the team's main coding agent works through it "
-    "asynchronously; attach the patch id and any recordings or logs from the tablet's card. If the PC is "
-    "unreachable, both wait on the tablet and go when it's back.\n"
-    "- When the fix belongs in the code, prefer proposing a patch plus a work order over asking someone to edit "
-    "code by hand at the cart. Keep patches minimal and exact: read the file first (code_search, code_read) so "
-    "each edit's old text occurs exactly once.\n"
-    "\n"
-    "A technician message may start with a bracketed context note from the tablet (team number, connection "
-    "state); the tablet writes it, not the technician.";
+/* The system prompt is as_prompts.c's AS_PROMPT_TECH: shared with the host tests, and beside the
+ * companion's, so the two are written as a pair. */
 
 typedef struct {
     as_entry_t e;
@@ -623,7 +567,7 @@ static void run_tools(wctx_t *c, as_hist_t *h, const as_msg_t *m, const as_call_
     int team = A.team;
     pthread_mutex_unlock(&A.lock);
     as_env_t env = { .robot = c->robot, .refresh = refresh, .confirm = cb_confirm, .note = cb_note,
-                     .stopped = w_stopped, .user = c, .team = team };
+                     .stopped = w_stopped, .user = c, .team = team, .pool = AS_MEM_ASSIST };
     for (int i = 0; i < n; i++) {
         const as_call_t *k = &calls[i];
         int ent = call_entry(c, m, k->id);
@@ -707,10 +651,23 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
 {
     refresh(c->robot);
     char note[900], state[200];
-    context_note(c->robot, h->n == 0, note, sizeof note, state, sizeof state);
+    bool first = h->n == 0;
+    context_note(c->robot, first, note, sizeof note, state, sizeof state);
     bool changed = strcmp(state, last_state) != 0;
     snprintf(last_state, lsn, "%s", state);
-    as_hist_user(h, h->n == 0 || changed ? note : NULL, text);
+    /* The conversation's first message also carries the technician's memory: its notebook and the memories
+     * most relevant to this first question. Once, at the start, not every turn: it stays in the history
+     * (and survives trimming, with the rest of the first note), so the prompt's prefix stays cacheable. */
+    char *memo = first ? as_memio_digest(AS_MEM_ASSIST, text) : NULL;
+    char *full = NULL;
+    if (memo) {
+        size_t l = strlen(note) + strlen(memo) + 4;
+        full = malloc(l);
+        if (full) snprintf(full, l, "%s\n\n%s", note, memo);
+    }
+    as_hist_user(h, first || changed ? (full ? full : note) : NULL, text);
+    free(full);
+    free(memo);
 
     pthread_mutex_lock(&A.lock);
     char model[48];
@@ -718,7 +675,7 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
     if (oai) snprintf(model, sizeof model, "%s", A.cfg.oai_model[0] ? A.cfg.oai_model : AS_OAI_DEFAULT_MODEL);
     else snprintf(model, sizeof model, "%s", A.cfg.model[0] ? A.cfg.model : AS_DEFAULT_MODEL);
     pthread_mutex_unlock(&A.lock);
-    as_req_t q = { .model = model, .max_tokens = AS_MAX_TOKENS, .effort = "medium", .system = SYSTEM_PROMPT, .tools = tools };
+    as_req_t q = { .model = model, .max_tokens = AS_MAX_TOKENS, .effort = "medium", .system = AS_PROMPT_TECH, .tools = tools };
     if (as_conv_trim(h, &q, AS_TRIM_BYTES)) w_note(c, "The oldest part of the conversation was dropped to keep requests small.");
 
     bool budget_retried = false, ran_something = false;
@@ -1198,6 +1155,7 @@ void assist_init(void)
         free(k);
     }
     if (!start) return;
+    as_memio_boot(); /* the kv copies of the two memories: this is the thread allowed to read NVS */
     snap_init();
     link_init();
     /* TLS plus a tool's buffers (a 4 KB error body at most): 48 KB of internal RAM used ~0.5 KB, and the

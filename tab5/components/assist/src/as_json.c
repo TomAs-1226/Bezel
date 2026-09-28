@@ -14,6 +14,41 @@ char *as_strdup(const char *s)
     return d;
 }
 
+void as_fold_text(char *s)
+{
+    if (!s) return;
+    unsigned char *r = (unsigned char *)s, *w = r;
+    while (*r) {
+        if (r[0] == 0xE2 && r[1] == 0x80 && r[2]) {
+            unsigned char c = r[2];
+            const char *to = NULL;
+            if (c == 0x98 || c == 0x99 || c == 0x9A || c == 0x9B || c == 0xB2) to = "'";
+            else if (c == 0x9C || c == 0x9D || c == 0x9E || c == 0xB3) to = "\"";
+            else if (c == 0x90 || c == 0x91 || c == 0x92 || c == 0x93) to = "-";
+            else if (c == 0x89 || c == 0x8A || c == 0xAF || c == 0x80 || c == 0x81 || c == 0x82 || c == 0x83) to = " ";
+            else if (c == 0xA2) to = "\xc2\xb7";
+            else if (c == 0x8B || c == 0x8C || c == 0x8D) to = ""; /* zero-width */
+            if (to) {
+                size_t l = strlen(to);
+                memcpy(w, to, l);
+                w += l;
+                r += 3;
+                continue;
+            }
+        } else if (r[0] == 0xE2 && r[1] == 0x88 && r[2] == 0x92) { /* minus sign */
+            *w++ = '-';
+            r += 3;
+            continue;
+        } else if (r[0] == 0xC2 && r[1] == 0xA0) { /* no-break space */
+            *w++ = ' ';
+            r += 2;
+            continue;
+        }
+        *w++ = *r++;
+    }
+    *w = 0;
+}
+
 void as_urlencode(const char *in, char *out, size_t n)
 {
     static const char hex[] = "0123456789ABCDEF";

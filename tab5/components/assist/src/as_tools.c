@@ -14,6 +14,8 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "as_diag.h"
+#include "as_memio.h"
 #include "as_snap.h"
 #include "assist.h"
 #include "cat_logs.h"
@@ -965,7 +967,7 @@ static void kcopy(ab_t *o, const char *k, const aj_t *v)
 /* Every AS_T_DEVICE tool goes through the one handler the ui registered: the assistant cannot call
  * the ui (ui requires assist, not the reverse), and the handler is also what carries the work from
  * this worker thread to the thread LVGL belongs to. */
-static as_tres_t t_device(const char *name, const aj_t *in, ab_t *o, char *s, size_t sn)
+static as_tres_t t_device(as_env_t *e, const char *name, const aj_t *in, ab_t *o, char *s, size_t sn)
 {
     as_action_fn act = assist_action_handler();
     if (!act) {
@@ -977,14 +979,356 @@ static as_tres_t t_device(const char *name, const aj_t *in, ab_t *o, char *s, si
     ab_init(&args);
     if (in) aj_write(&args, in);
     else ab_puts(&args, "{}");
-    char msg[512];
+    /* a document read or a week of the calendar is kilobytes: the answer's buffer is on the heap */
+    enum { MSG = 7000 };
+    char *msg = malloc(MSG);
+    if (!msg) {
+        ab_free(&args);
+        return AS_TR_ERROR;
+    }
     msg[0] = 0;
-    bool ok = act(name, args.oom || !args.p ? "{}" : args.p, msg, sizeof msg);
+    bool ok = act(name, args.oom || !args.p ? "{}" : args.p, e->pool, msg, MSG);
     ab_free(&args);
     ab_puts(o, "{");
     kstr(o, ok ? "done" : "error", msg[0] ? msg : (ok ? "done" : "it didn't work"));
     ab_puts(o, "}");
-    sum(s, sn, "%s: %s", name, msg[0] ? msg : (ok ? "done" : "failed"));
+    /* the transcript's line: the first line of what happened */
+    char first[120];
+    snprintf(first, sizeof first, "%.*s", (int)strcspn(msg, "\n"), msg);
+    sum(s, sn, "%s", first[0] ? first : ok ? "done" : "failed");
+    free(msg);
+    return ok ? AS_TR_OK : AS_TR_ERROR;
+}
+
+/* ---------------------------------------------------------------- triage and the drivetrain */
+
+static as_tres_t t_triage(as_env_t *e, ab_t *o, char *s, size_t sn)
+{
+    enum { MAXF = 40 };
+    as_finding_t *f = malloc(sizeof *f * MAXF);
+    if (!f) return AS_TR_ERROR;
+    const cat_robot_t *r = e->robot;
+    int n = as_diag_triage(r, f, MAXF);
+    int nf = 0, nw = 0;
+    for (int i = 0; i < n; i++) {
+        nf += f[i].sev == AS_DG_FAULT;
+        nw += f[i].sev == AS_DG_WARN;
+    }
+    ab_puts(o, "{");
+    if (r->connected) {
+        char st[160];
+        snprintf(st, sizeof st, "%s · %s%s · battery %s", r->name[0] ? r->name : "robot", cat_mode_name(r),
+                 r->enabled ? " (ENABLED)" : "", "");
+        size_t l = strlen(st);
+        if (r->have_battery && isfinite(r->battery_v)) snprintf(st + l, sizeof st - l, "%.2f V", r->battery_v);
+        else snprintf(st + l, sizeof st - l, "not published");
+        kstr(o, "robot", st);
+    }
+    kint(o, "faults", nf);
+    kint(o, "warnings", nw);
+    kstr(o, "columns", "[severity, area, finding, next check]");
+    key(o, "findings");
+    ab_puts(o, "[");
+    for (int i = 0; i < n; i++) {
+        comma(o);
+        ab_puts(o, "[");
+        ab_str(o, as_dg_sev_name(f[i].sev));
+        ab_puts(o, ",");
+        ab_str(o, f[i].area);
+        ab_puts(o, ",");
+        ab_str(o, f[i].what);
+        ab_puts(o, ",");
+        ab_str(o, f[i].next);
+        ab_puts(o, "]");
+    }
+    ab_puts(o, "]");
+    if (!n) kstr(o, "note", "nothing the tablet can see is wrong; a problem it can't see (mechanical, wiring under load) needs a look or a test");
+    ab_puts(o, "}");
+    if (!r->connected) sum(s, sn, "robot not connected");
+    else if (!n) sum(s, sn, "nothing wrong the tablet can see");
+    else sum(s, sn, "%d fault%s, %d warning%s · first: %.60s", nf, nf == 1 ? "" : "s", nw, nw == 1 ? "" : "s", f[0].what);
+    free(f);
+    return AS_TR_OK;
+}
+
+static void track_json(ab_t *o, const as_track_verdict_t *v, int samples)
+{
+    kint(o, "samples", samples);
+    key(o, "modules");
+    ab_puts(o, "[");
+    for (int i = 0; i < v->nmod; i++) {
+        const as_track_mod_t *m = &v->mod[i];
+        comma(o);
+        ab_puts(o, "{");
+        kstr(o, "module", AS_MOD_NAME[i]);
+        kint(o, "judged_samples", m->used);
+        knum(o, "follow_pct", m->follow_pct, 0);
+        knum(o, "worst_follow_pct", m->worst_follow_pct, 0);
+        knum(o, "rms_speed_err_mps", m->rms_err, 2);
+        knum(o, "steer_err_deg", m->angle_err_deg, 1);
+        knum(o, "worst_steer_err_deg", m->worst_angle_deg, 1);
+        kstr(o, "verdict", m->verdict ? m->verdict : "can't judge");
+        ab_puts(o, "}");
+    }
+    ab_puts(o, "]");
+    kstr(o, "verdict", v->summary);
+}
+
+static as_tres_t t_swerve_check(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    const char *rec = aj_gets(in, "recording");
+    as_track_t *t = malloc(sizeof *t);
+    as_track_verdict_t *v = malloc(sizeof *v);
+    if (!t || !v) {
+        free(t);
+        free(v);
+        return AS_TR_ERROR;
+    }
+    as_tres_t res = AS_TR_OK;
+    if (rec) {
+        /* a drivetrain recording: its module states and targets, row by row */
+        const char *root = hal_sd_root();
+        const char *dot = strrchr(rec, '.');
+        bool ok_name = rec[0] && strlen(rec) < 48 && !strstr(rec, "..") && !strchr(rec, '/') && !strchr(rec, '\\') &&
+                       dot && !strcmp(dot, ".csv");
+        char path[160];
+        FILE *f = NULL;
+        if (root && ok_name) {
+            snprintf(path, sizeof path, "%s/runs/%s", root, rec);
+            f = fopen(path, "r");
+        }
+        if (!f) {
+            ab_puts(o, "{\"error\":\"give a .csv name from list_recordings\"}");
+            sum(s, sn, "no recording %s", rec);
+            free(t);
+            free(v);
+            return AS_TR_ERROR;
+        }
+        enum { LINE = 8192 };
+        char *line = malloc(LINE);
+        int cols[16];
+        bool head = line && fgets(line, LINE, f) && as_track_csv_header(line, cols);
+        if (!head) {
+            fclose(f);
+            free(line);
+            ab_puts(o, "{");
+            kstr(o, "error", "this recording has no module states and targets: record with the recorder's drivetrain preset");
+            ab_puts(o, "}");
+            sum(s, sn, "%s: no swerve columns", rec);
+            free(t);
+            free(v);
+            return AS_TR_ERROR;
+        }
+        int nmod = 0;
+        for (int m = 0; m < 4; m++) nmod += cols[2 * m] >= 0 && cols[8 + 2 * m] >= 0;
+        as_track_init(t, nmod ? 4 : 0);
+        int rows = 0;
+        while (fgets(line, LINE, f) && rows < 200000) {
+            if (as_track_csv_row(t, line, cols)) rows++;
+            if ((rows & 1023) == 0 && e->stopped && e->stopped(e->user)) break;
+        }
+        fclose(f);
+        free(line);
+        as_track_judge(t, v);
+        ab_puts(o, "{");
+        kstr(o, "source", rec);
+        track_json(o, v, rows);
+        ab_puts(o, "}");
+        sum(s, sn, "%s: %.70s", rec, v->summary);
+    } else {
+        if (!robot_online(e, o, s, sn)) {
+            free(t);
+            free(v);
+            return AS_TR_ERROR;
+        }
+        if (e->robot->nmodules < 2 || !e->robot->have_targets) {
+            ab_puts(o, "{");
+            kstr(o, "error", e->robot->nmodules < 2 ? "this robot publishes no swerve modules (/Catalyst/Swerve/ModuleStates)"
+                                                    : "the modules' commanded targets aren't published (/Catalyst/Swerve/ModuleTargets)");
+            ab_puts(o, "}");
+            sum(s, sn, "no module data");
+            free(t);
+            free(v);
+            return AS_TR_ERROR;
+        }
+        double secs = aj_getn(in, "seconds", 4);
+        if (!(secs >= 1)) secs = 1;
+        if (secs > 10) secs = 10;
+        as_track_init(t, e->robot->nmodules);
+        double end = hal_seconds() + secs;
+        bool was_enabled = false;
+        while (hal_seconds() < end) {
+            if (e->stopped && e->stopped(e->user)) break;
+            e->refresh(e->robot);
+            was_enabled |= e->robot->enabled;
+            as_track_add(t, e->robot->target_speed, e->robot->target_angle, e->robot->module_speed, e->robot->module_angle);
+            usleep(100000); /* the model moves at 10 Hz */
+        }
+        as_track_judge(t, v);
+        ab_puts(o, "{");
+        char src[48];
+        snprintf(src, sizeof src, "live, %.0f s", secs);
+        kstr(o, "source", src);
+        if (!was_enabled) kstr(o, "note", "the robot was disabled the whole time: drive it while this samples");
+        track_json(o, v, t->samples);
+        ab_puts(o, "}");
+        sum(s, sn, "live %.0f s: %.70s", secs, v->summary);
+    }
+    free(t);
+    free(v);
+    return res;
+}
+
+/* ---------------------------------------------------------------- memory: this conversation's own pool */
+
+static as_tres_t mem_unavailable(ab_t *o, char *s, size_t sn, const char *why)
+{
+    ab_puts(o, "{");
+    kstr(o, "error", why);
+    ab_puts(o, "}");
+    sum(s, sn, "memory unavailable");
+    return AS_TR_ERROR;
+}
+
+static as_tres_t t_remember(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    char why[160];
+    as_mem_res_t *r = malloc(sizeof *r);
+    if (!r) return AS_TR_ERROR;
+    as_mem_t *m = as_pool_get(e->pool, why, sizeof why);
+    if (!m) {
+        free(r);
+        return mem_unavailable(o, s, sn, why);
+    }
+    const char *text = aj_gets(in, "text"), *kind = aj_gets(in, "kind");
+    int imp = (int)aj_getn(in, "importance", 2), rep = (int)aj_getn(in, "replaces", 0);
+    bool ok = rep > 0 ? as_mem_update(m, rep, kind, text, imp, as_mem_now(), r)
+                      : as_mem_add(m, kind, text, imp, as_mem_now(), r);
+    int total = m->n;
+    as_pool_put(e->pool, ok);
+    ab_puts(o, "{");
+    if (!ok) {
+        kstr(o, "error", r->why);
+        sum(s, sn, "not saved: %.80s", r->why);
+    } else {
+        kint(o, "saved", r->id);
+        if (rep > 0) kstr(o, "note", "that memory was rewritten");
+        else if (r->merged) kstr(o, "note", "it said nearly what this memory already said: that one was updated instead");
+        if (r->evicted) {
+            key(o, rep > 0 ? "merged_away" : "made_room_by_forgetting");
+            ab_fmt(o, "{\"id\":%d,\"text\":", r->evicted);
+            ab_str(o, r->evicted_text);
+            ab_puts(o, "}");
+        }
+        kint(o, "memories", total);
+        sum(s, sn, "#%d: %.90s", r->id, text ? text : "");
+    }
+    ab_puts(o, "}");
+    free(r);
+    return ok ? AS_TR_OK : AS_TR_ERROR;
+}
+
+static as_tres_t t_forget(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    char why[160];
+    as_mem_t *m = as_pool_get(e->pool, why, sizeof why);
+    if (!m) return mem_unavailable(o, s, sn, why);
+    int id = (int)aj_getn(in, "id", 0);
+    int i = as_mem_find(m, id);
+    char *was = i >= 0 ? as_strdup(m->it[i].text) : NULL;
+    bool ok = i >= 0 && as_mem_forget(m, id);
+    as_pool_put(e->pool, ok);
+    ab_puts(o, "{");
+    if (ok) {
+        kint(o, "forgot", id);
+        kstr(o, "text", was ? was : "");
+        sum(s, sn, "forgot #%d", id);
+    } else {
+        ab_fmt(o, "\"error\":\"there is no memory #%d (recall lists them)\"", id);
+        sum(s, sn, "no memory #%d", id);
+    }
+    ab_puts(o, "}");
+    free(was);
+    return ok ? AS_TR_OK : AS_TR_ERROR;
+}
+
+static as_tres_t t_recall(as_env_t *e, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    char why[160];
+    int *idx = malloc(sizeof *idx * AS_MEM_MAX);
+    if (!idx) return AS_TR_ERROR;
+    as_mem_t *m = as_pool_get(e->pool, why, sizeof why);
+    if (!m) {
+        free(idx);
+        return mem_unavailable(o, s, sn, why);
+    }
+    const char *q = aj_gets(in, "query"), *kind = aj_gets(in, "kind");
+    int limit = (int)aj_getn(in, "limit", 10);
+    if (limit < 1) limit = 1;
+    if (limit > 30) limit = 30;
+    long long now = as_mem_now();
+    int k = as_mem_search(m, q, kind, idx, limit, now);
+    ab_puts(o, "{");
+    kint(o, "total", m->n);
+    kint(o, "found", k);
+    kstr(o, "columns", "[id, kind, importance, date, text]");
+    key(o, "memories");
+    ab_puts(o, "[");
+    for (int i = 0; i < k; i++) {
+        as_mem_item_t *it = &m->it[idx[i]];
+        it->uses++; /* kept with the next change: a recall alone isn't worth a write */
+        char d[16];
+        as_mem_date(it->updated ? it->updated : it->created, d, sizeof d);
+        comma(o);
+        ab_fmt(o, "[%d,", it->id);
+        ab_str(o, it->kind);
+        ab_fmt(o, ",%d,", it->imp);
+        ab_str(o, d);
+        ab_puts(o, ",");
+        ab_str(o, it->text);
+        ab_puts(o, "]");
+    }
+    ab_puts(o, "]");
+    if (!k && m->n) kstr(o, "note", "nothing matched: try other words, a kind, or no query for the most important");
+    ab_puts(o, "}");
+    int total = m->n;
+    as_pool_put(e->pool, false);
+    free(idx);
+    sum(s, sn, "%d of %d%s%s", k, total, q && q[0] ? " for " : "", q && q[0] ? q : "");
+    return AS_TR_OK;
+}
+
+static as_tres_t t_self(as_env_t *e, const char *name, const aj_t *in, ab_t *o, char *s, size_t sn)
+{
+    bool tech = !strcmp(name, "update_notebook");
+    const char *key_ = aj_gets(in, tech ? "section" : "field"), *text = aj_gets(in, "text");
+    if (!tech && key_ && !strcmp(key_, "name")) {
+        size_t chars = 0;
+        for (const char *p = text ? text : ""; *p; p++) chars += ((unsigned char)*p & 0xC0) != 0x80;
+        if (chars > 40) {
+            ab_puts(o, "{\"error\":\"a name is at most 40 characters\"}");
+            sum(s, sn, "name too long");
+            return AS_TR_ERROR;
+        }
+    }
+    char why[160];
+    as_mem_t *m = as_pool_get(e->pool, why, sizeof why);
+    if (!m) return mem_unavailable(o, s, sn, why);
+    int i = as_mem_self_index(m->pool, key_);
+    char *was = i >= 0 ? as_strdup(m->self[i]) : NULL;
+    bool ok = as_mem_set_self(m, key_, text ? text : "", as_mem_now(), why, sizeof why);
+    as_pool_put(e->pool, ok);
+    ab_puts(o, "{");
+    if (ok) {
+        kstr(o, "updated", key_);
+        kstr(o, "was", was ? was : "");
+        sum(s, sn, "%s %s: %.70s", tech ? "notebook" : "persona", key_, text && text[0] ? text : "(emptied)");
+    } else {
+        kstr(o, "error", why);
+        sum(s, sn, "%.80s", why);
+    }
+    ab_puts(o, "}");
+    free(was);
     return ok ? AS_TR_OK : AS_TR_ERROR;
 }
 
@@ -1947,9 +2291,23 @@ static as_tres_t t_work_order(as_env_t *e, const aj_t *in, ab_t *o, char *s, siz
 as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, char *s, size_t sn)
 {
     s[0] = 0;
+    /* the last gate: a tool that isn't this conversation's is never run, whatever asked for it */
+    if (!as_tool_for(as_tool_find(name), e->pool)) {
+        ab_fmt(o, "{\"error\":\"%s is not one of this conversation's tools\"}", name);
+        sum(s, sn, "not this conversation's tool");
+        return AS_TR_ERROR;
+    }
     e->refresh(e->robot);
     as_tres_t r;
+    const as_tooldef_t *def = as_tool_find(name);
     if (!strcmp(name, "robot_overview")) r = t_overview(e, o, s, sn);
+    else if (!strcmp(name, "triage")) r = t_triage(e, o, s, sn);
+    else if (!strcmp(name, "swerve_check")) r = t_swerve_check(e, in, o, s, sn);
+    else if (!strcmp(name, "remember")) r = t_remember(e, in, o, s, sn);
+    else if (!strcmp(name, "forget")) r = t_forget(e, in, o, s, sn);
+    else if (!strcmp(name, "recall")) r = t_recall(e, in, o, s, sn);
+    else if (!strcmp(name, "update_notebook") || !strcmp(name, "update_persona")) r = t_self(e, name, in, o, s, sn);
+    else if (def && def->kind == AS_T_DEVICE) r = t_device(e, name, in, o, s, sn);
     else if (!strcmp(name, "get_alerts")) r = t_alerts(e, o, s, sn);
     else if (!strcmp(name, "get_mechanisms")) r = t_mechs(e, o, s, sn);
     else if (!strcmp(name, "get_power")) r = t_power(e, o, s, sn);
@@ -1971,9 +2329,6 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     else if (!strcmp(name, "analyze_recording")) r = t_analyze_recording(e, in, o, s, sn);
     else if (!strcmp(name, "get_states")) r = t_get_states(e, in, o, s, sn);
     else if (!strcmp(name, "tba_query")) r = t_tba_query(e, in, o, s, sn);
-    else if (!strcmp(name, "open_app") || !strcmp(name, "set_tablet") || !strcmp(name, "music") ||
-             !strcmp(name, "smart_home"))
-        r = t_device(name, in, o, s, sn);
     else if (!strncmp(name, "code_", 5) || !strcmp(name, "list_patches") || !strcmp(name, "list_work_orders") ||
              !strcmp(name, "claude_sessions"))
         r = t_code(name, in, o, s, sn);

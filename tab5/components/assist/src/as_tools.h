@@ -16,7 +16,11 @@
  * and asks nobody first. AS_T_CHANGE changes the ROBOT or its code and always shows a card. The
  * line between them is the robot: a lamp turned on by voice that first demanded a tap on a screen
  * would be a worse assistant, and a tunable written without one would be a dangerous robot. */
-typedef enum { AS_T_READ, AS_T_CHANGE, AS_T_SEND, AS_T_DEVICE } as_tkind_t;
+/* AS_T_MEMORY reads and writes the calling conversation's OWN memory pool (as_memio.h), and nothing
+ * else: which pool is decided by the conversation (as_env_t.pool), never by anything the model says.
+ * AS_T_SELF_TECH and AS_T_SELF_COMP are the same, for one conversation only: the technician's season
+ * notebook, the companion's persona. AS_T_CHANGE and AS_T_SEND are the technician's alone too. */
+typedef enum { AS_T_READ, AS_T_CHANGE, AS_T_SEND, AS_T_DEVICE, AS_T_MEMORY, AS_T_SELF_TECH, AS_T_SELF_COMP } as_tkind_t;
 
 typedef struct {
     const char *name;
@@ -29,7 +33,9 @@ extern const as_tooldef_t AS_TOOLS[];
 extern const int AS_NTOOLS;
 
 const as_tooldef_t *as_tool_find(const char *name);
-/* The tools array for the request; every tool streams its input eagerly. */
+/* The tool is offered to (and may be run by) the conversation with this memory pool (AS_MEM_*). */
+bool as_tool_for(const as_tooldef_t *t, int pool);
+/* The technician's tools array for the Messages API; every tool streams its input eagerly. */
 void as_tools_json(ab_t *out);
 /* Checks a parsed input against the tool's schema. */
 bool as_tool_check(const as_tooldef_t *t, const aj_t *input, char *err, size_t n);
@@ -47,6 +53,7 @@ typedef struct {
     bool (*stopped)(void *user);           /* the turn was stopped: give up early */
     void *user;
     int team;                              /* settings' team number, for preflight */
+    int pool;                              /* whose memory the memory tools touch (AS_MEM_*; 0 the technician) */
 } as_env_t;
 
 /* Runs one validated call. `out` receives the result text (JSON, ≤ ~8 KB); `summary` a one-liner for
