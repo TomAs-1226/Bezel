@@ -63,6 +63,8 @@ if(TEST_SOURCES)
     ${ROOT}/components/assist/src/as_json.c ${ROOT}/components/assist/src/as_sse.c
     ${ROOT}/components/assist/src/as_conv.c ${ROOT}/components/assist/src/as_tooldefs.c
     ${ROOT}/components/assist/src/as_oai.c ${ROOT}/components/assist/src/as_desk.c
+    ${ROOT}/components/assist/src/as_mem.c ${ROOT}/components/assist/src/as_diag.c
+    ${ROOT}/components/assist/src/as_prompts.c
     ${ROOT}/components/catalyst/src/cat_sc.c
     ${ROOT}/components/home/src/home_capture_policy.c ${ROOT}/components/home/src/home_presence_policy.c
     ${ROOT}/components/home/src/home_tba_paths.c)

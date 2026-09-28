@@ -3,8 +3,11 @@
  * fragments, invalid input), what each stop reason allows, the request body's shape, the echo rule after
  * a server-side fallback, and history trimming. Called from test_main.c. */
 #include "as_conv.h"
+#include "as_diag.h"
 #include "as_json.h"
+#include "as_mem.h"
 #include "as_oai.h"
+#include "as_prompts.h"
 #include "as_sse.h"
 #include "as_tools.h"
 #include "assist.h"
@@ -148,7 +151,9 @@ static void schema(void)
     ab_init(&b);
     as_tools_json(&b);
     aj_t *tools = parse(b.p);
-    CHECK(tools && tools->n == AS_NTOOLS);
+    int tech_tools = 0;
+    for (int i = 0; i < AS_NTOOLS; i++) tech_tools += as_tool_for(&AS_TOOLS[i], AS_MEM_ASSIST);
+    CHECK(tools && tools->n == tech_tools && tech_tools == AS_NTOOLS - 1); /* all but the companion's persona */
     for (int i = 0; tools && i < tools->n; i++) {
         CHECK(aj_is(aj_get(tools->kid[i], "eager_input_streaming"), AJ_TRUE));
         CHECK(aj_is(aj_get(tools->kid[i], "input_schema"), AJ_OBJ));
@@ -699,7 +704,7 @@ static void openai(void)
     CHECK(aj_is(aj_get(aj_get(d, "stream_options"), "include_usage"), AJ_TRUE));
     CHECK(!aj_get(d, "thinking") && !aj_get(d, "max_tokens"));
     const aj_t *tl = aj_get(d, "tools");
-    CHECK(tl && tl->n == AS_NTOOLS);
+    CHECK(tl && tl->n == AS_NTOOLS - 1); /* the technician's: all but the companion's persona */
     CHECK(!strcmp(aj_gets(aj_at(tl, 0), "type"), "function"));
     CHECK(aj_get(aj_get(aj_at(tl, 0), "function"), "parameters") != NULL);
     const aj_t *ms = aj_get(d, "messages");
@@ -785,10 +790,360 @@ static void oai_effort(void)
     as_hist_free(&h);
 }
 
+/* ---- memory: the pure pool (as_mem.c) ---- */
+
+static void memory(void)
+{
+    as_mem_t *m = malloc(sizeof *m), *m2 = malloc(sizeof *m2);
+    as_mem_res_t r;
+    if (!m || !m2) {
+        CHECK(0);
+        free(m);
+        free(m2);
+        return;
+    }
+    const int64_t T0 = 1790000000; /* 2026-09-21 */
+    as_mem_init(m, AS_MEM_ASSIST);
+
+    /* add, ids from 1, kinds and importance clamped */
+    CHECK(as_mem_add(m, "fix", "FL drive wheel set screw backed out at 2026casj Q34; re-torqued and loctited", 3, T0, &r));
+    CHECK(r.id == 1 && !r.merged && m->n == 1);
+    CHECK(as_mem_add(m, "bogus-kind", "Team prefers the red flashlight in the queue", 9, T0, &r) && r.id == 2);
+    CHECK(!strcmp(m->it[1].kind, "fact") && m->it[1].imp == 3);
+    CHECK(as_mem_add(m, "procedure", "Always zero the elevator before the first match of the day", 2, T0, &r) && r.id == 3);
+
+    /* the same thing said again updates the old one instead of sitting beside it */
+    CHECK(as_mem_add(m, "fix", "At 2026casj Q34 the FL drive wheel set screw backed out; it was re-torqued and loctited",
+                     2, T0 + 60, &r));
+    CHECK(r.merged && r.id == 1 && m->n == 3 && m->it[0].imp == 3 && m->it[0].updated == T0 + 60);
+    /* ... but a different fact about the same wheel is its own memory */
+    CHECK(as_mem_add(m, "fault", "FL drive motor ran hot (78 C) in Q40", 2, T0, &r) && !r.merged && r.id == 4);
+
+    /* secrets are refused, and nothing is stored */
+    int n = m->n;
+    CHECK(!as_mem_add(m, "fact", "the openai key is sk-proj-abcdefghijklmnopqrstuvwxyz0123", 2, T0, &r) && r.id == 0 && r.why[0]);
+    CHECK(!as_mem_add(m, "fact", "school wifi password is pit5805!", 2, T0, &r));
+    CHECK(!as_mem_add(m, "fact", "HA token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9", 2, T0, &r));
+    CHECK(!as_mem_add(m, "fact", "use ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345 for the repo", 2, T0, &r));
+    CHECK(m->n == n);
+    /* ... while ordinary technician talk isn't mistaken for one */
+    CHECK(!as_mem_secret("The Link token was wrong after re-pairing the PC; pairing again fixed it"));
+    CHECK(!as_mem_secret("CAN id 12 on can_s0 is the FL steer motor; src/main/java/frc/robot/subsystems/Drive.java"));
+    CHECK(!as_mem_secret("Battery #7 reads 18 mohm and is the best one we have"));
+    CHECK(as_mem_secret("password: hunter2"));
+    CHECK(as_mem_secret("key 9f8e7d6c5b4a39281706f5e4d3c2b1a0ff00aa11"));
+
+    /* update and forget by id */
+    CHECK(as_mem_update(m, 3, NULL, "Always zero the elevator by the hard stop before the first match of the day", 3, T0 + 5, &r));
+    CHECK(m->it[as_mem_find(m, 3)].imp == 3 && strstr(m->it[as_mem_find(m, 3)].text, "hard stop"));
+    CHECK(!as_mem_update(m, 99, NULL, "x y z w", 0, T0, &r) && strstr(r.why, "#99"));
+    CHECK(as_mem_forget(m, 2) && !as_mem_forget(m, 2) && as_mem_find(m, 2) < 0);
+
+    /* search: by words (with their stems), by kind, and nothing for an unrelated word */
+    int idx[10];
+    int k = as_mem_search(m, "wheel screw", NULL, idx, 10, T0);
+    CHECK(k >= 1 && m->it[idx[0]].id == 1);
+    k = as_mem_search(m, "", "fault", idx, 10, T0);
+    CHECK(k == 1 && m->it[idx[0]].id == 4);
+    CHECK(as_mem_search(m, "pneumatics", NULL, idx, 10, T0) == 0);
+    k = as_mem_search(m, NULL, NULL, idx, 10, T0);
+    CHECK(k == m->n);
+
+    /* self sections: only this pool's names; secrets refused */
+    char why[160];
+    CHECK(as_mem_set_self(m, "robot", "Numbers: 28x26 swerve, Kraken drives, turret shooter", T0, why, sizeof why));
+    CHECK(!as_mem_set_self(m, "personality", "cheerful", T0, why, sizeof why)); /* the companion's, not this pool's */
+    CHECK(!as_mem_set_self(m, "team", "the password is 5805rocks", T0, why, sizeof why));
+    CHECK(as_mem_self_index(AS_MEM_COMPANION, "running_jokes") == 3 && as_mem_self_index(AS_MEM_ASSIST, "name") < 0);
+
+    /* JSON round trip, and the pool number stays whose it is */
+    size_t len = 0;
+    char *js = as_mem_to_json(m, 0, &len);
+    CHECK(js && len == strlen(js));
+    as_mem_init(m2, AS_MEM_ASSIST);
+    CHECK(js && as_mem_from_json(m2, js, len));
+    CHECK(m2->n == m->n && m2->next_id == m->next_id && !strcmp(m2->self[0], m->self[0]));
+    CHECK(as_mem_find(m2, 3) >= 0 && !strcmp(m2->it[as_mem_find(m2, 3)].text, m->it[as_mem_find(m, 3)].text));
+    free(js);
+    CHECK(!as_mem_from_json(m2, "[1,2]", 5));
+    /* a damaged entry is dropped, the rest kept; a missing next_id is recovered from the ids */
+    const char *odd = "{\"memories\":[{\"id\":5,\"text\":\"a real memory here\",\"imp\":7},{\"id\":0,\"text\":\"no id\"},"
+                      "{\"id\":6},{\"id\":5,\"text\":\"duplicate id\"}]}";
+    as_mem_init(m2, AS_MEM_COMPANION);
+    CHECK(as_mem_from_json(m2, odd, strlen(odd)) && m2->n == 1 && m2->it[0].imp == 3 && m2->next_id == 6);
+
+    /* the kv copy fits its budget and keeps the most valuable */
+    for (int i = 0; i < 40; i++) {
+        char t[120];
+        snprintf(t, sizeof t, "Memory number %d about subject%d with a few words so it has some length to it", i, i);
+        as_mem_add(m, "fact", t, 1, T0 - 86400 * 60, &r);
+    }
+    js = as_mem_to_json(m, AS_MEM_KV_MAX, &len);
+    CHECK(js && len <= AS_MEM_KV_MAX && strstr(js, "hard stop") && strstr(js, "Numbers: 28x26"));
+    free(js);
+
+    /* full: the least valuable memory makes room for one that matters as much, never for a lesser one */
+    as_mem_init(m2, AS_MEM_ASSIST);
+    for (int i = 0; i < AS_MEM_MAX; i++) {
+        char t[80];
+        snprintf(t, sizeof t, "Fact %d, subject%d, value%d, detail%d", i, i, i, i);
+        as_mem_add(m2, "fact", t, i == 0 ? 1 : 2, T0 + i, &r);
+    }
+    CHECK(m2->n == AS_MEM_MAX);
+    CHECK(as_mem_add(m2, "fix", "A new important fix nobody wrote down before now", 2, T0 + 1000, &r) && r.evicted == 1);
+    CHECK(m2->n == AS_MEM_MAX && as_mem_find(m2, 1) < 0);
+    CHECK(!as_mem_add(m2, "fact", "A minor fact that shouldn't push out a useful one", 1, T0 + 1000, &r) && r.why[0]);
+
+    /* the digest: self sections, most important first, within budget, and says what's left */
+    char *d = malloc(16384);
+    size_t dl = as_mem_digest(m, "hard stop elevator", T0, 600, d, 16384);
+    CHECK(dl == strlen(d) && strstr(d, "notebook") && strstr(d, "- robot: Numbers"));
+    CHECK(strstr(d, "#3 [procedure, important") && strstr(d, "more not shown"));
+    const char *first = strstr(d, "- #");
+    CHECK(first && !strncmp(first, "- #3", 4)); /* the question's subject comes first among equals */
+    as_mem_init(m2, AS_MEM_COMPANION);
+    as_mem_digest(m2, NULL, T0, 600, d, 16384);
+    CHECK(strstr(d, "Who you are") && strstr(d, "- name: (empty so far)") && strstr(d, "none yet"));
+    free(d);
+
+    /* the typography a model writes and the faces don't carry is folded on the way in */
+    as_mem_init(m2, AS_MEM_ASSIST);
+    CHECK(as_mem_add(m2, "fix", "The wheel\xe2\x80\x99s \xe2\x80\x9cset screw\xe2\x80\x9d \xe2\x80\x93 re-torqued\xc2\xa0today", 2, T0, &r));
+    CHECK(!strcmp(m2->it[0].text, "The wheel's \"set screw\" - re-torqued today"));
+    char fold[64] = "a \xe2\x80\x94 b \xe2\x80\xa6 \xe2\x80\xa2 c";
+    as_fold_text(fold);
+    CHECK(!strcmp(fold, "a \xe2\x80\x94 b \xe2\x80\xa6 \xc2\xb7 c")); /* the em dash and ellipsis stay */
+
+    /* clear keeps ids growing: an old id in a transcript never names a new memory */
+    int next = m->next_id;
+    as_mem_clear(m);
+    CHECK(m->n == 0 && !m->self[0][0] && m->next_id == next);
+    free(m);
+    free(m2);
+}
+
+/* ---- diagnostics: triage and swerve tracking (as_diag.c) ---- */
+
+static cat_robot_t *robot_ok(void)
+{
+    cat_robot_t *r = calloc(1, sizeof *r);
+    r->connected = true;
+    r->have_mode = r->ds = true;
+    r->have_battery = true;
+    r->battery_v = 12.7;
+    r->brownout_v = r->predicted_v = r->total_current = NAN;
+    r->loop_last_ms = r->loop_avg_ms = r->loop_max_ms = NAN;
+    r->match_time = r->heading_deg = NAN;
+    r->tag_seen = -1;
+    snprintf(r->name, sizeof r->name, "Numbers");
+    return r;
+}
+
+static void diagnostics(void)
+{
+    as_finding_t f[40];
+    cat_robot_t *r = robot_ok();
+    int n = as_diag_triage(r, f, 40);
+    CHECK(n == 0);
+
+    /* not connected: one fault, nothing else claimed */
+    r->connected = false;
+    n = as_diag_triage(r, f, 40);
+    CHECK(n == 1 && f[0].sev == AS_DG_FAULT && !strcmp(f[0].area, "link"));
+    r->connected = true;
+
+    /* the triage order: a low battery ranks before a missing device, a device before a hot motor */
+    r->battery_v = 11.6;
+    r->ndevices = 2;
+    snprintf(r->devices[0].name, sizeof r->devices[0].name, "FL drive");
+    snprintf(r->devices[0].bus, sizeof r->devices[0].bus, "can_s0");
+    r->devices[0].id = 12;
+    r->devices[0].connected = 0;
+    r->devices[1].connected = 1;
+    r->nmechs = 1;
+    snprintf(r->mechs[0].name, sizeof r->mechs[0].name, "Elevator");
+    r->mechs[0].temp_c = 84;
+    r->mechs[0].current_a = r->mechs[0].vel = NAN;
+    r->ncan_util = 5;
+    r->can_util[0] = 0.55;
+    r->can_util[1] = 0.55; /* each fine alone; together they saturate their shared controller */
+    r->can_util[2] = r->can_util[3] = r->can_util[4] = 0.1;
+    n = as_diag_triage(r, f, 40);
+    CHECK(n >= 4);
+    CHECK(f[0].sev == AS_DG_FAULT && !strcmp(f[0].area, "power") && strstr(f[0].what, "11.60"));
+    int can_i = -1, mech_i = -1, pair_i = -1;
+    for (int i = 0; i < n; i++) {
+        if (strstr(f[i].what, "FL drive can_s0 id 12")) can_i = i;
+        if (strstr(f[i].what, "Elevator motor at 84")) mech_i = i;
+        if (strstr(f[i].what, "can_s0 + can_s1")) pair_i = i;
+    }
+    CHECK(can_i > 0 && mech_i > can_i && pair_i > 0 && f[pair_i].sev == AS_DG_FAULT);
+    for (int i = 1; i < n; i++) CHECK(f[i - 1].sev > f[i].sev || (f[i - 1].sev == f[i].sev && f[i - 1].order <= f[i].order));
+
+    /* the swerve snapshot: judged only while enabled and moving */
+    free(r);
+    r = robot_ok();
+    r->nmodules = 4;
+    r->have_targets = true;
+    for (int i = 0; i < 4; i++) {
+        r->target_speed[i] = 2.0;
+        r->target_angle[i] = 0.3;
+        r->module_speed[i] = i == 2 ? 0.8 : 1.95;
+        r->module_angle[i] = 0.3;
+    }
+    n = as_diag_triage(r, f, 40);
+    CHECK(n == 1 && f[0].sev == AS_DG_INFO && strstr(f[0].what, "disabled"));
+    r->enabled = true;
+    n = as_diag_triage(r, f, 40);
+    CHECK(n == 1 && strstr(f[0].what, "module bl") && strstr(f[0].what, "40%"));
+    free(r);
+
+    /* swerve tracking over time: the 180-degree twin counts as following; one lagging module is named */
+    as_track_t t;
+    as_track_verdict_t v;
+    as_track_init(&t, 4);
+    for (int s = 0; s < 50; s++) {
+        double cs[4] = { 2, 2, 2, 2 }, ca[4] = { 0.5, 0.5, 0.5, 0.5 };
+        double as[4] = { 1.96, -1.97, 1.1, 1.98 };           /* fr reports its twin: -speed, angle + pi */
+        double aa[4] = { 0.5, 0.5 + 3.14159265, 0.5, 0.52 };
+        as_track_add(&t, cs, ca, as, aa);
+    }
+    as_track_judge(&t, &v);
+    CHECK(v.mod[1].follow_pct > 97 && v.mod[1].angle_err_deg < 1);
+    CHECK(!strcmp(v.mod[2].verdict, "lags") && !strcmp(v.mod[0].verdict, "follows"));
+    CHECK(strstr(v.summary, "module bl") && strstr(v.summary, "hardware"));
+
+    /* all under-following alike: global, not one wheel */
+    as_track_init(&t, 4);
+    for (int s = 0; s < 50; s++) {
+        double cs[4] = { 3, 3, 3, 3 }, ca[4] = { 0 }, as[4] = { 2.1, 2.2, 2.15, 2.1 }, aa[4] = { 0 };
+        as_track_add(&t, cs, ca, as, aa);
+    }
+    as_track_judge(&t, &v);
+    CHECK(strstr(v.summary, "every module") != NULL);
+
+    /* a steering fault */
+    as_track_init(&t, 4);
+    for (int s = 0; s < 50; s++) {
+        double cs[4] = { 2, 2, 2, 2 }, ca[4] = { 0 }, as[4] = { 2, 2, 2, 2 }, aa[4] = { 0, 0, 0, 0.35 };
+        as_track_add(&t, cs, ca, as, aa);
+    }
+    as_track_judge(&t, &v);
+    CHECK(!strcmp(v.mod[3].verdict, "steering") && strstr(v.summary, "module br steers"));
+
+    /* standing still: nothing to judge, and it says so */
+    as_track_init(&t, 4);
+    double z[4] = { 0 };
+    for (int s = 0; s < 50; s++) as_track_add(&t, z, z, z, z);
+    as_track_judge(&t, &v);
+    CHECK(strstr(v.summary, "not enough driving") && !strcmp(v.mod[0].verdict, "can't judge"));
+
+    /* the recorder's CSV */
+    int cols[16];
+    const char *hdr = "t,mark,Swerve/ModuleStates.fl_speed,Swerve/ModuleStates.fl_angle,Swerve/ModuleStates.fr_speed,"
+                      "Swerve/ModuleStates.fr_angle,Swerve/ModuleTargets.fl_speed,Swerve/ModuleTargets.fl_angle,"
+                      "Swerve/ModuleTargets.fr_speed,Swerve/ModuleTargets.fr_angle,Systemcore/BatteryVolts\n";
+    CHECK(as_track_csv_header(hdr, cols) && cols[0] == 2 && cols[8] == 6 && cols[4] < 0);
+    CHECK(!as_track_csv_header("t,mark,Systemcore/BatteryVolts\n", cols));
+    as_track_csv_header(hdr, cols);
+    as_track_init(&t, 4);
+    for (int s = 0; s < 20; s++) CHECK(as_track_csv_row(&t, "0.02,,1.5,0.1,0.6,0.1,1.5,0.1,1.5,0.1,12.4\n", cols));
+    CHECK(!as_track_csv_row(&t, "0.04,,,,,,,,,,12.4\n", cols));
+    as_track_judge(&t, &v);
+    CHECK(t.used[0] == 20 && t.used[1] == 20 && t.used[2] == 0);
+    CHECK(v.mod[1].follow_pct < 45 && strstr(v.summary, "module fr"));
+}
+
+/* ---- the prompts, the tools each conversation gets, and the companion's voice ---- */
+
+static void prompts_and_tools(void)
+{
+    /* each prompt names the memory tools it has, and the technician's names the method it must follow */
+    CHECK(strstr(AS_PROMPT_TECH, "update_notebook") && strstr(AS_PROMPT_TECH, "remember") && strstr(AS_PROMPT_TECH, "recall"));
+    CHECK(strstr(AS_PROMPT_TECH, "Hardware before tuning") && strstr(AS_PROMPT_TECH, "swerve_check") && strstr(AS_PROMPT_TECH, "triage"));
+    CHECK(!strstr(AS_PROMPT_TECH, "update_persona"));
+    CHECK(strstr(AS_PROMPT_COMPANION, "update_persona") && !strstr(AS_PROMPT_COMPANION, "update_notebook"));
+    CHECK(strstr(AS_PROMPT_COMPANION, "young woman") && strstr(AS_PROMPT_COMPANION, "\"say\""));
+    /* every tool a prompt names exists */
+    static const char *const NAMED[] = { "triage", "swerve_check", "remember", "forget", "recall", "update_notebook",
+                                         "update_persona", "timer", "alarm", "reminder", "notes", "documents",
+                                         "checklist", "calendar", "weather", "notifications", "tablet_status",
+                                         "set_tablet", "open_app", "music", "smart_home", NULL };
+    for (int i = 0; NAMED[i]; i++) CHECK(as_tool_find(NAMED[i]) != NULL);
+
+    /* who gets what: robot changes and the notebook are the technician's; the persona is the companion's */
+    CHECK(as_tool_for(as_tool_find("set_tunable"), AS_MEM_ASSIST) && !as_tool_for(as_tool_find("set_tunable"), AS_MEM_COMPANION));
+    CHECK(!as_tool_for(as_tool_find("create_work_order"), AS_MEM_COMPANION));
+    CHECK(as_tool_for(as_tool_find("update_notebook"), AS_MEM_ASSIST) && !as_tool_for(as_tool_find("update_notebook"), AS_MEM_COMPANION));
+    CHECK(as_tool_for(as_tool_find("update_persona"), AS_MEM_COMPANION) && !as_tool_for(as_tool_find("update_persona"), AS_MEM_ASSIST));
+    CHECK(as_tool_for(as_tool_find("remember"), AS_MEM_ASSIST) && as_tool_for(as_tool_find("remember"), AS_MEM_COMPANION));
+    CHECK(as_tool_for(as_tool_find("timer"), AS_MEM_COMPANION) && !as_tool_for(NULL, AS_MEM_ASSIST));
+
+    /* the technician's tools array (both wire formats) leaves the persona out; every schema parses */
+    ab_t b;
+    ab_init(&b);
+    as_tools_json(&b);
+    aj_t *arr = parse(b.p);
+    CHECK(arr && arr->type == AJ_ARR);
+    bool persona = false, notebook = false;
+    for (int i = 0; arr && i < arr->n; i++) {
+        const char *nm = aj_gets(arr->kid[i], "name");
+        persona |= nm && !strcmp(nm, "update_persona");
+        notebook |= nm && !strcmp(nm, "update_notebook");
+    }
+    CHECK(!persona && notebook);
+    aj_free(arr);
+    for (int i = 0; i < AS_NTOOLS; i++) {
+        aj_t *sc = parse(AS_TOOLS[i].schema);
+        CHECK(sc != NULL);
+        if (!sc) printf("  the schema of %s doesn't parse\n", AS_TOOLS[i].name);
+        aj_free(sc);
+    }
+    as_hist_t h;
+    as_hist_init(&h);
+    as_hist_user(&h, NULL, "hi");
+    as_req_t q = { .model = "gpt-5", .system = "s", .tools = "x" };
+    as_oai_request(&h, &q, &b);
+    aj_t *d = parse(b.p);
+    const aj_t *tl = aj_get(d, "tools");
+    persona = false;
+    for (int i = 0; tl && i < tl->n; i++) {
+        const char *nm = aj_gets(aj_get(tl->kid[i], "function"), "name");
+        persona |= nm && !strcmp(nm, "update_persona");
+    }
+    CHECK(tl && tl->n > 30 && !persona);
+    aj_free(d);
+    as_hist_free(&h);
+
+    /* the music tool can reach the PC (its schema used to refuse "where") */
+    aj_t *sc = parse(as_tool_find("music")->schema), *in = parse("{\"action\":\"pause\",\"where\":\"pc\"}");
+    char err[160];
+    CHECK(aj_validate(sc, in, err, sizeof err));
+    aj_free(sc);
+    aj_free(in);
+    ab_free(&b);
+
+    /* the companion's voice: female by default, and a model that lacks the voice gets a female one it has */
+    CHECK(!strcmp(as_tts_voice("gpt-4o-mini-tts", ""), "marin"));
+    CHECK(!strcmp(as_tts_voice("gpt-4o-mini-tts", NULL), "marin"));
+    CHECK(!strcmp(as_tts_voice("gpt-4o-mini-tts", "shimmer"), "shimmer"));
+    CHECK(!strcmp(as_tts_voice("tts-1", "marin"), "nova"));
+    CHECK(!strcmp(as_tts_voice("tts-1-hd", ""), "nova"));
+    CHECK(!strcmp(as_tts_voice("tts-1", "coral"), "coral"));
+    CHECK(as_tts_voice_known("gpt-4o-mini-tts", "marin") && !as_tts_voice_known("tts-1", "marin"));
+    CHECK(as_tts_voice_known("tts-1", AS_TTS_VOICE_SAFE) && as_tts_voice_known("gpt-4o-mini-tts", AS_TTS_VOICE_SAFE));
+    char ins[320];
+    as_tts_instructions(ins, sizeof ins, "cheerful and warm", true);
+    CHECK(strstr(ins, "young woman") && strstr(ins, "cheerful and warm, clearly"));
+}
+
 void test_assist(int *checks, int *fails)
 {
     g_checks = checks;
     g_fails = fails;
+    memory();
+    diagnostics();
+    prompts_and_tools();
     oai_effort();
     json();
     schema();
