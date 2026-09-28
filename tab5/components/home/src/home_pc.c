@@ -57,20 +57,77 @@ void home_pc_enable(bool on)
     pthread_mutex_unlock(&g_lock);
 }
 
-void home_pc_get(home_pc_t *out)
+/* the dev console's made-up song (home_pc_fake) */
+static struct {
+    bool on;
+    char title[96], artist[80], album[64];
+    double at;
+    unsigned gen;
+} FAKE;
+
+void home_pc_fake(const char *artist, const char *album, const char *title)
 {
     pthread_mutex_lock(&g_lock);
-    if (pc()) *out = P->st;
-    else memset(out, 0, sizeof *out);
+    FAKE.on = title != NULL;
+    if (FAKE.on) {
+        snprintf(FAKE.artist, sizeof FAKE.artist, "%s", artist ? artist : "");
+        snprintf(FAKE.album, sizeof FAKE.album, "%s", album ? album : "");
+        snprintf(FAKE.title, sizeof FAKE.title, "%s", title);
+        FAKE.at = hal_seconds();
+    }
+    FAKE.gen += 2;
     pthread_mutex_unlock(&g_lock);
 }
 
-bool home_pc_art(uint16_t *px)
+void home_pc_get(home_pc_t *out)
+{
+    pthread_mutex_lock(&g_lock);
+    if (pc()) {
+        *out = P->st;
+        /* the art on show is this song's once what /media/now names is what was fetched */
+        out->art_ready = P->st.art && P->art && P->art_id[0] && !strcmp(P->art_id, P->want_art);
+    } else {
+        memset(out, 0, sizeof *out);
+    }
+    out->gen += FAKE.gen;
+    if (FAKE.on) {
+        /* as the Link would say it: playing, no art of its own, 3:35 long, from when it was made up */
+        out->link = out->available = out->have = out->playing = true;
+        snprintf(out->title, sizeof out->title, "%s", FAKE.title);
+        snprintf(out->artist, sizeof out->artist, "%s", FAKE.artist);
+        snprintf(out->album, sizeof out->album, "%s", FAKE.album);
+        snprintf(out->app, sizeof out->app, "%s", "dev console");
+        snprintf(out->state, sizeof out->state, "%s", "playing");
+        out->position = 0;
+        out->at = FAKE.at;
+        out->duration = 215;
+        out->art = out->art_ready = false;
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
+void home_pc_trim(void)
+{
+    pthread_mutex_lock(&g_lock);
+    uint16_t *old = NULL;
+    if (P && P->art) {
+        old = P->art;
+        P->art = NULL;
+        P->art_id[0] = 0; /* fetched again the next time something shows it */
+        P->st.art_gen++;
+        P->st.gen++;
+    }
+    pthread_mutex_unlock(&g_lock);
+    free(old);
+}
+
+bool home_pc_art(uint16_t *px, unsigned *gen)
 {
     bool ok = false;
     pthread_mutex_lock(&g_lock);
     if (P && P->art && P->art_id[0] && P->st.art) {
         memcpy(px, P->art, ART_BYTES);
+        if (gen) *gen = P->st.art_gen;
         ok = true;
     }
     pthread_mutex_unlock(&g_lock);

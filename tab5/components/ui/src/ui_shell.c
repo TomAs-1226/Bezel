@@ -333,6 +333,18 @@ bool ui_scroller_follow(lv_obj_t *content)
     return false;
 }
 
+void ui_scroller_top(lv_obj_t *content)
+{
+    for (int i = 0; i < MAX_SCROLLERS; i++) {
+        scroller_t *s = g_scrollers[i];
+        if (!s || s->content != content || s->dragging) continue;
+        bz_motion_set(&s->y, 0, 0);
+        s->away = false;
+        if (lv_obj_get_y(content) != 0) lv_obj_set_y(content, 0);
+        return;
+    }
+}
+
 /* The clip is being deleted, so its scroller must stop existing too.
  *
  * Without this the scroller stays in g_scrollers with pointers to freed objects, and the first
@@ -849,7 +861,7 @@ static bool dev_handler(const char *line)
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) && strncmp(line, "act", 3) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
         strncmp(line, "docwrite", 8) && strncmp(line, "assist", 6) && strncmp(line, "memo", 4) && strncmp(line, "carry", 5) &&
-        strncmp(line, "cut", 3))
+        strncmp(line, "cut", 3) && strncmp(line, "hm", 2))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -1064,6 +1076,8 @@ static void dev_run(void)
     } else if (!strcmp(s_dev_cmd, "home")) {
         if (ui_home_mode_active()) ui_home_mode_exit();
         else ui_home_mode_enter();
+    } else if (!strncmp(s_dev_cmd, "hm", 2)) {
+        ui_home_mode_dev(s_dev_cmd + 2); /* home mode's own: its pages, faces, night, covers */
     } else if (!strncmp(s_dev_cmd, "phone", 5)) {
         /* "phone", "phone 1", "phone 0": which frame the interface is laid out in, from the cable.
          *

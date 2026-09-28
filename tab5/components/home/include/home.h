@@ -34,7 +34,7 @@ void home_want(unsigned mask);
 void home_fold_text(char *s);
 
 /* ---- the PC's media, through Catalyst Link (GET /media/now, /media/art, POST /media/control) ---- */
-#define HOME_ART 160          /* album art: HOME_ART × HOME_ART RGB565 */
+#define HOME_ART 420          /* album art: HOME_ART × HOME_ART RGB565 (home_art.h's HOME_ART_L: the big view's) */
 typedef struct {
     bool link;                /* the Link is configured and answering */
     bool available;           /* it serves the media remote (a Link without it, or no Windows media: false) */
@@ -50,12 +50,19 @@ typedef struct {
     bool muted;
     unsigned art_gen;         /* changes when new art arrives (or goes) */
     bool art;                 /* there is art for this song */
+    bool art_ready;           /* ...and it has arrived: home_pc_art() copies this song's, not the last one's */
     unsigned gen;             /* changes with anything above */
 } home_pc_t;
 void home_pc_enable(bool on);                  /* settings: the Link media remote on/off */
 void home_pc_get(home_pc_t *out);
-/* Copies the current art (HOME_ART² RGB565) into `px`; false when there is none. */
-bool home_pc_art(uint16_t *px);
+/* The dev console's made-up song, shown as the PC's (playing, no art of its own) until cleared (title NULL):
+ * how the generated covers and the tint are looked at with the PC away. */
+void home_pc_fake(const char *artist, const char *album, const char *title);
+/* Copies the current art (HOME_ART² RGB565) into `px`; false when there is none. `gen` (may be NULL) gets the
+ * art_gen of what was copied: a worker copying it while a new song's arrives knows which one it has. */
+bool home_pc_art(uint16_t *px, unsigned *gen);
+/* The art's memory back (~250 KB) when nothing shows it any more; fetched again when something does. */
+void home_pc_trim(void);
 /* "play", "pause", "toggle", "next", "previous", "volume_up", "volume_down", "mute"; queued. */
 void home_pc_cmd(const char *action);
 void home_pc_volume(float level01);            /* needs pycaw on the PC */

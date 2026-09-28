@@ -33,6 +33,7 @@ static struct {
     int tag_shown;             /* what tag_state says: -2 not yet, else hm_tag_pair_state()'s idea */
     bool tag_waiting;
     lv_obj_t *place, *url, *token, *ha_state, *list_state, *list, *kind[NKINDS];
+    lv_obj_t *col;             /* the pane's scroller, back to its top each time the settings open */
     lv_obj_t *find_btn;
     ui_kb_t *kb;
     int editing;
@@ -464,6 +465,7 @@ void ui_home_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     lv_obj_update_layout(pane);
     int h = lv_obj_get_content_height(pane) - 60; /* under the pane's head */
     lv_obj_t *col = ui_scroller(pane, w, h > 200 ? h : 200);
+    HS.col = col;
     lv_obj_set_style_pad_row(col, 12, 0);
 
     bz_label(col, "start in", BZ_F_LABEL, BZ_C_DIM);
@@ -558,9 +560,16 @@ void ui_home_settings(lv_obj_t *pane, lv_obj_t *body, int w)
 
 static const char *const CARD_L[5] = { "music", "companion", "smart home", "weather", "next match" };
 static const int CARD_BIT[5] = { HM_CARD_MUSIC, HM_CARD_COMPANION, HM_CARD_HOME, HM_CARD_WEATHER, HM_CARD_MATCH };
+static const char *const PAGE_L[HM_NPAGES] = { "clock faces", "the desk", "now playing" };
+
+/* what a chip does: a card (0..4), the clock (5, 6), seconds (7), the ground (8, 9), colour from the music (10),
+ * the page it opens on (20..), a face in the cycle (30..), the face shown (40..), the dial's second hand (50),
+ * the night face (51) */
+enum { LK_ART = 10, LK_OPEN = 20, LK_CYCLE = 30, LK_FACE = 40, LK_DSEC = 50, LK_NIGHT = 51 };
 
 static struct {
-    lv_obj_t *card[5], *big, *small, *secs, *plain, *tint;
+    lv_obj_t *card[5], *big, *small, *secs, *plain, *tint, *art;
+    lv_obj_t *open[HM_NPAGES], *cycle[HM_NFACES], *face[HM_NFACES], *dsec, *night;
 } LK;
 
 static void look_show(void)
@@ -573,6 +582,14 @@ static void look_show(void)
     ui_chip_set(LK.secs, c->seconds);
     ui_chip_set(LK.plain, !c->tint);
     ui_chip_set(LK.tint, c->tint);
+    ui_chip_set(LK.art, c->art_tint);
+    for (int i = 0; i < HM_NPAGES; i++) ui_chip_set(LK.open[i], c->open_page == i);
+    for (int i = 0; i < HM_NFACES; i++) {
+        ui_chip_set(LK.cycle[i], c->faces >> i & 1);
+        ui_chip_set(LK.face[i], c->face == i);
+    }
+    ui_chip_set(LK.dsec, c->dial_secs);
+    ui_chip_set(LK.night, c->night);
 }
 
 static void look_tap(lv_obj_t *o, void *u)
@@ -583,27 +600,63 @@ static void look_tap(lv_obj_t *o, void *u)
     if (k < 5) c->cards ^= CARD_BIT[k];
     else if (k == 5 || k == 6) c->small_clock = k == 6;
     else if (k == 7) c->seconds = !c->seconds;
-    else c->tint = k == 9;
+    else if (k == 8 || k == 9) c->tint = k == 9;
+    else if (k == LK_ART) c->art_tint = !c->art_tint;
+    else if (k >= LK_OPEN && k < LK_OPEN + HM_NPAGES) c->open_page = k - LK_OPEN;
+    else if (k >= LK_CYCLE && k < LK_CYCLE + HM_NFACES) {
+        int f = k - LK_CYCLE;
+        /* at least one face stays in the cycle, and the face shown is always one of them */
+        if ((c->faces ^ (1 << f)) & HM_FACES_ALL) c->faces ^= 1 << f;
+        if (!(c->faces >> c->face & 1))
+            for (int i = 0; i < HM_NFACES; i++)
+                if (c->faces >> i & 1) {
+                    c->face = i;
+                    break;
+                }
+    } else if (k >= LK_FACE && k < LK_FACE + HM_NFACES) {
+        c->face = k - LK_FACE;
+        c->faces |= 1 << c->face;
+    } else if (k == LK_DSEC) c->dial_secs = !c->dial_secs;
+    else if (k == LK_NIGHT) c->night = !c->night;
     hm_cfg_save();
     hm_look_changed(); /* laid out now, under the settings: it shows as it is when they close */
     look_show();
 }
 
+static lv_obj_t *row_chip(lv_obj_t *r, const char *text, int k) { return ui_chip(r, text, look_tap, (void *)(intptr_t)k); }
+
 void ui_home_look_settings(lv_obj_t *col, int w)
 {
     bz_label(col, "home mode shows", BZ_F_LABEL, BZ_C_DIM);
     lv_obj_t *r = wrap(col, w);
-    for (int i = 0; i < 5; i++) LK.card[i] = ui_chip(r, CARD_L[i], look_tap, (void *)(intptr_t)i);
+    for (int i = 0; i < 5; i++) LK.card[i] = row_chip(r, CARD_L[i], i);
     bz_label(col, "home mode clock", BZ_F_LABEL, BZ_C_DIM);
     r = wrap(col, w);
-    LK.big = ui_chip(r, "big", look_tap, (void *)(intptr_t)5);
-    LK.small = ui_chip(r, "small", look_tap, (void *)(intptr_t)6);
-    LK.secs = ui_chip(r, "seconds", look_tap, (void *)(intptr_t)7);
+    LK.big = row_chip(r, "big", 5);
+    LK.small = row_chip(r, "small", 6);
+    LK.secs = row_chip(r, "seconds", 7);
     bz_label(col, "home mode ground", BZ_F_LABEL, BZ_C_DIM);
     r = wrap(col, w);
-    LK.plain = ui_chip(r, "plain", look_tap, (void *)(intptr_t)8);
-    LK.tint = ui_chip(r, "tinted with the accent", look_tap, (void *)(intptr_t)9);
-    caption(col, "Seconds redraw one small label a second; everything else on home mode stays still until it changes.", w);
+    LK.plain = row_chip(r, "plain", 8);
+    LK.tint = row_chip(r, "tinted with the accent", 9);
+    LK.art = row_chip(r, "colour from the music", LK_ART);
+    caption(col, "Colour from the music: while something plays, the desk and the now-playing page take their colours "
+                 "from its cover (a song without one gets a cover made for it). Otherwise the ground above.", w);
+    bz_label(col, "home mode opens on", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    for (int i = 0; i < HM_NPAGES; i++) LK.open[i] = row_chip(r, PAGE_L[i], LK_OPEN + i);
+    bz_label(col, "clock faces a flick goes through", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    for (int i = 0; i < HM_NFACES; i++) LK.cycle[i] = row_chip(r, HM_FACE_NAME[i], LK_CYCLE + i);
+    bz_label(col, "the face shown", BZ_F_LABEL, BZ_C_DIM);
+    r = wrap(col, w);
+    for (int i = 0; i < HM_NFACES; i++) LK.face[i] = row_chip(r, HM_FACE_NAME[i], LK_FACE + i);
+    r = wrap(col, w);
+    LK.dsec = row_chip(r, "the dial's second hand", LK_DSEC);
+    LK.night = row_chip(r, "night face, 22:00 to 7:00", LK_NIGHT);
+    caption(col, "Swipe home mode sideways for the clock faces and for what's playing; flick a face up or down for "
+                 "the next. The night face comes after a minute untouched and goes at a touch. Seconds and the dial's "
+                 "second hand redraw one small area a second; everything else stays still until it changes.", w);
     ui_button(col, BZ_I_HOME, "see home mode", enter_now, NULL);
     look_show();
 }
@@ -614,6 +667,8 @@ void ui_home_settings_open(void)
 {
     if (!HS.list) return;
     ui_kb_hide(HS.kb);
+    /* from the top, every time: left scrolled, it opened with a row of chips cut off under the pane's head */
+    ui_scroller_top(HS.col);
     HS.ha_gen = 0;
     HS.tag_shown = -2;
     show();
