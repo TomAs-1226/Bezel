@@ -231,6 +231,8 @@ void test_batt(int *checks, int *fails);
 void test_home(int *checks, int *fails);
 /* test_tba_paths.c: the Blue Alliance path whitelist the assistant's tba_query goes through */
 void test_tba_paths(int *checks, int *fails);
+/* test_astro.c: the sun, moon and planets home mode's clock faces draw, against published times */
+void test_astro(int *checks, int *fails);
 
 int main(void)
 {
@@ -244,6 +246,7 @@ int main(void)
     test_batt(&checks, &fails);
     test_home(&checks, &fails);
     test_tba_paths(&checks, &fails);
+    test_astro(&checks, &fails);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }
