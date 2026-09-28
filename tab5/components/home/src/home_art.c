@@ -118,7 +118,8 @@ static void deal(hpx_rng_t *r, const pal_t *p, uint32_t *out, int n)
 /* ---------------------------------------------------------------- styles */
 
 /* A soft gradient mesh: five large blobs of the palette pooled over the ground, their weights a gaussian of
- * distance, normalised (so colours meet as a blend, never as a painted edge), the field gently warped. */
+ * distance, normalised (so colours meet as a blend, never as a painted edge), the field gently warped. Averaging
+ * two far hues greys them (teal and pink meet as mud), so the blend is pushed back out from its own grey. */
 static void paint_mesh(hpx_t *c, hpx_rng_t *r, const pal_t *p)
 {
     enum { N = 5 };
@@ -143,8 +144,8 @@ static void paint_mesh(hpx_t *c, hpx_rng_t *r, const pal_t *p)
         free(wx);
         return;
     }
-    for (int i = 0; i <= 512; i++) G[i] = (uint16_t)(1024.0f * expf(-2.3f * i / 64.0f) + 0.5f);
-    int wb = 40; /* the ground's own weight: where no blob reaches, the ground shows */
+    for (int i = 0; i <= 512; i++) G[i] = (uint16_t)(1024.0f * expf(-2.8f * i / 64.0f) + 0.5f);
+    int wb = 24; /* the ground's own weight: where no blob reaches, the ground shows */
     int gr = hpx_r(p->bg), gg = hpx_g(p->bg), gb = hpx_b(p->bg);
     float fa = hpx_range(r, 1.2f, 2.4f), fb = hpx_range(r, 1.2f, 2.4f), pa = hpx_rand(r) * TAU, pb = hpx_rand(r) * TAU;
     for (int i = 0; i < S; i++) {
@@ -166,7 +167,9 @@ static void paint_mesh(hpx_t *c, hpx_rng_t *r, const pal_t *p)
                 ag += cg[i] * w;
                 ab += cb[i] * w;
             }
-            row[x] = hpx_rgb(ar / ws, ag / ws, ab / ws);
+            int rr = ar / ws, gg2 = ag / ws, bb = ab / ws;
+            int l = (rr * 54 + gg2 * 183 + bb * 19) >> 8;
+            row[x] = hpx_rgb(l + ((rr - l) * 83 >> 6), l + ((gg2 - l) * 83 >> 6), l + ((bb - l) * 83 >> 6));
         }
     }
     free(G);

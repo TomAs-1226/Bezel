@@ -195,6 +195,17 @@ void hm_np_refresh(bool shown)
         NP.song_gen = s.gen ? s.gen : 1;
         ui_text(NP.src, "%s", s.src);
         ui_text(NP.title, "%s", s.have ? s.title : "Nothing playing");
+        /* the title takes one line or two, and who it's by sits right under it */
+        {
+            const lv_font_t *tf = bz_font(BZ_F_TITLE);
+            int lh = lv_font_get_line_height(tf);
+            lv_point_t sz;
+            lv_text_get_size(&sz, lv_label_get_text(NP.title), tf, 0, 0, TW, LV_TEXT_FLAG_NONE);
+            int lines = sz.y > lh ? 2 : 1;
+            if (lv_obj_get_height(NP.title) != lines * lh) lv_obj_set_height(NP.title, lines * lh);
+            int by = COVER_Y + 44 + lines * lh + 6;
+            if (lv_obj_get_y(NP.by) != by) lv_obj_set_y(NP.by, by);
+        }
         if (!s.have) ui_text(NP.by, "%s", s.hint);
         else if (s.artist[0] && s.album[0]) ui_text(NP.by, "%s \xc2\xb7 %s", s.artist, s.album);
         else ui_text(NP.by, "%s", s.artist[0] ? s.artist : s.album);

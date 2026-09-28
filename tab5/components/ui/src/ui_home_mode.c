@@ -1951,12 +1951,22 @@ static void press_tick(void)
     }
 }
 
+/* the dev console's "hm prof": where hm_frame's time goes, by part, since it last asked */
+static double s_prof[8];
+static const char *const PROF_NAME[8] = { "stand+tag", "enter+slide", "faces", "night", "camera", "presence",
+                                          "saver+eyes+voice", "roll+press" };
+#define PROF(i, stmt)                                                                                              \
+    do {                                                                                                           \
+        double t0_ = hal_seconds();                                                                                \
+        stmt;                                                                                                      \
+        s_prof[i] += hal_seconds() - t0_;                                                                          \
+    } while (0)
+
 static void hm_frame(double now, double dt, void *user)
 {
     (void)dt; (void)user;
     now = hal_seconds();
-    stand_tick(now);
-    tag_tick(now);
+    PROF(0, stand_tick(now); tag_tick(now));
     if (HM.sheet) {
         bool moving = bz_motion_tick(&HM.k);
         float k = HM.k.value < 0 ? 0 : HM.k.value > 1 ? 1 : HM.k.value;
@@ -1979,22 +1989,18 @@ static void hm_frame(double now, double dt, void *user)
     if (HM.want && !ui_app_any_open() && !bz_ui_sheeting() && !SL.active && !hm_faces_moving()) {
         int w = HM.want;
         HM.want = 0;
-        if (w > 0 && !HM.active) go(true);
-        else if (w < 0 && HM.active) go(false);
+        if (w > 0 && !HM.active) PROF(1, go(true));
+        else if (w < 0 && HM.active) PROF(1, go(false));
     }
     if (HM.active) {
-        go_step();
-        slide_frame();
-        if (HM.page == HM_PG_CLOCK && !SL.active && !ui_app_any_open() && !ui_asleep()) hm_faces_frame(now);
-        night_tick(now);
+        PROF(1, go_step(); slide_frame());
+        if (HM.page == HM_PG_CLOCK && !SL.active && !ui_app_any_open() && !ui_asleep()) PROF(2, hm_faces_frame(now));
+        PROF(3, night_tick(now));
     }
-    cap_tick(now);
-    home_presence_tick(now);
-    saver_tick();
-    eyes_tick(now);
-    voice_tick(now);
-    if (HM.page == HM_PG_DESK) roll_tick();
-    press_tick();
+    PROF(4, cap_tick(now));
+    PROF(5, home_presence_tick(now));
+    PROF(6, saver_tick(); eyes_tick(now); voice_tick(now));
+    PROF(7, if (HM.page == HM_PG_DESK) roll_tick(); press_tick());
 }
 
 /* Home mode, on the control center. The header has always said a toggle belonged there ("home" /
@@ -2074,6 +2080,11 @@ void ui_home_mode_dev(const char *a)
         if (f[2]) home_pc_fake(f[0], f[1], f[2]);
         else home_pc_fake(f[0], NULL, f[1] ? f[1] : f[0]);
         printf("hm: made-up song \"%s\"\n", f[2] ? f[2] : f[1] ? f[1] : f[0]);
+    } else if (!strncmp(a, "prof", 4)) {
+        for (int i = 0; i < 8; i++) {
+            printf("hm prof: %-16s %6.1f ms\n", PROF_NAME[i], s_prof[i] * 1000);
+            s_prof[i] = 0;
+        }
     } else if (!strncmp(a, "art", 3)) {
         hm_art_dev(a + 3);
     } else {

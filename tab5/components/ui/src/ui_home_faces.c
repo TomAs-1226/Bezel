@@ -36,7 +36,9 @@ const char *const HM_FACE_NAME[HM_NFACES + 1] = { "dial", "horizon", "dots", "wo
 #define SYNODIC 29.530588853
 
 /* the dial */
-#define SEC_SEGS 6 /* the second hand in pieces: each moves its own small box, not one box the size of the dial */
+#define SEC_SEGS 5 /* the second hand's redraw, in pieces along it: a long diagonal's box is mostly empty dial */
+#define SEC_TAIL 60
+#define SEC_TIP 268
 #define DCX 640
 #define DCY 372
 #define DR 292
@@ -96,8 +98,10 @@ static struct {
     /* dial */
     struct {
         lv_obj_t *disc, *datebox, *date, *top_l, *top_r;
-        line_t tick[60], hand[2], shadow[2], sec[SEC_SEGS];
-        lv_obj_t *cap, *scap;
+        line_t hand[2], shadow[2];
+        lv_color_t tick_major, tick_minor;
+        lv_obj_t *cap, *sec;      /* the second hand: one object over the dial that draws it (sec_draw) */
+        lv_color_t sec_color;
         bz_motion_t secm;
         long long target;     /* the second hand's target in seconds, running on past 60 */
         int shown_sec;
@@ -247,19 +251,44 @@ static float hours_of(const char *hm, float dflt)
 
 /* ---------------------------------------------------------------- the dial */
 
+static void sec_draw(lv_event_t *e);
+
+static void ticks_draw(lv_event_t *e)
+{
+    lv_layer_t *layer = lv_event_get_layer(e);
+    const lv_area_t *clip = &layer->_clip_area;
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.round_start = d.round_end = 1;
+    for (int i = 0; i < 60; i++) {
+        bool major = i % 5 == 0;
+        float a = (float)i / 60.0f * TAU, s = sinf(a), c = -cosf(a);
+        float r1 = DR - 18, r0 = r1 - (major ? 34 : 13);
+        float x0 = DCX + s * r0, y0 = DCY + c * r0, x1 = DCX + s * r1, y1 = DCY + c * r1;
+        /* only the ticks that cross what's being drawn */
+        if (fmaxf(x0, x1) + 4 < clip->x1 || fminf(x0, x1) - 4 > clip->x2 || fmaxf(y0, y1) + 4 < clip->y1 ||
+            fminf(y0, y1) - 4 > clip->y2)
+            continue;
+        d.width = major ? 6 : 2;
+        d.color = major ? FC.D.tick_major : FC.D.tick_minor;
+        d.opa = major ? LV_OPA_COVER : (lv_opa_t)170;
+        d.p1.x = x0;
+        d.p1.y = y0;
+        d.p2.x = x1;
+        d.p2.y = y1;
+        lv_draw_line(layer, &d);
+    }
+}
+
 static void dial_build(void)
 {
     lv_obj_t *b = face_box(HM_FACE_DIAL);
     FC.D.disc = disc(b, 2 * DR);
     lv_obj_set_pos(FC.D.disc, DCX - DR, DCY - DR);
     lv_obj_set_style_border_width(FC.D.disc, 2, 0);
-    for (int i = 0; i < 60; i++) {
-        bool major = i % 5 == 0;
-        line_make(&FC.D.tick[i], b, major ? 6 : 2);
-        float a = (float)i / 60.0f * TAU, s = sinf(a), c = -cosf(a);
-        float r1 = DR - 18, r0 = r1 - (major ? 34 : 13);
-        line_to(&FC.D.tick[i], DCX + s * r0, DCY + c * r0, DCX + s * r1, DCY + c * r1);
-    }
+    /* the sixty ticks drawn by the disc itself: sixty objects cost a layout walk each to build, and a redraw
+     * of any part of the dial only draws the ticks that cross it */
+    lv_obj_add_event_cb(FC.D.disc, ticks_draw, LV_EVENT_DRAW_MAIN_END, NULL);
     /* the date window at three */
     FC.D.datebox = bz_box(b);
     lv_obj_set_size(FC.D.datebox, 64, 44);
@@ -274,9 +303,10 @@ static void dial_build(void)
     line_make(&FC.D.hand[1], b, 9);
     FC.D.cap = disc(b, 26);
     lv_obj_set_pos(FC.D.cap, DCX - 13, DCY - 13);
-    for (int i = 0; i < SEC_SEGS; i++) line_make(&FC.D.sec[i], b, 3);
-    FC.D.scap = disc(b, 16);
-    lv_obj_set_pos(FC.D.scap, DCX - 8, DCY - 8);
+    FC.D.sec = bz_box(b);
+    lv_obj_set_size(FC.D.sec, 2 * DR, 2 * DR);
+    lv_obj_set_pos(FC.D.sec, DCX - DR, DCY - DR);
+    lv_obj_add_event_cb(FC.D.sec, sec_draw, LV_EVENT_DRAW_MAIN, NULL);
     FC.D.top_l = bz_label_line(b, "", BZ_F_LABEL, BZ_C_DIM, 300);
     lv_obj_set_pos(FC.D.top_l, 58, 42);
     FC.D.top_r = bz_label_line(b, "", BZ_F_LABEL, BZ_C_DIM, 300);
@@ -293,13 +323,14 @@ static void dial_colors(bool dark)
     uint32_t face = bz_color(BZ_C_SURFACE1), ink = bz_color(BZ_C_INK), dim = bz_color(BZ_C_DIM);
     fill_rgb(FC.D.disc, face);
     lv_obj_set_style_border_color(FC.D.disc, bz_lv_rgb(hpx_mix(face, ink, dark ? 40 : 30)), 0);
-    for (int i = 0; i < 60; i++) line_color(&FC.D.tick[i], i % 5 ? dim : ink, i % 5 ? 170 : 255);
+    FC.D.tick_major = bz_lv_rgb(ink);
+    FC.D.tick_minor = bz_lv_rgb(dim);
+    lv_obj_invalidate(FC.D.disc);
     for (int i = 0; i < 2; i++) line_color(&FC.D.shadow[i], 0x000000, dark ? 90 : 38);
     line_color(&FC.D.hand[0], ink, 255);
     line_color(&FC.D.hand[1], ink, 255);
-    for (int i = 0; i < SEC_SEGS; i++) line_color(&FC.D.sec[i], bz_color(BZ_C_SIGNAL), 255);
+    FC.D.sec_color = bz_lv(BZ_C_SIGNAL);
     fill_rgb(FC.D.cap, ink);
-    fill_rgb(FC.D.scap, bz_color(BZ_C_SIGNAL));
     fill_rgb(FC.D.datebox, bz_color(BZ_C_SURFACE2));
 }
 
@@ -316,17 +347,62 @@ static void dial_hands(float hours, float minutes)
     line_to(&FC.D.hand[1], DCX - ms * 30, DCY - mc * 30, DCX + ms * 252, DCY + mc * 252);
 }
 
+/* the small boxes along the hand at an angle, redrawn where it was and where it goes */
+static void sec_invalidate(float turns)
+{
+    if (turns < 0) return;
+    lv_area_t o;
+    lv_obj_get_coords(FC.D.sec, &o);
+    float a = turns * TAU, s = sinf(a), c = -cosf(a);
+    for (int i = 0; i < SEC_SEGS; i++) {
+        float r0 = -SEC_TAIL + (float)(SEC_TIP + SEC_TAIL) * i / SEC_SEGS;
+        float r1 = -SEC_TAIL + (float)(SEC_TIP + SEC_TAIL) * (i + 1) / SEC_SEGS;
+        float x0 = DCX + s * r0, y0 = DCY + c * r0, x1 = DCX + s * r1, y1 = DCY + c * r1;
+        lv_area_t ar = { (int32_t)floorf(fminf(x0, x1)) - 4, (int32_t)floorf(fminf(y0, y1)) - 4,
+                         (int32_t)ceilf(fmaxf(x0, x1)) + 4, (int32_t)ceilf(fmaxf(y0, y1)) + 4 };
+        /* the face's coordinates are the screen's (it fills it from 0, 0) */
+        lv_obj_invalidate_area(FC.D.sec, &ar);
+    }
+    /* the cap at the centre */
+    lv_area_t cap = { DCX - 10, DCY - 10, DCX + 10, DCY + 10 };
+    lv_obj_invalidate_area(FC.D.sec, &cap);
+    (void)o;
+}
+
+/* The second hand drawn by the object over the dial, clipped by LVGL to whatever is being redrawn: moving it
+ * restyles and re-lays-out nothing (an object moved or resized every frame walks the layout; measured, it was
+ * most of a frame), and redraws only the few small boxes along the hand. */
+static void sec_draw(lv_event_t *e)
+{
+    if (FC.D.drawn < 0) return;
+    lv_layer_t *layer = lv_event_get_layer(e);
+    float a = FC.D.drawn * TAU, s = sinf(a), c = -cosf(a);
+    lv_draw_line_dsc_t d;
+    lv_draw_line_dsc_init(&d);
+    d.color = FC.D.sec_color;
+    d.width = 3;
+    d.opa = LV_OPA_COVER;
+    d.round_start = d.round_end = 1;
+    d.p1.x = DCX - s * SEC_TAIL;
+    d.p1.y = DCY - c * SEC_TAIL;
+    d.p2.x = DCX + s * SEC_TIP;
+    d.p2.y = DCY + c * SEC_TIP;
+    lv_draw_line(layer, &d);
+    lv_draw_rect_dsc_t r;
+    lv_draw_rect_dsc_init(&r);
+    r.bg_color = FC.D.sec_color;
+    r.bg_opa = LV_OPA_COVER;
+    r.radius = LV_RADIUS_CIRCLE;
+    lv_area_t cap = { DCX - 8, DCY - 8, DCX + 7, DCY + 7 };
+    lv_draw_rect(layer, &r, &cap);
+}
+
 static void dial_second(float turns)
 {
     if (fabsf(turns - FC.D.drawn) < 0.0004f) return;
+    sec_invalidate(FC.D.drawn);
     FC.D.drawn = turns;
-    float a = turns * TAU, s = sinf(a), c = -cosf(a);
-    /* from the tail (60 behind the centre) to the tip (268 out), in pieces whose round ends overlap: a long
-     * diagonal's box is mostly empty, and LVGL redraws whole boxes */
-    for (int i = 0; i < SEC_SEGS; i++) {
-        float r0 = -60 + (268.0f + 60) * i / SEC_SEGS, r1 = -60 + (268.0f + 60) * (i + 1) / SEC_SEGS;
-        line_to(&FC.D.sec[i], DCX + s * r0, DCY + c * r0, DCX + s * r1, DCY + c * r1);
-    }
+    sec_invalidate(turns);
 }
 
 static void dial_minute(const struct tm *tm)
@@ -339,8 +415,7 @@ static void dial_minute(const struct tm *tm)
     ui_text(FC.D.date, "%d", clock_set(tm) ? tm->tm_mday : 0);
     dial_hands((float)(tm->tm_hour % 12) + tm->tm_min / 60.0f, (float)tm->tm_min + tm->tm_sec / 60.0f);
     bool secs = hm_cfg()->dial_secs;
-    for (int i = 0; i < SEC_SEGS; i++) hm_show(FC.D.sec[i].o, secs);
-    hm_show(FC.D.scap, secs);
+    hm_show(FC.D.sec, secs);
 }
 
 /* every frame while the dial shows: the second hand steps into each second on the tick spring (a quartz
@@ -361,7 +436,9 @@ static void dial_frame(void)
         float to = (float)(now % 60);
         if (to < v - 30) v -= 60; /* past the top: carry on round, not back */
         bz_motion_set(&FC.D.secm, v, FC.D.secm.velocity);
-        bz_motion_to(&FC.D.secm, to, BZ_TICK);
+        /* a quick tick that overshoots a hair and settles in ~0.2 s: a quartz movement's step */
+        static const bz_spring_t QUARTZ = { 1600.0f, 52.0f, 1.0f };
+        bz_motion_to(&FC.D.secm, to, QUARTZ);
     }
     bool moving = bz_motion_tick(&FC.D.secm);
     float t = FC.D.secm.value / 60.0f;
@@ -608,14 +685,16 @@ static void moon_paint(void *arg)
             /* and a finer grain of highlands and small seas over it */
             float fine = hpx_noise2(sx * 7.3f, sy * 7.3f, 0x3003) - 0.5f;
             float alb = 0.87f - 0.26f * maria * 0.7f - 0.07f * fine;
-            float dark = mixf(0.04f + alb * 0.03f, 0.70f, tone);
-            float bright = mixf(alb, 1.0f - (0.87f - alb) * 0.5f, tone);
+            float dark = mixf(0.04f + alb * 0.03f, 0.64f, tone);
+            float bright = mixf(alb, 1.0f - (0.87f - alb) * 0.6f, tone);
             float v = mixf(dark, bright, lit);
             /* a trace of warmth in the lit part, of blue in the earthshine */
             uint32_t col = rgbf(v * (1.0f + 0.02f * lit), v, v * (1.0f - 0.03f * lit + 0.04f * (1 - lit)));
             hpx_put(&c, x, y, col, cov >= 1 ? 255 : (int)(cov * 255));
         }
     }
+    /* on a light page a pale moon needs its edge drawn, as Bezel's light moon has */
+    if (tone > 0.5f) hpx_ring(&c, cx, cy, R - 0.5f, 1.4f, 0, 0x15181B, 56);
     (void)g;
 }
 
@@ -748,7 +827,10 @@ static void dots_minute(const struct tm *tm, bool force)
                 if (FONT5[dig[i]][r] >> (4 - k) & 1) lit[2 + r][COL[i] + k] = 1;
     if (set) lit[4][13] = lit[6][13] = 1;
     /* 1 lit, 2 its halo (a neighbour of a lit dot), 0 off: only the dots whose state changed are touched */
-    uint32_t ink = bz_color(BZ_C_INK), halo = bz_color(BZ_C_ICE);
+    /* the halo in the accent: its fill on a dark page, its deep on-colour, faint, on a light one (the light fill
+     * is a pale container that vanishes on a pale page) */
+    bool dark = bz_ui_dark();
+    uint32_t ink = bz_color(BZ_C_INK), halo = bz_color(dark ? BZ_C_ICE : BZ_C_ON_ICE);
     for (int r = 0; r < DT_R; r++)
         for (int k = 0; k < DT_C; k++) {
             int st = lit[r][k];
@@ -769,7 +851,7 @@ static void dots_minute(const struct tm *tm, bool force)
             lv_obj_set_size(o, d, d);
             lv_obj_set_pos(o, DT_X + k * DT_CELL + (DT_CELL - d) / 2, DT_Y + r * DT_CELL + (DT_CELL - d) / 2);
             fill_rgb(o, st == 1 ? ink : halo);
-            lv_obj_set_style_bg_opa(o, st == 1 ? LV_OPA_COVER : (lv_opa_t)150, 0);
+            lv_obj_set_style_bg_opa(o, st == 1 ? LV_OPA_COVER : (lv_opa_t)(dark ? 150 : 70), 0);
             hm_show(o, true);
         }
     char d[48], w[48];
