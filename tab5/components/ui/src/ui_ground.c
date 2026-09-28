@@ -161,9 +161,9 @@ static void bake_lines(int w, int h, uint8_t *out)
     }
 }
 
-static lv_obj_t *layer(void)
+static lv_obj_t *layer(lv_obj_t *parent)
 {
-    lv_obj_t *o = lv_image_create(bz_ui_content());
+    lv_obj_t *o = lv_image_create(parent);
     lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(o, LV_OBJ_FLAG_IGNORE_LAYOUT);
@@ -193,60 +193,96 @@ static void dsc_init(lv_image_dsc_t *d, lv_color_format_t cf, int w, int h, int 
     lv_image_cache_drop(d);
 }
 
+/* Show what is baked on one pair of layers (the pages' own, or a mirror on the lock screen). */
+static void show_on(lv_obj_t *strip, lv_obj_t *lines)
+{
+    if (G.shown <= UI_GROUND_PLAIN || !G.strip_px) {
+        lv_obj_add_flag(strip, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(lines, LV_OBJ_FLAG_HIDDEN);
+        lv_image_set_src(strip, NULL);
+        lv_image_set_src(lines, NULL);
+        return;
+    }
+    lv_image_set_src(strip, &G.strip_dsc);
+    lv_obj_set_pos(strip, 0, 0);
+    lv_obj_set_size(strip, W, (int32_t)G.strip_dsc.header.h);
+    lv_obj_remove_flag(strip, LV_OBJ_FLAG_HIDDEN);
+    if (G.shown == UI_GROUND_CONTOUR && G.lines_px) {
+        lv_image_set_src(lines, &G.lines_dsc);
+        lv_obj_set_style_image_recolor(lines, bz_lv_rgb(glow_colour()), 0);
+        lv_obj_set_style_image_recolor_opa(lines, LV_OPA_COVER, 0);
+        lv_obj_set_pos(lines, 0, 0);
+        lv_obj_set_size(lines, W, (int32_t)G.lines_dsc.header.h);
+        lv_obj_remove_flag(lines, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(lines, LV_OBJ_FLAG_HIDDEN);
+        lv_image_set_src(lines, NULL);
+    }
+}
+
+#define MAX_MIRRORS 3
+static struct { lv_obj_t *strip, *lines; } g_mirror[MAX_MIRRORS];
+static int g_nmirror;
+
+static void show_all(void)
+{
+    show_on(G.strip, G.lines);
+    for (int i = 0; i < g_nmirror; i++) show_on(g_mirror[i].strip, g_mirror[i].lines);
+}
+
 static void apply(void)
 {
     int ground = ui_look()->ground;
     if (!G.strip) {
-        G.strip = layer();
-        G.lines = layer();
+        G.strip = layer(bz_ui_content());
+        G.lines = layer(bz_ui_content());
         /* behind the pages, the lines over the light */
         lv_obj_move_background(G.lines);
         lv_obj_move_background(G.strip);
     }
     if (ground == UI_GROUND_PLAIN) {
-        lv_obj_add_flag(G.strip, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(G.lines, LV_OBJ_FLAG_HIDDEN);
-        lv_image_set_src(G.strip, NULL);
-        lv_image_set_src(G.lines, NULL);
+        G.shown = UI_GROUND_PLAIN;
+        show_all(); /* nothing points at the pictures before they go */
         buf(&G.strip_px, &G.strip_bytes, 0);
         buf(&G.lines_px, &G.lines_bytes, 0);
-        G.shown = UI_GROUND_PLAIN;
         return;
     }
     /* the light: as far down as it reaches (the whole screen for grain), a strip tiled across */
     int sw = ground == UI_GROUND_GRAIN ? GRAIN_W : STRIP_W;
     int sh = ground == UI_GROUND_GRAIN ? H : ground == UI_GROUND_AURORA ? H * 2 / 3 : H * 5 / 8;
+    G.shown = UI_GROUND_PLAIN;
+    show_all(); /* the buffers may move: nothing shows them meanwhile */
     if (!buf(&G.strip_px, &G.strip_bytes, (size_t)sw * sh * 2)) {
         ui_look_edit()->ground = UI_GROUND_PLAIN;
-        apply();
         return;
     }
     bake_strip(ground, sw, sh, (uint16_t *)G.strip_px);
     dsc_init(&G.strip_dsc, LV_COLOR_FORMAT_RGB565, sw, sh, 2, G.strip_px);
-    lv_image_set_src(G.strip, &G.strip_dsc);
-    lv_obj_set_pos(G.strip, 0, 0);
-    lv_obj_set_size(G.strip, W, sh);
-    lv_obj_remove_flag(G.strip, LV_OBJ_FLAG_HIDDEN);
-
     if (ground == UI_GROUND_CONTOUR) {
         /* a quarter of the frame wide, so the slide lands on a whole number of tiles */
         int lw = W / 4, lh = H * 9 / 16;
         if (buf(&G.lines_px, &G.lines_bytes, (size_t)lw * lh)) {
             bake_lines(lw, lh, G.lines_px);
             dsc_init(&G.lines_dsc, LV_COLOR_FORMAT_A8, lw, lh, 1, G.lines_px);
-            lv_image_set_src(G.lines, &G.lines_dsc);
-            lv_obj_set_style_image_recolor(G.lines, bz_lv_rgb(glow_colour()), 0);
-            lv_obj_set_style_image_recolor_opa(G.lines, LV_OPA_COVER, 0);
-            lv_obj_set_pos(G.lines, 0, 0);
-            lv_obj_set_size(G.lines, W, lh);
-            lv_obj_remove_flag(G.lines, LV_OBJ_FLAG_HIDDEN);
         }
     } else {
-        lv_obj_add_flag(G.lines, LV_OBJ_FLAG_HIDDEN);
-        lv_image_set_src(G.lines, NULL);
         buf(&G.lines_px, &G.lines_bytes, 0);
     }
     G.shown = ground;
+    show_all();
+}
+
+lv_obj_t *ui_ground_layer(lv_obj_t *parent)
+{
+    if (g_nmirror >= MAX_MIRRORS) return NULL;
+    lv_obj_t *strip = layer(parent), *lines = layer(parent);
+    lv_obj_move_background(lines);
+    lv_obj_move_background(strip);
+    g_mirror[g_nmirror].strip = strip;
+    g_mirror[g_nmirror].lines = lines;
+    g_nmirror++;
+    if (G.strip) show_on(strip, lines);
+    return strip;
 }
 
 static void theme_changed(void)

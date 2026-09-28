@@ -150,6 +150,15 @@ static void vs_top(vs_t *s)
     lv_obj_set_y(s->content, 0);
 }
 
+/* A time of day as the owner reads the clock (settings > look: 24-hour or not). */
+static void hm_text(lv_obj_t *l, int h, int m)
+{
+    struct tm tm = { .tm_hour = h, .tm_min = m };
+    char b[16];
+    ui_fmt_hm(b, sizeof b, &tm);
+    ui_text(l, "%s", b);
+}
+
 /* ================================================================== clock */
 
 #define NALARM 5
@@ -342,7 +351,7 @@ static void cl_show_alarms(void)
         }
         lv_obj_remove_flag(CL.rows[i], LV_OBJ_FLAG_HIDDEN);
         char b[32];
-        ui_text(CL.row_time[i], "%02d:%02d", CL.al[i].hhmm / 100, CL.al[i].hhmm % 100);
+        hm_text(CL.row_time[i], CL.al[i].hhmm / 100, CL.al[i].hhmm % 100);
         bz_set_color(CL.row_time[i], CL.al[i].on ? BZ_C_INK : BZ_C_DIM);
         ui_text(CL.row_days[i], "%s", days_text(CL.al[i].days, b, sizeof b));
         ui_chip_set(CL.row_sw[i], CL.al[i].on);
@@ -394,7 +403,7 @@ static void cl_world(time_t t)
         else if (a % 60) snprintf(off, sizeof off, "%c%d:%02d h", diff < 0 ? '-' : '+', a / 60, a % 60);
         else snprintf(off, sizeof off, "%c%d h", diff < 0 ? '-' : '+', a / 60);
         ui_text(CL.wc_city[i], "%s", ZONE[CL.zone[i]].city);
-        ui_text(CL.wc_time[i], "%02d:%02d", z->tm_hour, z->tm_min);
+        hm_text(CL.wc_time[i], z->tm_hour, z->tm_min);
         ui_text(CL.wc_note[i], "%s · %s", dd > 0 ? "tomorrow" : dd < 0 ? "yesterday" : "today", off);
     }
 }
@@ -412,7 +421,7 @@ static void cl_show_time(bool force)
         ui_text(CL.date, "the clock isn't set: join Wi-Fi, or set it in settings");
         return;
     }
-    ui_text(CL.time, "%02d:%02d", tm.tm_hour, tm.tm_min);
+    hm_text(CL.time, tm.tm_hour, tm.tm_min);
     ui_text(CL.secs, "%02d", tm.tm_sec);
     char d[48];
     strftime(d, sizeof d, "%A, %B %e", &tm);
@@ -653,7 +662,7 @@ static void clock_refresh(void)
     if (ring != CL.ring_shown) {
         CL.ring_shown = ring;
         if (ring) {
-            ui_text(CL.ring_time, "%02d:%02d", CL.ring_hhmm / 100, CL.ring_hhmm % 100);
+            hm_text(CL.ring_time, CL.ring_hhmm / 100, CL.ring_hhmm % 100);
             lv_obj_remove_flag(CL.ring_box, LV_OBJ_FLAG_HIDDEN);
             lv_obj_move_foreground(CL.ring_box);
         } else {
@@ -885,7 +894,7 @@ static void cal_show_day(void)
         bz_tile_set_fill(t, BZ_C_SURFACE2);
         lv_obj_set_style_pad_all(t, 16, 0);
         lv_obj_t *tl = bz_label(t, "", BZ_F_NAME, BZ_C_INK);
-        ui_text(tl, "%02d:%02d", CAL.ev[i].hhmm / 100, CAL.ev[i].hhmm % 100);
+        hm_text(tl, CAL.ev[i].hhmm / 100, CAL.ev[i].hhmm % 100);
         lv_obj_t *tx = bz_label(t, "", BZ_F_BODY, BZ_C_INK);
         lv_label_set_text(tx, CAL.ev[i].text);
         lv_label_set_long_mode(tx, LV_LABEL_LONG_WRAP);
@@ -1120,7 +1129,7 @@ static OS_BSS struct {
     char *got;               /* the reader's result, until the refresh takes it */
     size_t got_len;
     bool got_trunc;
-    lv_obj_t *list, *title, *meta;
+    lv_obj_t *list, *title, *meta, *hint;
     int list_w, text_w;
     vs_t vs;
 } DC;
@@ -1293,6 +1302,7 @@ static void doc_show_text(void)
     lv_obj_clean(DC.vs.content); /* the labels point into the old text: gone before it is */
     free(DC.text);
     DC.text = DC.got;
+    if (DC.hint) lv_obj_add_flag(DC.hint, LV_OBJ_FLAG_HIDDEN);
     DC.len = DC.got_len;
     DC.trunc = DC.got_trunc;
     DC.got = NULL;
@@ -1363,6 +1373,20 @@ static void docs_build(lv_obj_t *b)
     lv_obj_set_pos(box, 0, 66);
     DC.text_w = IN(rw);
     vs_init(&DC.vs, box, DC.text_w, APP_H - 2 * BZ_PAD_TILE - 66, 0);
+    /* nothing open: the reader says so in its middle, not with a blank page under a title */
+    DC.hint = bz_col(t, 12);
+    lv_obj_set_flex_align(DC.hint, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_size(DC.hint, IN(rw), APP_H - 2 * BZ_PAD_TILE - 80);
+    lv_obj_set_pos(DC.hint, 0, 40);
+    lv_obj_t *disc = bz_box(DC.hint);
+    lv_obj_set_size(disc, 96, 96);
+    lv_obj_add_style(disc, bz_style_fill(BZ_C_SURFACE2), 0);
+    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+    lv_obj_center(bz_icon(disc, BZ_I_ARTICLE, 40, BZ_C_DIM));
+    lv_obj_t *hl = bz_label(DC.hint, "Markdown and text from CATOS/DOCS on the card, and what the assistant writes there.",
+                            BZ_F_BODY_S, BZ_C_DIM);
+    lv_obj_set_width(hl, IN(rw) > 520 ? 520 : IN(rw));
+    lv_obj_set_style_text_align(hl, LV_TEXT_ALIGN_CENTER, 0);
 }
 
 static void docs_open(void) { doc_list_start(); }
@@ -1706,13 +1730,9 @@ static void ph_build_grid(void)
         lv_obj_align(cap, LV_ALIGN_BOTTOM_LEFT, 10, -8);
         bz_on_tap(t, ph_view, (void *)(intptr_t)i);
     }
-    if (!PH.n) {
-        lv_obj_t *l = bz_label(PH.vs.content,
-                               "No JPEGs yet. Put pictures in CATOS/PHOTOS on the card, or take snapshots in the lens app.",
-                               BZ_F_BODY, BZ_C_DIM);
-        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-        lv_obj_set_width(l, W - 2 * PAD);
-    }
+    if (!PH.n)
+        ui_empty_icon(PH.vs.content, W - 2 * PAD, BZ_I_PHOTO_LIBRARY, "no photos yet",
+                      "Put JPEGs in CATOS/PHOTOS on the card, or take snapshots in the lens app.");
     /* room to scroll the last row clear of the bottom edge */
     lv_obj_t *sp = bz_box(PH.vs.content);
     lv_obj_set_height(sp, 20);

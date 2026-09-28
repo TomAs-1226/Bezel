@@ -73,6 +73,12 @@ static void pf_show(void)
         lv_obj_set_flex_grow(d, 1);
         lv_label_set_long_mode(d, LV_LABEL_LONG_WRAP);
     }
+    /* no robot, one row: the link's fail. Say what else is checked once it answers, rather than a column of
+     * empty space under one line */
+    if (!R->connected && PF.pf.n <= 1)
+        ui_empty_row(PF.list, W - 2 * PAD - 420 - BZ_GAP, BZ_I_CHECKLIST, "the rest waits for the robot",
+                     "Program, battery, brownout, can, loop, motors, cameras, gyro, pose and auto, then the robot's "
+                     "own preflight and system check: run again once it answers.");
     bool go = PF.pf.fails == 0;
     bz_set_font(PF.verdict, BZ_F_DISPLAY);
     ui_text(PF.verdict, "%s", go ? "go" : "no-go");

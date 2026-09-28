@@ -30,7 +30,7 @@ static lv_obj_t *tile_label(lv_obj_t *tile, const char *text, lv_obj_t **right)
 /* An empty state that looks meant: a glyph in a soft disc, the title, and the explanation in the body face
  * (it used to be the caption face, tiny under a title and a screen of nothing). Sized by its content, never
  * shorter than a comfortable block, centred down its height. */
-lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text)
+lv_obj_t *ui_empty_row(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text)
 {
     lv_obj_t *t = bz_tile(parent, w, LV_SIZE_CONTENT);
     lv_obj_set_style_min_height(t, 180, 0);
@@ -57,6 +57,38 @@ lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *t
         lv_obj_t *l = bz_label(col, text, BZ_F_BODY_S, BZ_C_DIM);
         lv_obj_set_width(l, inner);
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+    }
+    return t;
+}
+
+/* Across a whole app it is the app's page: the tile fills the body and the state stands in its middle, a larger
+ * disc over a centred title and a measure of words -- not a strip at the top of an empty screen. Narrower, it is
+ * a row, the disc beside the words. */
+lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text)
+{
+    if (w < W - 2 * PAD - 20) return ui_empty_row(parent, w, icon, title, text);
+    lv_obj_t *t = bz_tile(parent, w, LV_SIZE_CONTENT);
+    lv_obj_set_style_min_height(t, H - 104 - PAD - 8, 0); /* an app's body, from under its head to its foot */
+    lv_obj_set_style_pad_all(t, 40, 0);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(t, 14, 0);
+    if (icon) {
+        lv_obj_t *disc = bz_box(t);
+        lv_obj_set_size(disc, 104, 104);
+        lv_obj_add_style(disc, bz_style_fill(BZ_C_SURFACE2), 0);
+        lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_margin_bottom(disc, 8, 0);
+        lv_obj_center(bz_icon(disc, icon, 40, BZ_C_DIM));
+    }
+    int tw = w - 80 > 640 ? 640 : w - 80;
+    lv_obj_t *h = bz_label(t, title, BZ_F_NAME, BZ_C_INK);
+    lv_obj_set_style_text_align(h, LV_TEXT_ALIGN_CENTER, 0);
+    if (text && text[0]) {
+        lv_obj_t *l = bz_label(t, text, BZ_F_BODY_S, BZ_C_DIM);
+        lv_obj_set_width(l, tw);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     }
     return t;
 }
@@ -391,7 +423,7 @@ void ui_page_overview(lv_obj_t *page)
     lv_obj_align(P.vis_foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
 
     /* offline: one card across the row instead of four of dashes */
-    P.offline = ui_empty_icon(page, W - 2 * PAD, BZ_I_LINK_OFF, "the robot isn't here",
+    P.offline = ui_empty_row(page, W - 2 * PAD, BZ_I_LINK_OFF, "the robot isn't here",
                               "On Wi-Fi, join the robot's network. At events Wi-Fi to the robot isn't allowed: an A-to-C "
                               "cable into Systemcore, or a USB-Ethernet adapter into the radio, on the USB-A port.");
     lv_obj_set_height(P.offline, ROW_H);

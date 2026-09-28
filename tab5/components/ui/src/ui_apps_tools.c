@@ -732,13 +732,9 @@ static void lg_scan(void)
         }
         closedir(dp);
     }
-    if (!LG.nfiles) {
-        lv_obj_t *t = bz_tile(LG.files, W - 2 * PAD, 130);
-        bz_label(t, "no logs on the card", BZ_F_NAME, BZ_C_INK);
-        lv_obj_t *l = bz_label(t, "Looked in the root and logs/ for .wpilog, .dslog and .dsevents, and in runs/ for the recorder's .csv.",
-                               BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_align(l, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    }
+    if (!LG.nfiles)
+        ui_empty_icon(LG.files, W - 2 * PAD, BZ_I_RECEIPT_LONG, "no logs on the card",
+                      "Looked in the root and logs/ for .wpilog, .dslog and .dsevents, and in runs/ for the recorder's .csv.");
 }
 
 static void lg_show(void)

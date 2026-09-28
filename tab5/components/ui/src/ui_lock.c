@@ -74,9 +74,10 @@ void ui_notify_age(const ui_note_t *n, char *out, size_t len)
 #define LK_SLOP 12
 
 static struct {
-    lv_obj_t *root, *clock, *date, *status, *hint, *notes[LK_NOTES], *note_icon[LK_NOTES], *note_text[LK_NOTES],
+    lv_obj_t *root, *clock, *date, *hint, *notes[LK_NOTES], *note_icon[LK_NOTES], *note_text[LK_NOTES],
         *note_age[LK_NOTES];
-    bool locked;      /* the lock screen is up (the real thing) */
+    lv_obj_t *batt_icon, *batt, *robot_mark, *robot;
+    bool locked;     /* the lock screen is up (the real thing) */
     bool sheet;       /* a push or a settle under way: the platform shows a picture of it */
     bool dragging;
     int y0;
@@ -95,20 +96,27 @@ static void lock_text(void)
     if (tm.tm_min != LK.last_min) {
         LK.last_min = tm.tm_min;
         char b[48], m[24];
-        strftime(b, sizeof b, "%H:%M", &tm);
+        ui_fmt_hm(b, sizeof b, &tm);
         ui_text(LK.clock, "%s", b);
         strftime(b, sizeof b, "%A", &tm);
         strftime(m, sizeof m, "%B", &tm);
         ui_text(LK.date, "%s, %s %d", b, m, tm.tm_mday); /* "September 5", not "September 05" */
         LK.seen_gen = ~0u; /* the notifications' ages ("now", "4 min") move on with the clock */
     }
+    /* two pills under the date: the tablet's charge, and the robot */
     hal_battery_t bt;
     const cat_robot_t *r = R;
-    char batt[40] = "";
-    if (hal_battery(&bt) && bt.ok)
-        snprintf(batt, sizeof batt, "%d %%%s \xc2\xb7 ", bt.percent, bt.charging ? " \xc2\xb7 charging" : "");
-    if (r->connected) ui_text(LK.status, "%srobot %s \xc2\xb7 %s", batt, cat_mode_name(r), r->address);
-    else ui_text(LK.status, "%slooking for team %d", batt, S.team);
+    if (hal_battery(&bt) && bt.ok) {
+        ui_text(LK.batt, "%d %%%s", bt.percent, bt.charging ? " \xc2\xb7 charging" : "");
+        const char *bi = bt.charging ? BZ_I_BATTERY_CHARGING_FULL : bt.percent > 70 ? BZ_I_BATTERY_FULL
+                         : bt.percent > 40 ? BZ_I_BATTERY_5_BAR : bt.percent > 15 ? BZ_I_BATTERY_3_BAR : BZ_I_BATTERY_ALERT;
+        if (strcmp(lv_label_get_text(LK.batt_icon), bi)) lv_label_set_text(LK.batt_icon, bi);
+    } else {
+        ui_text(LK.batt, "\xe2\x80\x94");
+    }
+    bz_mark_set(LK.robot_mark, !r->connected ? BZ_STALE : r->estop ? BZ_FAULT : r->enabled ? BZ_WARN : BZ_OK);
+    if (r->connected) ui_text(LK.robot, "%s \xc2\xb7 %s", cat_mode_name(r), r->address);
+    else ui_text(LK.robot, "looking for team %d", S.team);
     if (LK.seen_gen == ui_notify_gen()) return;
     LK.seen_gen = ui_notify_gen();
     for (int i = 0; i < LK_NOTES; i++) {
@@ -248,19 +256,35 @@ void ui_lock_init(void)
     lv_obj_remove_flag(LK.root, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(LK.root, LV_OBJ_FLAG_HIDDEN);
 
+    ui_ground_layer(LK.root); /* the owner's ground, as behind the pages */
     LK.clock = bz_label(LK.root, "", BZ_F_CLOCK, BZ_C_INK);
-    lv_obj_align(LK.clock, LV_ALIGN_TOP_MID, 0, 70);
-    LK.date = bz_label(LK.root, "", BZ_F_NAME, BZ_C_DIM);
-    lv_obj_align(LK.date, LV_ALIGN_TOP_MID, 0, 210);
-    LK.status = bz_label_line(LK.root, "", BZ_F_LABEL, BZ_C_DIM, W - 2 * PAD);
-    lv_obj_set_style_text_align(LK.status, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_align(LK.status, LV_ALIGN_TOP_MID, 0, 258);
+    lv_obj_align(LK.clock, LV_ALIGN_TOP_MID, 0, 62);
+    LK.date = bz_label(LK.root, "", BZ_F_NAME, BZ_C_INK);
+    lv_obj_align(LK.date, LV_ALIGN_TOP_MID, 0, 204);
+    /* the charge and the robot, as two pills */
+    lv_obj_t *pr = bz_row(LK.root, 12);
+    lv_obj_align(pr, LV_ALIGN_TOP_MID, 0, 252);
+    lv_obj_t *pills[2];
+    for (int i = 0; i < 2; i++) {
+        lv_obj_t *p = bz_tile(pr, LV_SIZE_CONTENT, 44);
+        lv_obj_set_style_radius(p, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_pad_hor(p, 18, 0);
+        lv_obj_set_style_pad_ver(p, 0, 0);
+        lv_obj_set_flex_flow(p, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(p, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        lv_obj_set_style_pad_column(p, 10, 0);
+        pills[i] = p;
+    }
+    LK.batt_icon = bz_icon(pills[0], BZ_I_BATTERY_FULL, 24, BZ_C_INK);
+    LK.batt = bz_label(pills[0], "", BZ_F_LABEL, BZ_C_INK);
+    LK.robot_mark = bz_mark(pills[1], BZ_STALE, 12);
+    LK.robot = bz_label(pills[1], "", BZ_F_LABEL, BZ_C_INK);
 
     /* the latest notifications, as cards */
     int cw = 640;
     for (int i = 0; i < LK_NOTES; i++) {
         lv_obj_t *c = bz_tile(LK.root, cw, 64);
-        lv_obj_align(c, LV_ALIGN_TOP_MID, 0, 316 + i * 74);
+        lv_obj_align(c, LV_ALIGN_TOP_MID, 0, 326 + i * 74);
         lv_obj_set_style_pad_ver(c, 0, 0);
         lv_obj_set_style_radius(c, 22, 0);
         lv_obj_set_flex_flow(c, LV_FLEX_FLOW_ROW);

@@ -633,6 +633,13 @@ static void pg_end(lv_obj_t *o, int dx, int dy, float vx, float vy, void *u)
 
 /* ------------------------------------------------------------------ dock */
 
+#define PLATTER_OPA (bz_ui_dark() ? 56 : 255)
+/* the tone changed: the platter's strength with it */
+static void dock_theme(void)
+{
+    if (U.platter) lv_obj_set_style_bg_opa(U.platter, PLATTER_OPA, 0);
+}
+
 static float item_cx(int i)
 {
     return (W - DOCK_W) / 2.0f + DOCK_PAD + i * (DOCK_ITEM_W + DOCK_GAP) + DOCK_ITEM_W / 2.0f;
@@ -701,12 +708,14 @@ static void build_dock(void)
     U.dock_glass = bz_glass_attach(U.dock, 0, BZ_R_DOCK);
     bz_glass_set_press_scale(U.dock_glass, BZ_GLASS_DOCK_PRESS_SCALE);
 
-    /* the platter under the current item: 7.5 % ink at rest (Bezel's droplet, landed) */
+    /* the platter under the current item: the accent, as M3's navigation indicator is -- a breath of it on the dark
+     * tone, its full container on the light one (Bezel's droplet, landed) */
     U.platter = lv_obj_create(U.dock);
     lv_obj_remove_style_all(U.platter);
     lv_obj_set_size(U.platter, DOCK_ITEM_W, DOCK_ITEM_H);
-    lv_obj_add_style(U.platter, bz_style_fill(BZ_C_INK), 0);
-    lv_obj_set_style_bg_opa(U.platter, 19, 0);
+    lv_obj_add_style(U.platter, bz_style_fill(BZ_C_ICE), 0);
+    lv_obj_set_style_bg_opa(U.platter, PLATTER_OPA, 0);
+    bz_theme_on_change(dock_theme);
     lv_obj_set_style_radius(U.platter, BZ_R_DOCK_ITEM, 0);
     lv_obj_remove_flag(U.platter, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(U.platter, LV_OBJ_FLAG_IGNORE_LAYOUT);
@@ -767,10 +776,10 @@ static void dock_frame(void)
         float h = DOCK_ITEM_H * (1 + 0.42f * lift) / (1 + st / (1.6f * DOCK_ITEM_W));
         float cy = H - DOCK_BOTTOM - DOCK_H / 2.0f - 2 * lift;
         bz_glass_set_rect(U.droplet_glass, true, U.drop_x.value - w / 2, cy - h / 2, w, h);
-        lv_obj_set_style_bg_opa(U.platter, (lv_opa_t)(19 * (1 - lift)), 0);
+        lv_obj_set_style_bg_opa(U.platter, (lv_opa_t)(PLATTER_OPA * (1 - lift)), 0);
     } else if (bz_glass_strength(U.droplet_glass) > 0.5f && !U.drop_dragging) {
         bz_glass_show(U.droplet_glass, false);
-        if (lv_obj_get_style_bg_opa(U.platter, 0) != 19) lv_obj_set_style_bg_opa(U.platter, 19, 0);
+        if (lv_obj_get_style_bg_opa(U.platter, 0) != PLATTER_OPA) lv_obj_set_style_bg_opa(U.platter, PLATTER_OPA, 0);
     }
 
     /* the dock tucks away while an app is open, and after 4 s idle on a page (panel.js:34,166) */

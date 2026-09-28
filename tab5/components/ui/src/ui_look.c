@@ -14,6 +14,7 @@ static const char *const QUICK_DEFAULT[] = { "preflight", "checklist", "timer", 
 
 static void quick_parse(const char *s)
 {
+    g_look.quick_gen++;
     g_look.nquick = 0;
     while (*s && g_look.nquick < UI_QUICK_MAX) {
         const char *e = strchr(s, ',');
@@ -243,6 +244,7 @@ static void fav_tap(lv_obj_t *o, void *u)
         ui_island_say(BZ_I_STAR, "six at most: take one off first");
         return;
     }
+    l->quick_gen++;
     ui_look_save();
     ui_home_quick_changed();
     fav_show();

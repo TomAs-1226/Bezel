@@ -151,6 +151,7 @@ typedef struct {
     bool dock_labels;  /* kv docklbl: the dock's words under its icons */
     char quick[UI_QUICK_MAX][16]; /* kv quick: the home page's quick-launch row, library labels, in order */
     int nquick;
+    unsigned quick_gen; /* moves whenever the quick-launch apps change */
     int ground;        /* kv ground: UI_GROUND_* */
 } ui_look_t;
 const ui_look_t *ui_look(void);
@@ -174,6 +175,9 @@ void ui_ground_set(int ground);       /* saved, baked, one redraw */
 bool ui_ground_active(void);
 const char *ui_ground_name(int ground);
 void ui_ground_thumb(int ground, uint16_t *buf, int w, int h); /* a chooser's picture of it */
+/* The same ground behind another full-screen surface (the lock screen): layers at the back of `parent`, sharing the
+ * baked pictures, kept in step with every change. At most three. */
+lv_obj_t *ui_ground_layer(lv_obj_t *parent);
 size_t ui_ground_bytes(void);
 
 /* Pages. */
@@ -319,8 +323,10 @@ void ui_chip_set(lv_obj_t *chip, bool on);
 /* An empty state: a tile `w` wide that grows with its words, a title (name face) over a caption, 12 px apart.
  * One look for every "not connected" / "nothing yet" in the robot's pages and apps (ui_pages.c). */
 lv_obj_t *ui_empty(lv_obj_t *parent, int w, const char *title, const char *text);
-/* The same with its own glyph in the disc (NULL: none). */
+/* The same with its own glyph in the disc (NULL: none). Across an app's whole width it fills the body and centres;
+ * ui_empty_row keeps the row (a card among others). */
 lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text);
+lv_obj_t *ui_empty_row(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text);
 /* A vertical scroller: returns the content container; drags coast and rubber-band at the ends. */
 lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h);
 /* Brings a scroller's end into view on the `smooth` spring (a transcript following its newest line).
