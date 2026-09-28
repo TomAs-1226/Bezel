@@ -111,6 +111,7 @@ class State:
         self.log_path = self.home / "log.jsonl"
         self.hooks_log_path = self.home / "hooks.log"
         self.devices_path = self.home / "devices.json"   # the paired tablets (devices.py)
+        self.presence_path = self.home / "presence-id"   # the BLE beacon's four bytes (presence.py)
         self._log_lock = threading.Lock()
         self._token_cache: tuple[float, str] | None = None
 
@@ -146,6 +147,10 @@ class State:
         value = new_token()
         write_atomic(self.token_path, value + "\n")
         self.devices_path.unlink(missing_ok=True)
+        # The beacon id goes with them: a tablet learns it only through an authenticated /link/status, so
+        # leaving it in place would let a forgotten tablet keep watching this PC come and go. "Rotate"
+        # means "every tablet pairs again" over the radio too.
+        self.presence_path.unlink(missing_ok=True)
         try:
             os.chmod(self.token_path, 0o600)
         except OSError:

@@ -537,10 +537,16 @@ function paintStatus() {
     kv("state folder", h("span", { class: "mono" }, o.state_home)));
   const pend = o.pairing.pending;
   const mdnsWord = o.mdns.state === "advertising" ? "advertising _catalyst-link._tcp" : `off${o.mdns.why ? `: ${o.mdns.why}` : ""}`;
+  const presenceWord = (p) => (p.available ? `${p.id} (${p.state})` : (p.reason || "off"));
   fill($("stFeatures"),
     kv("pairing", o.pairing.enabled ? (pend ? `${pend.device} is pairing now` : "on") : "off", o.pairing.enabled ? (pend ? "warn" : "ok") : ""),
     kv("findable", mdnsWord, o.mdns.state === "advertising" ? "ok" : o.mdns.state === "failed" ? "bad" : ""),
     kv("media remote", o.media.available ? "on" : (o.media.reason || "off"), o.media.available ? "ok" : ""),
+    // The beacon id is shown because it is what the tablet's "ble" dev-console line has to match; it goes
+    // out over the air in every advertisement, so it is not a secret. "aborted" is the state worth
+    // noticing: Windows took the call and then dropped the advertisement, usually a radio switched off.
+    kv("presence beacon", presenceWord(o.presence || {}),
+       o.presence?.available ? (o.presence.state === "started" ? "ok" : "warn") : ""),
     kv("claude", o.claude.via ? `${o.claude.via}${o.claude.available ? "" : " (not ready)"}` : "off", o.claude.available ? "ok" : o.claude.via ? "warn" : ""),
     kv("inbox", `${o.inbox.open} open · ${o.inbox.claimed} claimed`),
     kv("claude code", Object.keys(o.sessions).length ? Object.entries(o.sessions).map(([k, n]) => `${n} ${fmt.sessionState(k).word}`).join(" · ") : "no sessions reported"));

@@ -141,7 +141,7 @@ static void shot(const char *name)
 {
     char path[512];
     snprintf(path, sizeof path, "%s/%s.png", g_out, name);
-    png_write_rgb565(path, sim_frame(), HAL_W, HAL_H);
+    png_write_rgb565(path, sim_frame(), hal_frame_w, hal_frame_h);
     printf("shot %s\n", path);
 }
 
@@ -161,7 +161,7 @@ static void boot_play(const char *dir)
     hal_display(&d);
     hal_boot_t prev;
     hal_boot_prev(&prev);
-    ui_boot_t *b = ui_boot_create(d.out, HAL_W, HAL_H, &prev, prev.fails >= 1);
+    ui_boot_t *b = ui_boot_create(d.out, hal_frame_w, hal_frame_h, &prev, prev.fails >= 1);
     static const struct { double t; float p; const char *s; } STAGES[] = {
         { 0.0, 0.08, "starting the display" }, { 0.35, 0.22, "sensors and speaker" }, { 0.6, 0.3, "microSD" },
         { 0.8, 0.45, "waking the wi-fi co-processor" }, { 1.4, 0.72, "building the interface" },
@@ -190,14 +190,14 @@ static void boot_play(const char *dir)
         while (sh < sizeof SHOTS / sizeof *SHOTS && SHOTS[sh] <= t + 1e-9) {
             char path[512];
             snprintf(path, sizeof path, "%s/boot-%04d.png", dir, (int)lround(SHOTS[sh] * 1000));
-            png_write_rgb565(path, d.out, HAL_W, HAL_H);
+            png_write_rgb565(path, d.out, hal_frame_w, hal_frame_h);
             sh++;
         }
         if (!more) break;
     }
     char path[512];
     snprintf(path, sizeof path, "%s/boot-end.png", dir);
-    png_write_rgb565(path, d.out, HAL_W, HAL_H);
+    png_write_rgb565(path, d.out, hal_frame_w, hal_frame_h);
     printf("boot: %d frames to %.2f s, this machine %.2f ms a frame (worst %.2f)\n", frames, t, total / frames, worst);
     ui_boot_destroy(b);
 }
@@ -240,7 +240,7 @@ int main(int argc, char **argv)
     hal_display_t d;
     hal_display(&d);
     bz_ui_config_t cfg = {
-        .w = HAL_W, .h = HAL_H, .content = d.content, .ink = d.ink, .out = d.out,
+        .w = hal_frame_w, .h = hal_frame_h, .content = d.content, .ink = d.ink, .out = d.out,
         .present = hal_present, .read_touch = hal_touch, .ops = d.ops,
     };
     bz_ui_init(&cfg);
@@ -338,12 +338,12 @@ int main(int argc, char **argv)
                     uint32_t p = dd.ink[i];
                     buf[i] = (p >> 24) ? (uint16_t)((((p >> 19) & 31) << 11) | (((p >> 10) & 63) << 5) | ((p >> 3) & 31)) : 0xF81F;
                 }
-                png_write_rgb565(path, buf, HAL_W, HAL_H);
+                png_write_rgb565(path, buf, hal_frame_w, hal_frame_h);
             } else if (!strcmp(arg, "base")) {
                 void bz_comp_debug_base(bz_comp_t *c, uint16_t *dst);
                 static uint16_t buf[HAL_W * HAL_H];
                 bz_comp_debug_base(bz_ui_comp(), buf);
-                png_write_rgb565(path, buf, HAL_W, HAL_H);
+                png_write_rgb565(path, buf, hal_frame_w, hal_frame_h);
             } else if (!strcmp(arg, "glass")) {
                 void bz_comp_debug_dump(bz_comp_t *c, const char *dir);
                 bz_comp_debug_dump(bz_ui_comp(), g_out);

@@ -59,6 +59,7 @@ python -m pip install .            # the catalyst-link command, with the anthrop
 python -m pip install zeroconf     # optional: lets the tablet find the Link by mDNS
 python -m pip install ".[media]"   # optional, Windows: the media remote for the tablet's home mode
 python -m pip install ".[flash]"   # optional: esptool, for the desktop app's firmware panel
+python -m pip install ".[presence]" # optional, Windows: the BLE beacon that says this PC is awake
 ```
 
 The media remote shows the tablet what this PC is playing (Spotify, YouTube Music, anything in Windows'
@@ -337,6 +338,42 @@ type the address shown at startup. The tablet polls `GET /link/status` every few
 sends while the Link is away waits in its microSD outbox, and the Link recognises a re-sent patch,
 work order or upload (same content within ten minutes, or the same bytes under the same name) and
 answers with the original instead of making a copy.
+
+## How the tablet knows the PC is awake
+
+With `".[presence]"` installed the Link also advertises a four-byte **presence beacon** over Bluetooth
+Low Energy while it runs, and `catalyst-link serve` prints it:
+
+```
+  presence beacon a1b2c3d4 (started), so the tablet knows this PC is awake
+```
+
+**Nothing is carried over the radio.** The beacon says "this Link is running on a PC within range", and
+the tablet then talks to it over HTTP exactly as it does the rest of the time. What it buys is that a
+failed poll and a sleeping PC stop looking the same: the tablet can say which, can start polling the
+moment the PC wakes instead of up to three seconds later, and can stop polling a sleeping PC every three
+seconds. See [docs/link-api.md](../docs/link-api.md#presence--the-pcs-ble-beacon) for the wire format and
+for the rule that keeps a PC out of BLE range but on the LAN from being called absent.
+
+The id is random, lives in `~/.catalyst-link/presence-id`, and `GET /link/status` hands it out only to a
+request whose token was accepted — so which beacon to listen for is behind the same gate as everything
+else, and there is no new secret. `catalyst-link token --rotate` throws it away with the paired tablets.
+It is a stable public identifier, though: anyone in the pit with a BLE scanner can see it and tell that
+this PC is the same PC as yesterday.
+
+Two caveats worth knowing before you install it:
+
+- **This is the advertising side of BLE, which most Python libraries cannot do.** `bleak`, the one
+  everybody reaches for, is a central: it scans and connects and cannot advertise at all. The Link uses
+  WinRT's `BluetoothLEAdvertisementPublisher` through the same projections the media remote already
+  uses, which is why this is Windows-only. `bless` is the library to reach for if a Linux or macOS
+  beacon is ever wanted. Windows can also accept the call and then abort the advertisement — a radio
+  switched off, or an adapter whose driver has no peripheral role — and the state in brackets above is
+  where that shows.
+- **The tablet needs a C6 with Bluetooth in its firmware.** No image shipped so far has one; the
+  ESP32-P4 has no radio of its own. Until then the tablet reports presence as unknown and polls exactly
+  as it always has, which is the point of it being a separate question. `serve --no-presence` turns the
+  beacon off.
 
 ## Tests
 

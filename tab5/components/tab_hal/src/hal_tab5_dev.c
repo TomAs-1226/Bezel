@@ -338,6 +338,19 @@ static void run(char *line)
         hal_c6_hold(line[6] != ' ' || line[7] != '0');
         say(line[6] == ' ' && line[7] == '0' ? "MEM watchdog restarts back on\n" : "MEM watchdog restarts held\n");
         say("OK\n");
+    } else if (!strcmp(line, "ble")) {
+        /* bring-up: the one line that says which of the three things is missing. built false means this
+         * firmware has no NimBLE; built true with ready false means the C6's esp-hosted image has
+         * Bluetooth compiled out (it answers no HCI at all); ready with seen 0 means the radio works and
+         * the PC is not advertising. */
+        hal_ble_t b;
+        hal_ble(&b);
+        char m[160];
+        snprintf(m, sizeof m, "MEM ble built %d ready %d watching %d present %d seen %u rssi %d last %.1fs ago\n",
+                 b.built, b.ready, b.watching, b.present, b.seen, b.rssi,
+                 b.last > 0 ? hal_seconds() - b.last : -1.0);
+        say(m);
+        say("OK\n");
     } else if (!strncmp(line, "c6kick", 6)) {
         extern void esp_hosted_sdio_kick(int n);
         esp_hosted_sdio_kick(line[6] == ' ' ? atoi(line + 7) : 4);

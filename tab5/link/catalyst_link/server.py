@@ -24,6 +24,7 @@ from .files import Files
 from .inbox import Inbox
 from .media import Media
 from .pairing import Pairing, console_notify, toast_notify
+from .presence import Presence
 from .claude_code import ClaudeCodeBackend
 from .proxy import ClaudeProxy, api_error
 from .repo import Patches, repo_root, repo_status
@@ -54,6 +55,9 @@ class Config:
     media: bool = True                # the media remote (media.py): the PC's now-playing for the tablet
     pair: bool = True                 # pairing by a code shown on the PC (pairing.py); off: type the token
     pair_toast: bool = False          # also show the code as a Windows notification (the CLI turns it on)
+    # The BLE presence beacon (presence.py): the tablet hears that this PC is awake and then talks to it
+    # over HTTP as usual. Nothing is carried over the radio, and the Link works the same without it.
+    presence: bool = True
 
 
 def pick_backend(cfg: Config, claude_client: Any | None) -> str:
@@ -65,7 +69,7 @@ def pick_backend(cfg: Config, claude_client: Any | None) -> str:
 class LinkApp:
     def __init__(self, cfg: Config, state: State, claude_client: Any | None = None,
                  agent_factory: Any | None = None, media_platform: Any | None = None,
-                 pair_notify: list[Any] | None = None) -> None:
+                 pair_notify: list[Any] | None = None, presence_beacon: Any | None = None) -> None:
         self.cfg = cfg
         self.state = state.ensure()
         self.repo = repo_root(cfg.repo)
@@ -82,6 +86,8 @@ class LinkApp:
             pair_notify = [console_notify] + ([toast_notify] if cfg.pair_toast else [])
         # each tablet that pairs gets a token of its own (devices.py), so it can be forgotten alone
         self.devices = Devices(self.state.devices_path)
+        # the BLE beacon that says this PC is switched on; unavailable is ordinary and never fatal
+        self.presence = Presence(self.state, enabled=cfg.presence, beacon=presence_beacon)
         self.pairing = Pairing(self.state.token, pair_notify, enabled=cfg.pair, issue=self.devices.add)
         # set by `serve` once it has tried: {"state": "advertising"|"off"|"failed", ...}
         self.mdns: dict[str, Any] = {"state": "off", "why": "not advertised by this process"}
@@ -142,6 +148,7 @@ class LinkApp:
                         sorted(self.by_hand.items(), key=lambda kv: kv[1], reverse=True)],
             "media": {"enabled": self.cfg.media, "available": self.media.available, "reason": self.media.reason},
             "mdns": self.mdns,
+            "presence": {"enabled": self.cfg.presence, **self.presence.report()},
             "claude": {"via": self.claude_backend if proxy is not None else None, "available": self.claude_available},
             "inbox": counts, "sessions": by_state,
         }
@@ -161,7 +168,12 @@ class LinkApp:
         return {**base, **repo_status(self.repo), "claude": self.claude_available,
                 "claude_via": self.claude_backend if self.proxy is not None else None,
                 "inbox_open": counts["open"] + counts["claimed"], "patches": proposed, "files": self.files.count(),
-                "media": self.media.available}
+                "media": self.media.available,
+                # The beacon's four bytes, as hex, only to a request whose token was accepted: that is
+                # what ties presence to the same identity the rest of the API uses, and it is why there
+                # is no new secret here. "" (or absent, on an older Link) means "no beacon to listen
+                # for", and the tablet then never starts its radio.
+                "presence": self.presence.hex}
 
     def run_hook(self, wid: str, path: Path) -> None:
         """--on-work-order: the PC's own command, with the new work order's path, detached."""

@@ -107,6 +107,10 @@ bool assist_ready(char *why, size_t n);
 bool assist_send(const char *text);            /* false while a turn is in flight */
 void assist_stop(void);                        /* ends the turn in flight; pending confirmation → declined */
 void assist_reset(void);                       /* a new conversation */
+/* A question and an answer put straight into the transcript, no model and no network: the dev console's
+ * "assist fake". Scrolling a long answer is the app's most expensive frame, and it cannot be measured
+ * twice the same way when every measurement needs a different answer from a model. */
+void assist_fake(const char *question, const char *answer);
 
 as_phase_t assist_phase(void);
 uint32_t assist_rev(void);                     /* bumps on any change; cheap, no lock */
@@ -118,6 +122,9 @@ const as_entry_t *assist_entry(int i);
 /* The id of entry 0: ids only grow, so a view can tell entries that dropped off the front (a long
  * conversation, a reset) from new ones. Under the lock. */
 int assist_first(void);
+/* The phase for a reader that already holds the lock. assist_phase() takes that same lock and it is
+ * not recursive, so asking it from inside assist_lock() would wait on itself forever. */
+as_phase_t assist_phase_locked(void);
 void assist_unlock(void);
 
 bool assist_confirm_pending(as_confirm_t *out);

@@ -26,7 +26,18 @@ SHA-256:
   companion question each round) that hung the C6 five times before ran with no hang at all. How it was found:
   the dev console's `wdhold 1` keeps a hang for looking at, `c6dbg` reads the slave's SDIO registers (its
   packet-length register frozen, 20 send buffers free), and `c6kick N` forces reads (which freed it).
-- **No Bluetooth** (`CONFIG_BT_ENABLED=n`): unused.
+- **No Bluetooth** (`CONFIG_BT_ENABLED=n`): unused — and this is the one thing about the image here that
+  is now out of date on purpose. The tablet has a BLE presence watch (`hal_tab5_ble.c`, `link.c`,
+  [docs/link-api.md](../../docs/link-api.md#presence--the-pcs-ble-beacon)) which needs a slave built with
+  `CONFIG_BT_ENABLED=y`. The `network_adapter.bin` and the `sdkconfig.defaults.esp32c6` in this folder are
+  still the Bluetooth-less pair, and the SHA-256 above is that pair's; the change is in the C6 source
+  checkout (`~/dev/Tab5C6Slave`, one line in its own `sdkconfig.defaults.esp32c6`) and has been built but
+  not flashed. Replacing the image here is a deliberate step, not a side effect: it costs the C6's flash
+  a full rewrite, and the BLE controller brings Wi-Fi/BT software coexistence with it
+  (`CONFIG_ESP_COEX_SW_COEXIST_ENABLE` turns itself on), which is exactly the sort of thing that would be
+  blamed on the SDIO link later. What changes when it is done: the slave grows from 866 KB to 1.09 MB
+  (29% of the 1536 KB partition still free), its boot line reads `capabilities: 0xd` rather than `0x1`,
+  and the host prints `Host BT Support: Enabled` instead of `hci_stub_drv: Host BT Support: Disabled`.
 - **SDIO default speed** (`CONFIG_ESP_SDIO_DEFAULT_SPEED=y`) and the host at 20 MHz: 40 MHz failed sooner.
 - **Task watchdog panics** (`CONFIG_ESP_TASK_WDT_PANIC=y`): a stuck C6 task resets it.
 - Two source patches for ESP-IDF 5.5, in the slave's `main/`: `CMakeLists.txt` defines

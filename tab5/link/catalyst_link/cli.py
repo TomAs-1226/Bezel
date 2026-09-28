@@ -42,7 +42,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     cfg = Config(repo=Path(args.repo).expanduser(), port=args.port, bind=args.bind, check=args.check,
                  check_timeout=args.check_timeout, on_work_order=args.on_work_order,
                  claude=args.claude, claude_model=args.claude_model, claude_cli=args.claude_cli,
-                 media=not args.no_media, pair=not args.no_pair, pair_toast=not args.no_pair_toast)
+                 media=not args.no_media, pair=not args.no_pair, pair_toast=not args.no_pair_toast,
+                 presence=not args.no_presence)
     if args.name:
         cfg.name = args.name
     state = _state()
@@ -75,6 +76,16 @@ def cmd_serve(args: argparse.Namespace) -> int:
     print(f"  claude   {_claude_line(app)}")
     media_line = "on (the PC's now-playing, for the tablet's home mode)" if app.media.available else app.media.reason
     print(f"  media    {media_line}")
+    # The beacon id is printed on purpose: it goes out over the air in every advertisement, so it is not
+    # a secret, and reading it here is how the tablet's "ble" dev-console line gets checked against this
+    # PC. The publisher's state is worth seeing too — Windows can accept the call and then abort the
+    # advertisement (radio off, an adapter with no peripheral role), and this is where that shows.
+    pres = app.presence.report()
+    if pres["available"]:
+        presence_line = f"beacon {pres['id']} ({pres['state']}), so the tablet knows this PC is awake"
+    else:
+        presence_line = pres["reason"]
+    print(f"  presence {presence_line}")
     print(f"  check    {cfg.check or 'off'}" + (f"  (timeout {cfg.check_timeout:g} s)" if cfg.check else ""))
     print(f"  on-work-order  {cfg.on_work_order or 'off'}")
     print(f"  state    {state.home}")
@@ -97,6 +108,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         pass
     finally:
         server.server_close()
+        app.presence.stop()   # leaving an advertisement running after the Link exits would be a lie
         if stop_mdns:
             stop_mdns()
     return 0
@@ -329,6 +341,8 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--claude-model", help="claude-code: the model (default: Claude Code's own default)")
     s.add_argument("--claude-cli", metavar="PATH", help="claude-code: the Claude Code CLI to run (default: found)")
     s.add_argument("--no-mdns", action="store_true", help="don't advertise over mDNS")
+    s.add_argument("--no-presence", action="store_true",
+                   help="don't advertise the BLE presence beacon (the tablet then polls as it always has)")
     s.add_argument("--no-media", action="store_true",
                    help="no media remote (the tablet's home mode then can't see or control what the PC plays)")
     s.add_argument("--no-pair", action="store_true",

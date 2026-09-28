@@ -148,6 +148,11 @@ class LinkCase(unittest.TestCase):
     claude: str = "api"
     agent_factory: Any = None
     media_platform: Any = None  # a fake media.Platform; None: whatever this PC has
+    # Off by default, and deliberately: with the WinRT package installed, `presence=True` would put a real
+    # BLE advertisement on the air for the length of every test in this file. test_presence.py turns it on
+    # with a fake beacon.
+    presence: bool = False
+    presence_beacon: Any = None
     pair_notify: Any = None     # pairing notifiers (list); None: a silent one, so tests print nothing
     pair: bool = True
 
@@ -158,9 +163,9 @@ class LinkCase(unittest.TestCase):
         self.token = self.state.token()
         cfg = Config(repo=self.repo, port=0, bind="127.0.0.1", check=self.check,
                      check_timeout=self.check_timeout, on_work_order=self.on_work_order, name="test-pc",
-                     claude=self.claude, pair=self.pair)
+                     claude=self.claude, pair=self.pair, presence=self.presence)
         self.app = LinkApp(cfg, self.state, claude_client=self.claude_client, agent_factory=self.agent_factory,
-                           media_platform=self.media_platform,
+                           media_platform=self.media_platform, presence_beacon=self.presence_beacon,
                            pair_notify=self.pair_notify if self.pair_notify is not None else [])
         self.server = make_server(self.app, quiet=True)
         self.port = self.server.server_address[1]

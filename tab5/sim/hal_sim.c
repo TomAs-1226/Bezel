@@ -37,6 +37,13 @@ double hal_seconds(void)
     return ts.tv_sec + ts.tv_nsec * 1e-9 - g_t0;
 }
 
+/* The frame the interface is laid out in: the tablet's landscape one, or phone mode's portrait. The
+ * simulator has no panel to turn a picture onto, so the frame is simply the buffers' shape. */
+int hal_frame_w = HAL_W, hal_frame_h = HAL_H;
+static bool g_phone;
+bool hal_phone(void) { return g_phone; }
+void hal_phone_next(bool on) { hal_kv_set("phone", on ? "1" : "0"); }
+
 bool hal_init(void)
 {
     g_t0 = 0;
@@ -48,6 +55,10 @@ bool hal_init(void)
     g_fb[0] = calloc(HAL_W * HAL_H, 2);
     g_fb[1] = calloc(HAL_W * HAL_H, 2);
     mkdir("sim_sd", 0755);
+    char ph[4];
+    g_phone = (hal_kv_get("phone", ph, sizeof ph) && ph[0] == '1') || getenv("SIM_PHONE") != NULL;
+    hal_frame_w = g_phone ? HAL_H : HAL_W;
+    hal_frame_h = g_phone ? HAL_W : HAL_H;
     return g_content && g_out && g_ink && g_fb[0] && g_fb[1];
 }
 
@@ -113,7 +124,8 @@ static void put(uint16_t *fb, const bz_present_t *p)
 {
     int w = p->a.x2 - p->a.x1 + 1;
     for (int y = p->a.y1; y <= p->a.y2; y++)
-        memcpy(fb + (size_t)y * HAL_W + p->a.x1, p->src + (size_t)(y - p->a.y1) * p->stride, (size_t)w * 2);
+        memcpy(fb + (size_t)y * hal_frame_w + p->a.x1, p->src + (size_t)(y - p->a.y1) * p->stride,
+               (size_t)w * 2);
 }
 
 void hal_present(const bz_present_t *areas, int n, void *user)

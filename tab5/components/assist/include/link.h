@@ -15,6 +15,17 @@
 extern "C" {
 #endif
 
+/* Whether the PC's BLE beacon can be heard (docs/link-api.md, "Presence"). This is a second opinion on
+ * the PC, never a second way to talk to it: nothing is ever sent or read over BLE, and `reachable`
+ * below still means only "it answered over HTTP". What it adds is the difference between a PC that is
+ * switched off and a PC that is there but whose last packet went missing — the same words on the
+ * screen, and the same three-second poll, were doing for both. */
+typedef enum {
+    LINK_PRESENCE_UNKNOWN, /* no radio, no beacon id yet, or it has simply never been heard */
+    LINK_PRESENCE_HERE,    /* in range: the PC is on and Catalyst Link is running on it */
+    LINK_PRESENCE_GONE,    /* it was in range and has stopped: asleep, shut down, or out of range */
+} link_presence_t;
+
 typedef struct {
     bool configured;       /* an address is set (or found by mDNS) */
     bool reachable;        /* answered /link/status in the last 10 s */
@@ -32,6 +43,8 @@ typedef struct {
      * subscription through Claude Code on the PC; the model is Claude Code's, not the one the tablet
      * asks for). "" when the Link is older or has Claude off. */
     char claude_via[16];
+    link_presence_t presence;
+    int presence_rssi;     /* of the last sighting, dBm; 0 when there has been none */
 } link_status_t;
 
 typedef struct {

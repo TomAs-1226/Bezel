@@ -99,6 +99,51 @@ subscription; `claude` is false while that login is missing), or `null` (`--clau
 `proposed`; `dirty` means tracked files have uncommitted changes (patches start from `HEAD`, not from
 them).
 
+## Presence — the PC's BLE beacon
+
+The authenticated status answer also carries `"presence":"a1b2c3d4"`: four bytes, as hex, that the Link
+advertises over Bluetooth Low Energy while it is running. An older Link, one started with
+`serve --no-presence`, or one on a PC that cannot advertise, sends `""` or leaves the field out.
+
+**It is a doorbell, not a wire.** Nothing is ever sent or read over BLE. The beacon says only "this
+Link is running on a PC within radio range"; the tablet then talks to it over HTTP on the LAN exactly as
+it does the rest of the time — same token, same outbox, same endpoints. There is no second data path and
+no plan for one.
+
+What it buys, given that `reachable` already means *twenty seconds of silence* rather than one failed
+poll:
+
+- **Telling the two silences apart.** A failed poll is evidence about that poll, not about the PC, which
+  is why one lost packet stopped meaning "away". But a PC that is genuinely asleep also looks like
+  silence, and the screen had no way to say which. The beacon does.
+- **Looking now rather than in three seconds.** A PC that wakes answers HTTP about a second later; the
+  tablet's poller sleeps 3 s between looks and a cold one waits out mDNS first. The beacon appearing
+  makes it poll immediately.
+- **Not polling a sleeping PC every three seconds.** While the beacon is *confidently* absent the
+  interval drops to 15 s. Confidently: only once the beacon has been heard at least once on that tablet,
+  which is the proof that the radio really does reach between those two machines — BLE covers a room and
+  a LAN covers a building, so a perfectly reachable PC may simply never have been in range. Even then it
+  only slows polling; presence never decides whether the link is up.
+
+The advertisement is manufacturer-specific data under company id `0xFFFF` (which the Bluetooth SIG
+reserves for internal and interoperability testing, the right choice for a project with no id of its
+own), then `"CL"`, a format byte `0x01`, and the four id bytes. The tablet matches that whole prefix, so
+a stranger's `0xFFFF` beacon is not mistaken for a Link.
+
+The id is random, generated on first use and kept in `~/.catalyst-link/presence-id`. It is **not**
+derived from the token, so reading it off the air says nothing about the token; and `/link/status` hands
+it out only to a request whose token was accepted, so learning which beacon to listen for is behind the
+same gate as the rest of the API. `catalyst-link token --rotate` deletes it along with the paired
+tablets, so "rotate" keeps meaning "pair again" over the radio too. It *is* a stable public identifier:
+anyone in the pit with a scanner can see it and tell that this PC is the same PC as yesterday. For a
+mains-powered machine on a table that is a fair trade, but it is a real property, not a hidden one.
+
+On the tablet side this needs a C6 co-processor whose esp-hosted image was built with Bluetooth enabled
+(no image shipped so far was) and a firmware built with NimBLE as its host stack — the ESP32-P4 has no
+radio of its own, so BLE reaches it as HCI frames multiplexed onto the SDIO link that already carries
+Wi-Fi. When any of that is missing the tablet reports `LINK_PRESENCE_UNKNOWN` and behaves exactly as it
+did before presence existed. `ble` in the dev console says which piece is absent.
+
 ## Claude, through the Link
 
 `POST /v1/messages` — one contract, two backends, chosen on the PC (`catalyst-link serve --claude

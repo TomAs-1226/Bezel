@@ -141,3 +141,33 @@ CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y
 CONFIG_SR_WN_WN9_HIESP=y
 CONFIG_SR_MN_CN_NONE=y
 CONFIG_SR_MN_EN_NONE=y
+
+# ---- BLE presence: off, and it must stay off until the C6 has been reflashed ----
+#
+# The five lines below turn on the BLE presence watch (hal_tab5_ble.c, link.c). There is no Bluetooth
+# radio in the ESP32-P4 at all: NimBLE runs here as a host only, and its controller is the C6 at the far
+# end of the SDIO bus, reached as HCI frames multiplexed onto the link that already carries Wi-Fi
+# (esp-hosted's ESP_HCI_IF). That is why the controller is Disabled and NimBLE's own UART transport is
+# off — esp-hosted's VHCI takes its place.
+#
+# The order matters and getting it wrong is not harmless. Every C6 image built so far has Bluetooth
+# compiled out: M5Stack's factory 1.4.1, and this repository's firmware/c6 up to 1.4.7, which set
+# CONFIG_BT_ENABLED=n on purpose. Such a C6 answers no HCI whatsoever, so NimBLE's startup sends an HCI
+# Reset that never comes back and retries it for the life of the boot. The presence layer copes with
+# that by design (hal_ble()'s `ready` stays false and link.c carries on exactly as it does today), but
+# it is an SDIO frame and a log line every few seconds for nothing. So: reflash the C6 with a slave
+# image built with CONFIG_BT_ENABLED=y first, confirm its boot line reads "capabilities: 0xd" and that
+# the host prints "Host BT Support: Enabled", and only then uncomment these.
+#
+# CONFIG_BT_ENABLED=y
+# CONFIG_BT_NIMBLE_ENABLED=y
+# CONFIG_BT_CONTROLLER_DISABLED=y
+# CONFIG_BT_NIMBLE_TRANSPORT_UART=n
+# CONFIG_ESP_HOSTED_ENABLE_BT_NIMBLE=y
+# CONFIG_ESP_HOSTED_NIMBLE_HCI_VHCI=y
+# # Observer is the whole of it: listen, never advertise, never connect. Dropping the other three roles
+# # is what keeps this small — no GATT, no security manager, no connection state.
+# CONFIG_BT_NIMBLE_ROLE_OBSERVER=y
+# CONFIG_BT_NIMBLE_ROLE_BROADCASTER=n
+# CONFIG_BT_NIMBLE_ROLE_PERIPHERAL=n
+# CONFIG_BT_NIMBLE_ROLE_CENTRAL=n

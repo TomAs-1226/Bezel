@@ -79,6 +79,23 @@ int hal_mdns_browse(const char *service, const char *proto, hal_service_t *out, 
     return 1;
 }
 
+/* ---- BLE presence ----
+ * The simulator has no radio, so it answers the way a tablet whose C6 has Bluetooth compiled out does:
+ * no watch, no sightings. That is the path worth having under test anyway, because it is the one every
+ * tablet takes until its C6 is reflashed, and link.c has to behave exactly as it did before. */
+bool hal_ble_watch(const uint8_t *id, size_t n, double hold_s, void (*on_change)(bool present, int rssi))
+{
+    (void)id;
+    (void)n;
+    (void)hold_s;
+    (void)on_change;
+    return false;
+}
+
+void hal_ble_stop(void) {}
+
+void hal_ble(hal_ble_t *out) { memset(out, 0, sizeof *out); }
+
 /* ---- clips: a stand-in file, so the flow (record, list, send to the PC) can be exercised ---- */
 static FILE *g_clip;
 static double g_clip_t0, g_clip_max;

@@ -24,6 +24,51 @@
 #define LIST_MAX 32
 #define UPLOAD_MAX (12u << 20)
 
+/* ---- presence over BLE (docs/link-api.md, "Presence") ----
+ *
+ * BLE is used here for one sentence only: "the PC is switched on and Catalyst Link is running on it".
+ * Nothing is sent over it and nothing is read over it. When the beacon says the PC is there the tablet
+ * talks to it over HTTP on the LAN exactly as it does below — same token, same outbox, same everything.
+ * A second data path would mean two sets of bugs and two sets of half-delivered requests, and the LAN
+ * path is not the part that was hurting.
+ *
+ * What it is actually for. Two things, both small and both real:
+ *
+ *  - Telling the two silences apart. A failed poll means a failed poll; it never meant the PC was off,
+ *    which is why AWAY_S below is twenty seconds of silence rather than one lost packet. But twenty
+ *    seconds is also what a PC that is genuinely asleep costs, and the screen has no way to say which
+ *    it is. The beacon does: absent means off, present means a packet went missing. Presence is
+ *    reported alongside `reachable`, never folded into it, so nothing here can make the link drop
+ *    sooner than it does today — the whole point of the AWAY_S change was to stop that happening.
+ *
+ *  - Looking now instead of in three seconds. A PC that wakes up is answering HTTP about a second
+ *    later, but the poller sleeps POLL_S between looks, and a cold one waits out mDNS on top. The
+ *    beacon appearing sets L.kick, which is the flag that already exists for exactly this.
+ *
+ * And one saving: while the beacon is confidently absent the poll drops to POLL_IDLE_S. Confidently is
+ * the load-bearing word. BLE reaches across a room; a LAN reaches across a building, so a PC that is
+ * perfectly reachable may never have been in radio range at all. So absence only counts once the
+ * beacon has been heard at least once on this tablet — that sighting is the proof that the radio path
+ * between these two machines exists — and even then it only slows polling, never stops it, and never
+ * touches whether the link is up.
+ *
+ * The id is four bytes the Link generates for itself and hands out through /link/status, which means a
+ * tablet learns it only if its token was accepted: the same gate the rest of the API is behind, and no
+ * new secret to manage. It is kept in kv so a cold boot can start listening before the first answer.
+ * It is a stable public identifier, and anyone in the pit with a scanner can see it and follow it
+ * around — acceptable for a mains-powered PC sitting on a table, and worth knowing rather than
+ * pretending otherwise. */
+#define POLL_IDLE_S 15.0
+#define PRESENCE_HOLD_S 12.0  /* advertisers skip intervals and scan windows miss packets: one gap is not absence */
+#define BEACON_ID_BYTES 4
+/* Company id 0xFFFF, which the SIG's Assigned Numbers reserve for internal and interoperability
+ * testing — the right answer for a project that has no company id of its own and should not borrow
+ * someone else's. Then "CL" and a format byte, so a future beacon shape is distinguishable from this
+ * one rather than being silently misread. The tablet matches the whole prefix, so a stranger's 0xFFFF
+ * beacon is not mistaken for a Link. */
+static const uint8_t BEACON_PREFIX[] = { 0xFF, 0xFF, 'C', 'L', 0x01 };
+#define BEACON_LEN (sizeof BEACON_PREFIX + BEACON_ID_BYTES)
+
 /* This tablet only ever pairs with one PC, so the address is baked in rather than found by mDNS or typed
  * by hand every time: the host and port aren't secrets — the Link already broadcasts both in the clear
  * over mDNS (docs/link-api.md, "Discovery and auth") and the port is documented in this repo. Only the
@@ -44,7 +89,12 @@ static struct {
     double lists_read;     /* when something last read the lists: they refresh only while wanted */
     int outbox;
     bool started;
-    volatile bool kick;    /* configuration changed: poll now */
+    volatile bool kick;    /* configuration changed, or the PC's beacon appeared: poll now */
+    /* presence: the beacon the Link advertises, and what has been heard of it */
+    char beacon_hex[16];   /* as /link/status gave it, "a1b2c3d4"; "" until one answer or kv has one */
+    uint8_t beacon[BEACON_LEN];
+    bool watching;         /* hal_ble_watch() took this id: the radio exists and is listening */
+    bool ever_seen;        /* heard at least once on this tablet, so absence is now worth believing */
 } L = { .lock = PTHREAD_MUTEX_INITIALIZER, .lists_read = -1e9 };
 
 static pthread_mutex_t g_outbox = PTHREAD_MUTEX_INITIALIZER; /* one flusher / writer at a time */
@@ -463,6 +513,81 @@ static bool reachable_now(void)
     return ok;
 }
 
+/* ---- presence ---- */
+
+/* The beacon's own state, not the link's: UNKNOWN whenever there is no evidence either way, which is
+ * every tablet whose C6 has Bluetooth compiled out and every PC whose beacon has never been heard. */
+static link_presence_t presence_now(int *rssi)
+{
+    hal_ble_t b;
+    hal_ble(&b);
+    pthread_mutex_lock(&L.lock);
+    bool watching = L.watching, ever = L.ever_seen;
+    pthread_mutex_unlock(&L.lock);
+    if (rssi) *rssi = b.rssi;
+    if (!watching || !b.ready) return LINK_PRESENCE_UNKNOWN;
+    if (b.present) return LINK_PRESENCE_HERE;
+    return ever ? LINK_PRESENCE_GONE : LINK_PRESENCE_UNKNOWN;
+}
+
+/* Runs on the BLE host's task: set the flag the poller already watches and get out. */
+static void presence_changed(bool present, int rssi)
+{
+    (void)rssi;
+    if (present) {
+        pthread_mutex_lock(&L.lock);
+        L.ever_seen = true;
+        pthread_mutex_unlock(&L.lock);
+        /* The PC just came back. Polling now rather than in up to POLL_S is the whole benefit. */
+        L.kick = true;
+    }
+}
+
+static bool unhex(const char *hex, uint8_t *out, size_t n)
+{
+    for (size_t i = 0; i < n; i++) {
+        int hi = -1, lo = -1;
+        for (int k = 0; k < 2; k++) {
+            char c = hex[i * 2 + k];
+            int v = c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10
+                    : c >= 'A' && c <= 'F' ? c - 'A' + 10 : -1;
+            if (v < 0) return false;
+            if (k) lo = v;
+            else hi = v;
+        }
+        out[i] = (uint8_t)(hi << 4 | lo);
+    }
+    return true;
+}
+
+/* A beacon id arrived (from /link/status, or from kv at boot). Takes it, saves it, and asks the radio to
+ * listen for it. Does nothing when it is the id already being watched, so it is safe to call every poll. */
+static void presence_use(const char *hex)
+{
+    if (!hex || !*hex) return;
+    uint8_t id[BEACON_ID_BYTES];
+    if (strlen(hex) != BEACON_ID_BYTES * 2 || !unhex(hex, id, sizeof id)) return;
+    pthread_mutex_lock(&L.lock);
+    bool same = L.watching && !strcmp(L.beacon_hex, hex);
+    if (!same) {
+        snprintf(L.beacon_hex, sizeof L.beacon_hex, "%s", hex);
+        memcpy(L.beacon, BEACON_PREFIX, sizeof BEACON_PREFIX);
+        memcpy(L.beacon + sizeof BEACON_PREFIX, id, sizeof id);
+        L.ever_seen = false; /* a different PC: nothing heard from the old one says anything about this one */
+    }
+    uint8_t want[BEACON_LEN];
+    memcpy(want, L.beacon, sizeof want);
+    pthread_mutex_unlock(&L.lock);
+    if (same) return;
+    /* false is the ordinary case for now: no BLE in this build, or the host stack wouldn't start. Then
+     * presence stays UNKNOWN for good and every path below behaves as it did before any of this. */
+    bool ok = hal_ble_watch(want, sizeof want, PRESENCE_HOLD_S, presence_changed);
+    pthread_mutex_lock(&L.lock);
+    L.watching = ok;
+    pthread_mutex_unlock(&L.lock);
+    if (ok) hal_kv_set("link_ble", hex); /* so a cold boot listens before the first answer arrives */
+}
+
 /* Sends what waits, oldest first; stops at the first request the Link doesn't take for now. */
 static void flush_outbox(void)
 {
@@ -562,7 +687,13 @@ static void poll_status(void)
         L.st.inbox_open = (int)aj_getn(d, "inbox_open", 0);
         L.st.patches = (int)aj_getn(d, "patches", 0);
     }
+    /* The beacon id, on a Link new enough to advertise one; absent from older ones, which is simply a
+     * PC with no presence to report. Copied out and used outside the lock, because hal_ble_watch may
+     * start the whole BLE host stack the first time. */
+    char ble[16] = "";
+    if (L.st.reachable && L.st.auth) copy_str(ble, sizeof ble, d, "presence");
     pthread_mutex_unlock(&L.lock);
+    if (ble[0]) presence_use(ble);
     aj_free(d);
     free(buf);
 }
@@ -616,6 +747,15 @@ static void *poller(void *arg)
 {
     (void)arg;
     double last_mdns = -1e9;
+    /* The last beacon id this tablet was told about. Starting the watch here rather than waiting for the
+     * first successful poll is what makes presence useful at boot: a tablet switched on next to a
+     * sleeping PC knows the PC is asleep, instead of spending twenty seconds finding out. Done on this
+     * thread because it may bring up the BLE host stack, which wants the network already up. */
+    {
+        char hex[16] = "";
+        hal_kv_get("link_ble", hex, sizeof hex);
+        if (hex[0]) presence_use(hex);
+    }
     for (;;) {
         pair_work(); /* first: someone is waiting at the screen for it */
         pthread_mutex_lock(&L.lock);
@@ -657,7 +797,15 @@ static void *poller(void *arg)
             L.outbox = n;
             pthread_mutex_unlock(&L.lock);
         }
-        for (int i = 0; i < (int)(POLL_S * 10) && !L.kick; i++) usleep(100000);
+        /* How long until the next look. The slow interval is only for a PC the radio says is not there:
+         * it has been heard before from this tablet (so the beacon really does reach), it is not
+         * answering, and it has gone quiet — which together mean asleep or shut down, and polling a
+         * sleeping PC every three seconds achieves nothing but airtime. Anything less certain than that
+         * keeps the old interval, and the beacon coming back sets L.kick, so waking up is still noticed
+         * within a second rather than at the end of this sleep. */
+        double wait = POLL_S;
+        if (presence_now(NULL) == LINK_PRESENCE_GONE && !reachable_now()) wait = POLL_IDLE_S;
+        for (int i = 0; i < (int)(wait * 10) && !L.kick; i++) usleep(100000);
         L.kick = false;
     }
     return NULL;
@@ -697,12 +845,23 @@ void link_configure(const char *url, const char *token)
     L.st.claude = false;
     L.st.claude_via[0] = 0;
     L.st.last_ok = 0;
+    /* A different PC (or the same one re-paired): its beacon id is not this one's, and until the new one
+     * answers there is no presence to report. The saved id goes too, so a restart doesn't resurrect it. */
+    bool was = L.watching;
+    L.beacon_hex[0] = 0;
+    L.watching = false;
+    L.ever_seen = false;
     pthread_mutex_unlock(&L.lock);
+    if (was) hal_ble_stop(); /* outside the lock: it talks to the BLE host */
+    hal_kv_set("link_ble", "");
     L.kick = true;
 }
 
 void link_status(link_status_t *out)
 {
+    /* Before the lock: presence_now takes it, and hal_ble takes a lock of its own. */
+    int rssi = 0;
+    link_presence_t pres = presence_now(&rssi);
     pthread_mutex_lock(&L.lock);
     *out = L.st;
     out->configured = L.url[0] != 0;
@@ -710,6 +869,10 @@ void link_status(link_status_t *out)
     out->reachable = L.st.reachable && hal_seconds() - L.st.last_ok < 10;
     if (!out->reachable) out->claude = out->auth = false;
     out->outbox = L.outbox;
+    /* Deliberately after and beside `reachable`, not inside the expression that decides it: presence is
+     * a second opinion for the screen to word things with, and must not be able to take the link down. */
+    out->presence = pres;
+    out->presence_rssi = rssi;
     pthread_mutex_unlock(&L.lock);
 }
 
