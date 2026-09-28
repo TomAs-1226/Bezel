@@ -837,7 +837,8 @@ static bool dev_handler(const char *line)
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) && strncmp(line, "phone", 5) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
-        strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5))
+        strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5) &&
+        strncmp(line, "hm", 2))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -1030,6 +1031,8 @@ static void dev_run(void)
     } else if (!strcmp(s_dev_cmd, "home")) {
         if (ui_home_mode_active()) ui_home_mode_exit();
         else ui_home_mode_enter();
+    } else if (!strncmp(s_dev_cmd, "hm", 2)) {
+        ui_home_mode_dev(s_dev_cmd + 2); /* home mode's own: its pages, faces, night, covers */
     } else if (!strncmp(s_dev_cmd, "phone", 5)) {
         /* "phone", "phone 1", "phone 0": which frame the interface is laid out in, from the cable.
          *

@@ -61,6 +61,8 @@ bool ui_home_settings_wanted(void);
 
 /* The app library's "home mode" tile. */
 void ui_home_mode_tap(lv_obj_t *o, void *u);
+/* The dev console's "hm ...": its pages, faces, night and covers (ui_home_mode.c lists them). UI thread. */
+void ui_home_mode_dev(const char *args);
 
 /* Home mode's own apps. Music (ui_app_music.c): the microSD card's songs, and the PC's player. Smart home
  * (ui_app_smarthome.c): every picked Home Assistant entity by room, with toggles, light levels and set points.

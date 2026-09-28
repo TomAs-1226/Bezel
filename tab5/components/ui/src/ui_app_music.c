@@ -2,8 +2,10 @@
  * PC's player (Spotify, YouTube Music, whatever Windows' media controls see) through Catalyst Link.
  *
  * Left: the card's songs, a tap plays one (then the next, to the end of the list). Right, top: the tablet's
- * own player. Right, bottom: the PC's. The list is rebuilt only when the card's listing changes; the players'
- * labels are set only when their text changes, and their progress once a second. */
+ * own player. Right, bottom: the PC's. Each player shows its song's cover: the PC's own when it has one, else
+ * one generated from the artist and album (the card's songs, from their name; ui_home_art.c). The list is
+ * rebuilt only when the card's listing changes; the players' labels are set only when their text changes,
+ * their progress once a second, a cover once a song. */
 #include "ui_home_priv.h"
 
 #include <stdlib.h>
@@ -14,7 +16,9 @@
 #define LIST_W 520
 #define RX (PAD + LIST_W + BZ_GAP)
 #define RW (W - PAD - RX)
-#define TOP_H 292
+#define TOP_H 260
+#define CART HOME_ART_S          /* a player's cover, in its tile's top right */
+#define CTW (IN(RW) - CART - 24) /* the words beside it */
 #define BOT_H (APP_H - TOP_H - BZ_GAP)
 #define IN(w) ((w) - 2 * BZ_PAD_TILE)
 
@@ -22,6 +26,8 @@ static struct {
     lv_obj_t *list, *list_state, *rows[HOME_TRACKS];
     lv_obj_t *title, *state, *meter, *time, *play;
     lv_obj_t *pc_src, *pc_title, *pc_artist, *pc_time, *pc_meter, *pc_play;
+    lv_obj_t *art[2], *art_img[2];  /* the covers: the tablet's player, the PC's */
+    unsigned art_shown[2];
     char (*names)[64];
     int n, current;
     unsigned list_gen, pl_gen, pc_gen;
@@ -74,6 +80,40 @@ static void set_play_icon(lv_obj_t *b, bool playing, bool *shown)
     bz_icon_set(lv_obj_get_child(b, 0), playing ? BZ_I_PAUSE : BZ_I_PLAY_ARROW, 24, false);
 }
 
+/* a cover's place: a quiet square with a glyph until there is one */
+static void cover(lv_obj_t *tile, int i, int y)
+{
+    lv_obj_t *box = bz_tile(tile, CART, CART);
+    bz_tile_set_fill(box, BZ_C_SURFACE2);
+    lv_obj_set_style_radius(box, 18, 0);
+    lv_obj_set_style_pad_all(box, 0, 0);
+    lv_obj_set_style_clip_corner(box, true, 0);
+    lv_obj_set_pos(box, IN(RW) - CART, y);
+    lv_obj_t *ph = bz_icon(box, BZ_I_GRAPHIC_EQ, 40, BZ_C_DIM);
+    lv_obj_center(ph);
+    lv_obj_t *img = lv_image_create(box);
+    lv_obj_set_pos(img, 0, 0);
+    lv_obj_add_flag(img, LV_OBJ_FLAG_HIDDEN);
+    MU.art[i] = box;
+    MU.art_img[i] = img;
+}
+
+static void cover_show(int i, const hm_art_t *a, bool have)
+{
+    if (!have) {
+        if (MU.art_shown[i]) {
+            MU.art_shown[i] = 0;
+            hm_show(MU.art_img[i], false);
+            hm_show(lv_obj_get_child(MU.art[i], 0), true);
+        }
+        return;
+    }
+    if (hm_art_set(MU.art_img[i], a, &MU.art_shown[i])) {
+        hm_show(MU.art_img[i], true);
+        hm_show(lv_obj_get_child(MU.art[i], 0), false);
+    }
+}
+
 static void music_build(lv_obj_t *b)
 {
     MU.names = calloc(HOME_TRACKS, 64);
@@ -94,16 +134,17 @@ static void music_build(lv_obj_t *b)
     /* the tablet's player */
     lv_obj_t *t = bz_tile(b, RW, TOP_H);
     lv_obj_set_pos(t, RX, APP_Y);
+    cover(t, 0, (TOP_H - 2 * BZ_PAD_TILE - CART) / 2);
     bz_label(t, "playing here", BZ_F_LABEL, BZ_C_DIM);
-    MU.title = bz_label_line(t, "", BZ_F_TITLE, BZ_C_INK, IN(RW));
-    lv_obj_set_pos(MU.title, 0, 28);
-    MU.state = bz_label_line(t, "", BZ_F_BODY_S, BZ_C_DIM, IN(RW));
-    lv_obj_set_pos(MU.state, 0, 78);
-    MU.meter = bz_meter(t, IN(RW) - 130, 6);
+    MU.title = bz_label_line(t, "", BZ_F_TITLE, BZ_C_INK, CTW);
+    lv_obj_set_pos(MU.title, 0, 26);
+    MU.state = bz_label_line(t, "", BZ_F_BODY_S, BZ_C_DIM, CTW);
+    lv_obj_set_pos(MU.state, 0, 80);
+    MU.meter = bz_meter(t, CTW - 130, 6);
     lv_obj_set_pos(MU.meter, 0, 124);
     MU.time = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, 120);
     lv_obj_set_style_text_align(MU.time, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_pos(MU.time, IN(RW) - 120, 116);
+    lv_obj_set_pos(MU.time, CTW - 120, 116);
     lv_obj_t *c = bz_row(t, 10);
     lv_obj_align(c, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     icon_button(c, BZ_I_ARROW_BACK, local_cmd, (void *)(intptr_t)0);
@@ -115,16 +156,19 @@ static void music_build(lv_obj_t *b)
     /* the PC's */
     t = bz_tile(b, RW, BOT_H);
     lv_obj_set_pos(t, RX, APP_Y + TOP_H + BZ_GAP);
-    MU.pc_src = bz_label_line(t, "", BZ_F_LABEL, BZ_C_DIM, IN(RW));
-    MU.pc_title = bz_label_line(t, "", BZ_F_NAME, BZ_C_INK, IN(RW));
+    cover(t, 1, 0);
+    MU.pc_src = bz_label_line(t, "", BZ_F_LABEL, BZ_C_DIM, CTW);
+    MU.pc_title = bz_label_line(t, "", BZ_F_NAME, BZ_C_INK, CTW);
     lv_obj_set_pos(MU.pc_title, 0, 26);
-    MU.pc_artist = bz_label_line(t, "", BZ_F_BODY_S, BZ_C_DIM, IN(RW));
-    lv_obj_set_pos(MU.pc_artist, 0, 60);
-    MU.pc_meter = bz_meter(t, IN(RW) - 130, 6);
-    lv_obj_set_pos(MU.pc_meter, 0, 100);
+    MU.pc_artist = bz_label(t, "", BZ_F_BODY_S, BZ_C_DIM);
+    lv_label_set_long_mode(MU.pc_artist, LV_LABEL_LONG_DOT);
+    lv_obj_set_size(MU.pc_artist, CTW, 2 * lv_font_get_line_height(bz_font(BZ_F_BODY_S)));
+    lv_obj_set_pos(MU.pc_artist, 0, 62);
+    MU.pc_meter = bz_meter(t, CTW - 130, 6);
+    lv_obj_set_pos(MU.pc_meter, 0, 130);
     MU.pc_time = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, 120);
     lv_obj_set_style_text_align(MU.pc_time, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_pos(MU.pc_time, IN(RW) - 120, 92);
+    lv_obj_set_pos(MU.pc_time, CTW - 120, 122);
     c = bz_row(t, 10);
     lv_obj_align(c, LV_ALIGN_BOTTOM_LEFT, 0, 0);
     icon_button(c, BZ_I_ARROW_BACK, pc_cmd, (void *)"previous");
@@ -201,6 +245,10 @@ static void music_refresh(void)
                                 : pl.state == HP_PLAYING ? "playing" : "tap a song");
         set_play_icon(MU.play, pl.state == HP_PLAYING || pl.state == HP_LOADING, &MU.pl_playing);
     }
+    {
+        bool active = pl.state == HP_PLAYING || pl.state == HP_PAUSED || pl.state == HP_LOADING;
+        cover_show(0, active ? hm_art_song(NULL, NULL, pl.title) : NULL, active);
+    }
     if (tick) {
         char a[16], b[16];
         bool active = pl.state == HP_PLAYING || pl.state == HP_PAUSED;
@@ -223,7 +271,8 @@ static void music_refresh(void)
         } else if (pc.have) {
             ui_text(MU.pc_src, "the pc \xc2\xb7 %s", pc.app[0] ? pc.app : "media");
             ui_text(MU.pc_title, "%s", pc.title[0] ? pc.title : "untitled");
-            ui_text(MU.pc_artist, "%s", pc.artist[0] ? pc.artist : pc.album);
+            if (pc.artist[0] && pc.album[0]) ui_text(MU.pc_artist, "%s\n%s", pc.artist, pc.album);
+            else ui_text(MU.pc_artist, "%s", pc.artist[0] ? pc.artist : pc.album);
         } else {
             ui_text(MU.pc_src, "%s", "the pc");
             ui_text(MU.pc_title, "%s", "Nothing playing");
@@ -231,6 +280,7 @@ static void music_refresh(void)
         }
         set_play_icon(MU.pc_play, pc.have && pc.playing, &MU.pc_playing);
     }
+    cover_show(1, hm_cfg()->pc && pc.have ? hm_art_pc(&pc) : NULL, hm_cfg()->pc && pc.have);
     if (tick) {
         double pos = pc.position;
         if (pc.have && pc.playing && pos >= 0) pos += now - pc.at;
@@ -248,9 +298,21 @@ static void music_open(void)
 {
     MU.pl_gen = MU.pc_gen = 0;
     MU.current = -2;
+    MU.art_shown[0] = MU.art_shown[1] = 0;
     hm_cfg_apply();
     home_player_rescan();
 }
 
+/* the covers' memory back, unless home mode (under this window) still shows one */
+static void music_close(void)
+{
+    if (!ui_home_mode_active()) hm_art_trim();
+    MU.art_shown[0] = MU.art_shown[1] = 0;
+    for (int i = 0; i < 2; i++) {
+        hm_show(MU.art_img[i], false);
+        hm_show(lv_obj_get_child(MU.art[i], 0), true);
+    }
+}
+
 const ui_app_t APP_MUSIC = { .name = "music", .icon = BZ_I_GRAPHIC_EQ, .build = music_build, .open = music_open,
-                             .refresh = music_refresh };
+                             .close = music_close, .refresh = music_refresh };

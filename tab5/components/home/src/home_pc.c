@@ -60,17 +60,23 @@ void home_pc_enable(bool on)
 void home_pc_get(home_pc_t *out)
 {
     pthread_mutex_lock(&g_lock);
-    if (pc()) *out = P->st;
-    else memset(out, 0, sizeof *out);
+    if (pc()) {
+        *out = P->st;
+        /* the art on show is this song's once what /media/now names is what was fetched */
+        out->art_ready = P->st.art && P->art && P->art_id[0] && !strcmp(P->art_id, P->want_art);
+    } else {
+        memset(out, 0, sizeof *out);
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
-bool home_pc_art(uint16_t *px)
+bool home_pc_art(uint16_t *px, unsigned *gen)
 {
     bool ok = false;
     pthread_mutex_lock(&g_lock);
     if (P && P->art && P->art_id[0] && P->st.art) {
         memcpy(px, P->art, ART_BYTES);
+        if (gen) *gen = P->st.art_gen;
         ok = true;
     }
     pthread_mutex_unlock(&g_lock);
