@@ -1144,9 +1144,14 @@ static void present_init(void)
     J.idle = xSemaphoreCreateBinary();
     xSemaphoreGive(J.idle);
     J.stage = heap_caps_aligned_alloc(128, STAGE_PX * 2 + 256, MALLOC_CAP_SPIRAM);
-    /* above everything on core 0 but the Wi-Fi link's own tasks: its work is mostly waiting on DMA */
+    /* above everything on core 0 but the Wi-Fi link's own tasks: its work is mostly waiting on DMA.
+     *
+     * 6 KB, not 4: at 4 it ran with ~1 KB to spare, and the one line it logs when the PPA is late ("a PPA
+     * rotation didn't finish in 300 ms") is printed through vfprintf and the console driver, which takes more
+     * than that. A late rotation, which the code recovers from, took the tablet down instead (stack
+     * protection fault in the core dump, on the companion under a panel shot). */
     J.task = J.go && J.idle && J.stage &&
-             xTaskCreatePinnedToCore(present_task, "present", 4096, NULL, 8, NULL, 0) == pdPASS;
+             xTaskCreatePinnedToCore(present_task, "present", 6144, NULL, 8, NULL, 0) == pdPASS;
     if (!J.task) ESP_LOGW(TAG, "present: on the UI's core (no memory for the core-0 task)");
 }
 
@@ -1697,7 +1702,14 @@ bool hal_front_fb_copy(uint16_t *dst)
     const uint16_t *src = T.fb[fb_latest()];
     size_t n = (size_t)PANEL_W * PANEL_H * 2;
     esp_cache_msync((void *)src, n, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
-    memcpy(dst, src, n);
+    /* In slices with a tick between them: one 1.8 MB CPU copy through the cache held PSRAM for ~50 ms on end,
+     * and on the companion (wake word, microphones, the eyes' presents) a shot taken that way crashed the
+     * tablet twice. A dev tool may be slow; it must not be the heaviest thing on the bus. */
+    const size_t SLICE = 64 * 1024;
+    for (size_t o = 0; o < n; o += SLICE) {
+        memcpy((uint8_t *)dst + o, (const uint8_t *)src + o, n - o < SLICE ? n - o : SLICE);
+        vTaskDelay(1);
+    }
     if (J.task) xSemaphoreGive(J.idle);
     s_hold = false;
     return true;
