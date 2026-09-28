@@ -1,9 +1,18 @@
-/* Match alerts: an alarm before each of the team's matches, from The Blue Alliance's schedule.
+/* Match alerts: an alarm before each of the team's matches, timed by Nexus's live queue first and The Blue
+ * Alliance's schedule after it.
  *
- * The data is tba.h's, on the home worker: this file only asks for a poll now and then (tba_want(), once per
- * poll: every POLL_LIVE_S on a day the event runs while a match is to come, every POLL_IDLE_S otherwise,
- * POLL_RETRY_S while there is nothing to go on) and reads our upcoming matches back through tba_upcoming()
- * when tba_gen() moves. Nothing here touches the network or holds a thread.
+ * The data is tba.h's and intel.h's Nexus client, both on the home worker: this file only asks for a poll now
+ * and then (tba_want(), once per poll: every POLL_LIVE_S on a day the event runs while a match is to come,
+ * every POLL_IDLE_S otherwise, POLL_RETRY_S while there is nothing to go on; Nexus through nx_follow(), every
+ * NX_NEAR_S while a match of ours is within the hour on an event day) and reads our upcoming matches back
+ * through tba_upcoming() when tba_gen() moves and nx_find() when nx_gen() does. Nothing here touches the
+ * network or holds a thread.
+ *
+ * TBA is the past, Nexus is the next ten minutes. Each match's time is Nexus's estimated start when Nexus has
+ * the match, else TBA's predicted time, else the schedule's (mt_times, intel.h); the queue reminder also rings
+ * at Nexus's estimated queue time less a walk when that comes first, and at once when Nexus says the match is
+ * queuing; the alarm, its island line and the schedule-change notes say which source the time came from.
+ * A match of ours Nexus has and TBA hasn't posted yet (a playoff) is tracked too.
  *
  * Each upcoming match is tracked by its identity (level, set, number): its time (predicted, else scheduled),
  * the time the team was last told of, and which reminders have rung. At the queue lead (default 25 min: time
@@ -22,6 +31,8 @@
 #include "ui_home_mode.h"
 #include "tba.h"
 #include "assist.h"
+#include "intel.h"
+#include "ui_intel.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -38,15 +49,24 @@
 #define POLL_RETRY_S 120.0
 #define FIRST_POLL_S 8.0     /* after boot: Wi-Fi's time to come up */
 #define STALE_S 600          /* the alarm screen goes by itself this long after the match's time */
+#define MOVE_NX_S 300        /* Nexus's estimates drift with the field: a move this big is news */
+#define NX_NEAR_S 30.0       /* Nexus asked this often while a match of ours is within the hour */
+#define NX_LIVE_S 120.0      /* ...and this often otherwise on an event day */
+#define NX_FRESH_S 300       /* Nexus's status older than this isn't taken as "now queuing" */
+#define ACT_LEAD_S (15 * 60) /* the queue's countdown shows on the island from this long before */
 
 enum { K_QUEUE, K_MATCH };
 
 typedef struct {
-    tba_match_t m;           /* as last seen */
-    time_t when;             /* predicted, else scheduled; 0 unknown */
+    tba_match_t m;           /* as last seen (TBA's; a match only Nexus has fills what Nexus knows) */
+    time_t when;             /* the best time (t.start): Nexus's estimate, else predicted, else scheduled; 0 unknown */
+    mt_times_t t;            /* the times the reminders ring by, and where they came from */
     time_t told;             /* the time the team last heard of: a move is measured from it */
     uint8_t fired;           /* bit 0 the queue reminder, bit 1 the match reminder */
     bool seen;
+    bool nexus_only;         /* TBA hasn't posted it (yet) */
+    char status[24];         /* Nexus's status, "" none */
+    bool nx_rang;            /* the queue reminder rang because Nexus said it was queuing */
 } tracked_t;
 
 static const int Q_MIN[6] = { 0, 15, 20, 25, 30, 40 };
@@ -66,6 +86,12 @@ static struct {
     bool live, offline, have_base;
     char event[20];
     double next_poll, next_check;
+    unsigned nx_gen;         /* Nexus's data as last read */
+    double nx_every;         /* the cadence last asked of it */
+    int act;                 /* the queue's countdown on the island (0 none) */
+    time_t act_at;           /* the queue time it counts to */
+    char act_label[12];
+    char nx_over[20];        /* kv nexus_event: another event for Nexus (a replay); "" TBA's */
     int ntr;
     tracked_t tr[MA_TRACK];
     tba_match_t up[MA_TRACK]; /* tba_upcoming's answer */
@@ -121,9 +147,23 @@ static void ma_config(void)
     /* The assistant cannot include tba.h (home requires assist, not the other way round), so it is
      * handed the reader here, where both are in scope. Idempotent; also done in ui_app_tba.c. */
     assist_set_tba_reader(tba_read);
+    /* Nexus's key the same way (kv nexus_key, from KEYS.ENV); a base URL and an event only the dev console
+     * sets (a local fake, a past event's replay) */
+    if (!hal_kv_get("nexus_key", key, 1024)) key[0] = 0;
+    l = strlen(key);
+    while (l && (key[l - 1] == ' ' || key[l - 1] == '\r' || key[l - 1] == '\n')) key[--l] = 0;
+    char base[96] = "";
+    if (!hal_kv_get("nexus_base", base, sizeof base)) base[0] = 0;
+    nx_config(key, S.team, base);
+    if (!hal_kv_get("nexus_event", MA.nx_over, sizeof MA.nx_over)) MA.nx_over[0] = 0;
     memset(key, 0, 1024);
     free(key);
 }
+
+void ui_match_nexus_config(void) { ma_config(); }
+
+/* the event Nexus follows: TBA's, unless the dev console named another */
+static const char *nx_event(void) { return MA.nx_over[0] ? MA.nx_over : MA.event; }
 
 /* ------------------------------------------------------------------ words */
 
@@ -316,10 +356,17 @@ static void screen_build(void)
 /* the countdown, once a minute */
 static void screen_text(time_t now)
 {
-    long mins = MA.al.when > now ? (long)((MA.al.when - now + 59) / 60) : 0;
+    /* the queue reminder counts to Nexus's queue time when it has one: that is when the team must be there */
+    bool queue = MA.kind == K_QUEUE && MA.al.t.queue_at;
+    time_t to = queue ? MA.al.t.queue_at : MA.al.when;
+    long mins = to > now ? (long)((to - now + 59) / 60) : 0;
+    if (MA.kind == K_QUEUE && MA.al.t.stage >= 1) mins = -2; /* Nexus says it's queuing: no countdown */
     if (mins == MA.shown_min) return;
     MA.shown_min = mins;
-    if (mins > 0) ui_text(MA.title, "%s in %ld min", MA.al.m.label, mins);
+    if (mins == -2) ui_text(MA.title, "%s queuing now", MA.al.m.label);
+    else if (queue && mins > 0) ui_text(MA.title, "%s queues in %ld min", MA.al.m.label, mins);
+    else if (queue) ui_text(MA.title, "%s queues now", MA.al.m.label);
+    else if (mins > 0) ui_text(MA.title, "%s in %ld min", MA.al.m.label, mins);
     else ui_text(MA.title, "%s now", MA.al.m.label);
 }
 
@@ -327,12 +374,21 @@ static void screen_show(void)
 {
     if (!MA.root) screen_build();
     const tba_match_t *m = &MA.al.m;
-    ui_text(MA.kind_l, "%s", MA.kind == K_QUEUE ? "time to queue: run the checklist" : "match reminder");
-    char with[64], vs[64], at[16];
+    /* what rang it, and where its time came from: Nexus's live queue, else TBA */
+    const mt_times_t *tt = &MA.al.t;
+    if (MA.kind == K_QUEUE)
+        ui_text(MA.kind_l, "%s", tt->stage >= 1 ? "now queuing (nexus): run the checklist and go" : "time to queue: run the checklist");
+    else ui_text(MA.kind_l, "%s", tt->stage == 2 ? "on deck (nexus)" : "match reminder");
+    char with[64], vs[64], at[16], q[16];
     partners(m, S.team, with, sizeof with, vs, sizeof vs);
     hhmm(MA.al.when, at, sizeof at);
     ui_text(MA.with_l, "%s", with);
-    ui_text(MA.vs_l, "%s \xc2\xb7 %s %s", vs, m->predicted ? "predicted" : "scheduled", at);
+    if (tt->queue_at) {
+        hhmm(tt->queue_at, q, sizeof q);
+        ui_text(MA.vs_l, "%s \xc2\xb7 queue ~%s, start ~%s (nexus)", vs, q, at);
+    } else {
+        ui_text(MA.vs_l, "%s \xc2\xb7 %s %s", vs, tt->src == MT_SRC_NEXUS ? "nexus est." : mt_src_name(tt->src), at);
+    }
     /* the battery for it: the one picked, else the one recommended (ui_batt.c) */
     char bl[160];
     if (ui_batt_alarm_line(m->label, bl, sizeof bl)) ui_text(MA.batt_l, "%s", bl);
@@ -396,8 +452,13 @@ static void ring(tracked_t *t, int kind)
     char with[64], vs[64], msg[96];
     partners(&t->m, S.team, with, sizeof with, vs, sizeof vs);
     long mins = t->when > time(NULL) ? (long)((t->when - time(NULL) + 59) / 60) : 0;
-    snprintf(msg, sizeof msg, "%s in %ld min%s \xc2\xb7 %s", t->m.label, mins, kind == K_QUEUE ? " \xc2\xb7 queue now" : "",
-             with);
+    if (t->t.stage >= 1)
+        snprintf(msg, sizeof msg, "%s %s (nexus) \xc2\xb7 %s", t->m.label, t->t.stage == 2 ? "on deck" : "queuing now", with);
+    else
+        snprintf(msg, sizeof msg, "%s in %ld min%s \xc2\xb7 %s \xc2\xb7 %s", t->m.label, mins,
+                 kind == K_QUEUE ? " \xc2\xb7 queue now" : "", with, t->t.src == MT_SRC_NEXUS ? "nexus" : "tba");
+    printf("match: %s reminder for %s, time from %s%s\n", kind == K_QUEUE ? "queue" : "match", t->m.label,
+           mt_src_name(t->t.src), t->t.stage ? " (nexus says it's queuing)" : "");
     ui_island_say(BZ_I_STADIUM, msg);
 }
 
@@ -520,6 +581,56 @@ static void news(const char *msg)
     chime();
 }
 
+/* A tracked match's times from TBA's and Nexus's (mt_times). Nexus's status counts only while its answer is
+ * fresh: a "now queuing" from ten minutes ago is not now. */
+static void retime(tracked_t *t)
+{
+    nx_match_t nx;
+    bool have = t->m.label[0] && nx_find(t->m.label, &nx);
+    mt_times(t->m.predicted, t->m.time, have ? &nx : NULL, &t->t);
+    if (have && nx_age_s() > NX_FRESH_S) t->t.stage = 0;
+    snprintf(t->status, sizeof t->status, "%s", have ? nx.status : "");
+}
+
+/* The time a match is now expected, applied: a move big enough is news (the first of an update's goes in
+ * `first`), and reminders whose new time is still ahead are armed again. */
+static void apply_time(tracked_t *t, time_t now, int *nmoved, char *first, size_t fn)
+{
+    retime(t);
+    time_t w = t->t.start;
+    long thresh = t->t.src == MT_SRC_NEXUS ? MOVE_NX_S : MOVE_S;
+    if (w && t->told && labs((long)(w - t->told)) >= thresh) {
+        if (!(*nmoved)++) {
+            char at[16];
+            hhmm(w, at, sizeof at);
+            snprintf(first, fn, "%s now ~%s (%+ld min) \xc2\xb7 %s", t->m.label, at, (long)(w - t->told) / 60,
+                     mt_src_name(t->t.src));
+        }
+        t->told = w;
+        /* ring again for the new time, but only a reminder still ahead of it; and never the queue one once the
+         * match is queuing (it rang, or the team is there) */
+        time_t q = mt_ring_at(&t->t, 0, MA.queue_min), m = mt_ring_at(&t->t, 1, MA.match_min);
+        if (q > now + 60 && t->t.stage == 0) t->fired &= (uint8_t)~1;
+        if (m > now + 60 && t->t.stage < 2) t->fired &= (uint8_t)~2;
+    } else if (!t->told) {
+        t->told = w;
+    }
+    t->when = w;
+}
+
+static void say_changes(int nnew, int nmoved, const char *first_new, const char *first_moved)
+{
+    if (!MA.have_base || !MA.on || (!nnew && !nmoved)) return;
+    char msg[128];
+    snprintf(msg, sizeof msg, "%s", nmoved ? first_moved : first_new);
+    int more = (nmoved ? nmoved - 1 : 0) + (nmoved ? nnew : nnew - 1);
+    if (more > 0) {
+        size_t l = strlen(msg);
+        snprintf(msg + l, sizeof msg - l, " \xc2\xb7 %d more of ours changed", more);
+    }
+    news(msg);
+}
+
 static void ma_update(void)
 {
     int n = 0;
@@ -533,24 +644,25 @@ static void ma_update(void)
     }
     /* News only against a schedule already known (not the first one seen, nor a whole schedule appearing), and
      * one line per update: the whole event running late moves every match of ours at once. */
-    bool news_ok = MA.have_base && MA.ntr > 0 && MA.on;
+    bool base = MA.have_base && MA.ntr > 0;
     int nnew = 0, nmoved = 0;
     char first_new[96] = "", first_moved[96] = "";
+    time_t now = time(NULL);
     for (int i = 0; i < MA.ntr; i++) MA.tr[i].seen = false;
     for (int i = 0; i < n; i++) {
         const tba_match_t *m = &MA.up[i];
-        time_t w = when_of(m);
         tracked_t *t = find(m);
-        char at[16], with[64], vs[64];
         if (!t) {
             if (MA.ntr >= MA_TRACK) continue;
             t = &MA.tr[MA.ntr++];
             memset(t, 0, sizeof *t);
             t->m = *m;
-            t->when = t->told = w;
+            retime(t);
+            t->when = t->told = t->t.start;
             t->seen = true;
-            if (w && !nnew++) {
-                hhmm(w, at, sizeof at);
+            if (t->when && !nnew++) {
+                char at[16], with[64], vs[64];
+                hhmm(t->when, at, sizeof at);
                 partners(m, S.team, with, sizeof with, vs, sizeof vs);
                 snprintf(first_new, sizeof first_new, "new match: %s at %s \xc2\xb7 %s", m->label, at, with);
             }
@@ -558,34 +670,61 @@ static void ma_update(void)
         }
         t->m = *m;
         t->seen = true;
-        if (w && t->told && labs((long)(w - t->told)) >= MOVE_S) {
-            if (!nmoved++) {
-                hhmm(w, at, sizeof at);
-                snprintf(first_moved, sizeof first_moved, "%s moved to %s (%+ld min)", m->label, at, (long)(w - t->told) / 60);
-            }
-            t->told = w;
-            t->fired = 0; /* its reminders ring again for the new time */
-        } else if (!t->told) {
-            t->told = w;
-        }
-        t->when = w;
+        t->nexus_only = false; /* TBA has it now */
+        apply_time(t, now, &nmoved, first_moved, sizeof first_moved);
     }
-    if (news_ok && (nnew || nmoved)) {
-        char msg[128];
-        snprintf(msg, sizeof msg, "%s", nmoved ? first_moved : first_new);
-        int more = (nmoved ? nmoved - 1 : 0) + (nmoved ? nnew : nnew - 1);
-        if (more > 0) {
-            size_t l = strlen(msg);
-            snprintf(msg + l, sizeof msg - l, " \xc2\xb7 %d more of ours changed", more);
-        }
-        news(msg);
-    }
-    /* played (or gone from the schedule): no longer tracked */
+    if (base) say_changes(nnew, nmoved, first_new, first_moved);
+    /* played (or gone from the schedule): no longer tracked, unless it's one only Nexus has, still there */
     int k = 0;
     for (int i = 0; i < MA.ntr; i++)
-        if (MA.tr[i].seen) MA.tr[k++] = MA.tr[i];
+        if (MA.tr[i].seen || (MA.tr[i].nexus_only && nx_find(MA.tr[i].m.label, NULL))) MA.tr[k++] = MA.tr[i];
     MA.ntr = k;
     MA.have_base = true;
+}
+
+/* Nexus moved: every match's times again, and a match of ours only Nexus has (a playoff TBA hasn't posted)
+ * tracked from it. */
+static void ma_nexus(void)
+{
+    int nmoved = 0, nnew = 0;
+    char first_moved[96] = "", first_new[96] = "";
+    time_t now = time(NULL);
+    for (int i = 0; i < MA.ntr; i++) apply_time(&MA.tr[i], now, &nmoved, first_moved, sizeof first_moved);
+    nx_state_t *nx = malloc(sizeof *nx); /* ~6 KB: PSRAM */
+    if (nx) {
+        nx_get(nx);
+        for (int i = 0; nx->phase == NX_READY && i < nx->nours && MA.ntr < MA_TRACK; i++) {
+            const nx_match_t *x = &nx->ours[i];
+            if (!x->label[0] || x->level < 0 || x->started) continue;
+            bool known = false;
+            for (int k = 0; k < MA.ntr && !known; k++) known = !strcmp(MA.tr[k].m.label, x->label);
+            if (known) continue;
+            mt_times_t tt;
+            mt_times(0, 0, x, &tt);
+            if (!tt.start || tt.start < now - 10 * 60) continue;
+            tracked_t *t = &MA.tr[MA.ntr++];
+            memset(t, 0, sizeof *t);
+            snprintf(t->m.label, sizeof t->m.label, "%s", x->label);
+            t->m.level = x->level;
+            t->m.set = x->set;
+            t->m.number = x->number;
+            t->m.ours = x->ours;
+            memcpy(t->m.red, x->red, sizeof t->m.red);
+            memcpy(t->m.blue, x->blue, sizeof t->m.blue);
+            t->m.red_score = t->m.blue_score = -1;
+            t->nexus_only = t->seen = true;
+            retime(t);
+            t->when = t->told = t->t.start;
+            if (!nnew++) {
+                char at[16], with[64], vs[64];
+                hhmm(t->when, at, sizeof at);
+                partners(&t->m, S.team, with, sizeof with, vs, sizeof vs);
+                snprintf(first_new, sizeof first_new, "new match: %s ~%s \xc2\xb7 %s \xc2\xb7 nexus", t->m.label, at, with);
+            }
+        }
+        free(nx);
+    }
+    say_changes(nnew, nmoved, first_new, first_moved);
 }
 
 /* once a second: a reminder due rings (the match one wins when both are, so a late start rings once) */
@@ -596,16 +735,56 @@ static void ma_check(time_t now)
     if (!MA.on || tm.tm_year < 120) return;
     for (int i = 0; i < MA.ntr; i++) {
         tracked_t *t = &MA.tr[i];
-        if (!t->when || now >= t->when) continue;
-        bool q = MA.queue_min && !(t->fired & 1) && now >= t->when - MA.queue_min * 60;
-        bool m = MA.match_min && !(t->fired & 2) && now >= t->when - MA.match_min * 60;
-        if (m) {
+        int due = mt_due(&t->t, now, MA.queue_min, MA.match_min, t->fired);
+        if (due == 2) {
             t->fired |= 3;
             ring(t, K_MATCH);
-        } else if (q) {
+        } else if (due == 1) {
             t->fired |= 1;
+            t->nx_rang = t->t.stage >= 1;
             ring(t, K_QUEUE);
         }
+    }
+}
+
+/* How often Nexus is asked: often while a match of ours is within the hour on an event day, now and then on
+ * the rest of it, never on other days (or with the dev console's event named, as if live). */
+static void nx_cadence(time_t now)
+{
+    const char *ev = nx_event();
+    double every = 0;
+    if (ev[0] && (MA.live || MA.nx_over[0])) {
+        every = NX_LIVE_S;
+        for (int i = 0; i < MA.ntr; i++)
+            if (MA.tr[i].when && MA.tr[i].when > now - 10 * 60 && MA.tr[i].when < now + 3600) every = NX_NEAR_S;
+    }
+    nx_follow(ev, every);
+    MA.nx_every = every;
+}
+
+/* The queue's countdown on the island: from ACT_LEAD_S before Nexus's queue time for our next match, until it
+ * queues (folded into the orb as the time left between its moments). */
+static void act_tick(time_t now)
+{
+    const tracked_t *best = NULL;
+    for (int i = 0; MA.on && i < MA.ntr; i++) {
+        const tracked_t *t = &MA.tr[i];
+        if (t->t.queue_at > now && t->t.queue_at - now <= ACT_LEAD_S && t->t.stage == 0 &&
+            (!best || t->t.queue_at < best->t.queue_at))
+            best = t;
+    }
+    if (MA.act && !ui_activity_live(MA.act)) MA.act = 0;
+    if (MA.act && (!best || strcmp(MA.act_label, best->m.label) || labs((long)(best->t.queue_at - MA.act_at)) > 60)) {
+        ui_activity_end(MA.act, NULL);
+        MA.act = 0;
+    }
+    if (best && !MA.act) {
+        char txt[40];
+        snprintf(txt, sizeof txt, "%s queues", best->m.label);
+        MA.act = ui_activity_begin(BZ_I_STADIUM, txt, (double)(best->t.queue_at - now));
+        MA.act_at = best->t.queue_at;
+        snprintf(MA.act_label, sizeof MA.act_label, "%s", best->m.label);
+        printf("match: %s queues at nexus's %ld, on the island\n", best->m.label, (long)best->t.queue_at);
     }
 }
 
@@ -635,6 +814,7 @@ static void ma_tick(void *u)
         t.m.red[0] = S.team > 0 ? S.team : 5805, t.m.red[1] = 1234, t.m.red[2] = 5678;
         t.m.blue[0] = 111, t.m.blue[1] = 222, t.m.blue[2] = 333;
         t.when = t.m.predicted = wall + (MA.test_kind == 1 ? 5 : 25) * 60;
+        mt_times(t.m.predicted, 0, NULL, &t.t);
         if (MA.test_kind == 2) {
             char at[16], msg[64];
             hhmm(t.when, at, sizeof at);
@@ -661,6 +841,13 @@ static void ma_tick(void *u)
         desk_matches();
         MA.next_desk = 0;
     }
+    unsigned ng = nx_gen();
+    if (ng != MA.nx_gen) {
+        MA.nx_gen = ng;
+        ma_nexus();
+        desk_matches();
+        MA.next_desk = 0;
+    }
     if (now >= MA.next_desk) {
         MA.next_desk = now + 30;
         desk_now();
@@ -671,7 +858,16 @@ static void ma_tick(void *u)
     }
     if (now >= MA.next_check) {
         MA.next_check = now + 1;
+        /* a stale Nexus status stops counting as now: the times are looked at again as it ages */
+        static bool fresh;
+        bool f = nx_age_s() <= NX_FRESH_S;
+        if (f != fresh) {
+            fresh = f;
+            for (int i = 0; i < MA.ntr; i++) retime(&MA.tr[i]);
+        }
         ma_check(wall);
+        nx_cadence(wall);
+        act_tick(wall);
     }
 }
 
@@ -763,7 +959,22 @@ static void desk_matches(void)
     } else {
         PUT("next match: none scheduled for us on TBA right now\n");
     }
-    PUT("our matches (times are local; \"about\" = TBA's prediction):\n");
+    /* Nexus: the live queue, the times the alarms go by first */
+    nx_state_t *nx = malloc(sizeof *nx);
+    if (nx) {
+        nx_get(nx);
+        char hm[8];
+        if (nx->phase == NX_READY) {
+            hhmm(nx->fetched, hm, sizeof hm);
+            PUT("nexus (live queue) as of %s%s: now queuing %s\n", hm, nx->stale ? ", offline" : "",
+                nx->now_queuing[0] ? nx->now_queuing : "nothing");
+        } else if (nx->phase == NX_OFF) {
+            PUT("nexus: not set up (NEXUS_API_KEY), so the alarms use TBA's times\n");
+        } else if (nx->err[0]) {
+            PUT("nexus: %s, so the alarms use TBA's times\n", nx->err);
+        }
+    }
+    PUT("our matches (times are local; \"about\" = TBA's prediction; nexus's estimates after, when it has them):\n");
     for (int i = 0; i < s->nmatches; i++) {
         const tba_match_t *m = &s->matches[i];
         char at[24] = "time unknown", with[64], vs[64];
@@ -778,8 +989,22 @@ static void desk_matches(void)
             /* a time gone by with no score: TBA hasn't the result yet, or the schedule ran late */
             PUT(w && w < now - 15 * 60 ? " - its time has passed, no result on TBA yet" : " - not played yet");
         }
+        nx_match_t x;
+        if (!m->played && nx && nx_find(m->label, &x)) {
+            char q[8], st[8];
+            PUT(" - nexus: %s", x.status[0] ? x.status : "not queuing yet");
+            if (x.queue_at) {
+                hhmm(x.queue_at, q, sizeof q);
+                PUT(", queue ~%s", q);
+            }
+            if (x.start_at) {
+                hhmm(x.start_at, st, sizeof st);
+                PUT(", start ~%s", st);
+            }
+        }
         PUT("\n");
     }
+    free(nx);
     PUT("reminders: %s", MA.on ? "on" : "off");
     if (MA.on) PUT(", queue %d min before, match %d min before, sound %s", MA.queue_min, MA.match_min, MA.sound ? "on" : "off");
     PUT("\n");
@@ -819,6 +1044,7 @@ void ui_match_boot(void)
     ma_config();
     MA.next_poll = hal_seconds() + FIRST_POLL_S;
     ui_on_refresh(ma_tick, NULL);
+    ui_intel_boot(); /* the intelligence core: Nexus is configured above, the rest there */
 }
 
 void ui_match_test_kind(double delay_s, int kind)
@@ -846,7 +1072,10 @@ void ui_match_fake(double minutes)
         t->m.ours = 2;
         t->m.blue[0] = S.team > 0 ? S.team : 5805, t->m.blue[1] = 1678, t->m.blue[2] = 254;
         t->m.red[0] = 971, t->m.red[1] = 1323, t->m.red[2] = 4414;
-        t->when = t->told = t->m.predicted = time(NULL) + (time_t)(minutes * 60);
+        t->m.predicted = time(NULL) + (time_t)(minutes * 60);
+        t->m.red_score = t->m.blue_score = -1;
+        retime(t); /* Nexus's times when it has a Q99 of ours (the dev console's "assist nexus fake") */
+        t->when = t->told = t->t.start;
     }
     MA.next_desk = 0; /* the assistant's line follows at once */
 }
@@ -929,9 +1158,10 @@ void ui_match_settings(lv_obj_t *pane, int w)
     lv_obj_set_flex_flow(pane, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(pane, 12, 0);
     bz_label(pane, "match alerts", BZ_F_NAME, BZ_C_INK);
-    lv_obj_t *c = bz_label(pane, "An alarm before each of the team's matches, from the blue alliance's schedule (its "
-                                 "predicted times when it has them), over whatever is on screen. Schedule changes "
-                                 "come as notifications.",
+    lv_obj_t *c = bz_label(pane, "An alarm before each of the team's matches, over whatever is on screen. Times come "
+                                 "from Nexus's live queue when NEXUS_API_KEY is set (and at once when Nexus says the "
+                                 "match is queuing), else from the blue alliance's predicted or scheduled times. "
+                                 "Schedule changes come as notifications.",
                            BZ_F_CAPTION, BZ_C_DIM);
     lv_label_set_long_mode(c, LV_LABEL_LONG_WRAP);
     lv_obj_set_width(c, w);
@@ -975,8 +1205,8 @@ void ui_match_settings_refresh(void)
         for (int k = 0; k < 2; k++) {
             int lead = k ? MA.match_min : MA.queue_min;
             if (!lead || (t->fired >> k & 1)) continue;
-            time_t at = t->when - lead * 60;
-            if (!best || at < best_at) best = t, best_at = at, best_kind = k;
+            time_t at = mt_ring_at(&t->t, k, lead);
+            if (at && (!best || at < best_at)) best = t, best_at = at, best_kind = k;
         }
     }
     if (!MA.configured) snprintf(b, sizeof b, "needs a blue alliance key (TBA_API_KEY) and the team number");
@@ -985,9 +1215,66 @@ void ui_match_settings_refresh(void)
         char at[16], m[16];
         hhmm(best_at > now ? best_at : now, at, sizeof at);
         hhmm(best->when, m, sizeof m);
-        snprintf(b, sizeof b, "next alarm: %s %s reminder at %s (the match at %s)", best->m.label,
-                 best_kind ? "match" : "queue", at, m);
+        snprintf(b, sizeof b, "next alarm: %s %s reminder at %s (the match at %s, %s)", best->m.label,
+                 best_kind ? "match" : "queue", at, m, mt_src_name(best->t.src));
     } else if (MA.ntr) snprintf(b, sizeof b, "every reminder for the matches ahead has rung");
     else snprintf(b, sizeof b, "no matches to come at the current event");
     ui_text(MA.next_l, "%s", b);
+}
+
+/* ------------------------------------------------------------------ for the intelligence core */
+
+int ui_match_upcoming(intel_up_t *out, int max, int *behind_min)
+{
+    time_t now = time(NULL);
+    int n = 0;
+    if (behind_min) *behind_min = 0;
+    const tracked_t *order[MA_TRACK];
+    int k = 0;
+    for (int i = 0; i < MA.ntr; i++) {
+        const tracked_t *t = &MA.tr[i];
+        if (!t->when || t->when + STALE_S < now || t->t.stage >= 3) continue;
+        order[k++] = t;
+    }
+    /* soonest first (a handful: insertion) */
+    for (int i = 1; i < k; i++)
+        for (int j = i; j > 0 && order[j]->when < order[j - 1]->when; j--) {
+            const tracked_t *x = order[j];
+            order[j] = order[j - 1];
+            order[j - 1] = x;
+        }
+    int now_index = -1;
+    if (k && nx_age_s() < NX_FRESH_S) {
+        nx_state_t *nx = malloc(sizeof *nx);
+        if (nx) {
+            nx_get(nx);
+            now_index = nx->now_index;
+            free(nx);
+        }
+    }
+    for (int i = 0; i < k && n < max; i++) {
+        const tracked_t *t = order[i];
+        intel_up_t *u = &out[n++];
+        memset(u, 0, sizeof *u);
+        snprintf(u->label, sizeof u->label, "%s", t->m.label);
+        u->start = t->when;
+        u->src = t->t.src;
+        u->queue_at = t->t.queue_at;
+        snprintf(u->status, sizeof u->status, "%s", t->t.stage || t->status[0] ? t->status : "");
+        u->ours = t->m.ours;
+        const int *us = t->m.ours == 2 ? t->m.blue : t->m.red, *them = t->m.ours == 2 ? t->m.red : t->m.blue;
+        int p = 0;
+        for (int j = 0; j < 3; j++)
+            if (us[j] && us[j] != S.team && p < 2) u->partners[p++] = us[j];
+        for (int j = 0; j < 3; j++) u->opponents[j] = them[j];
+        sb_match_t sb;
+        u->win = sb_find(t->m.label, &sb) && !sb.played ? sb.win : NAN;
+        nx_match_t x;
+        u->away = -1;
+        if (now_index >= 0 && nx_find(t->m.label, &x) && x.index >= now_index) u->away = x.index - now_index;
+        /* the field's pace: Nexus's estimate against the schedule, for the next match of ours */
+        if (i == 0 && behind_min && t->t.src == MT_SRC_NEXUS && t->m.time)
+            *behind_min = (int)((t->when - t->m.time) / 60);
+    }
+    return n;
 }
