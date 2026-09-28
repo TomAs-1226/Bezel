@@ -805,6 +805,7 @@ static void dock_frame(void)
 
 static struct {
     lv_obj_t *obj, *disc, *mark, *pip, *icon, *text;
+    lv_obj_t *act_icon, *act_time; /* a live activity sitting in the orb: its icon, or a countdown's time left */
     bz_motion_t w;           /* the capsule's width: ORB_D at rest */
     int msg_w;               /* its width with the message showing */
     int shown_w, text_opa;
@@ -819,10 +820,15 @@ static struct {
     double conn_at, told_at;
 } IS = { .text_opa = -1, .st = BZ_INFO };
 
+static bool island_act_words(void); /* an activity sitting in the orb shows its words: false if there is none */
+
 static void island_tap(lv_obj_t *o, void *u)
 {
     (void)o; (void)u;
     bz_ui_wake();
+    /* a live activity folded into the orb: the first tap says what it is; with its words out, the control
+     * center as always */
+    if (IS.until == 0 && IS.w.target <= ORB_D && island_act_words()) return;
     ui_cc_open(); /* the notifications, and the link's detail */
 }
 
@@ -1184,6 +1190,13 @@ static void build_island(void)
     lv_obj_add_flag(IS.disc, LV_OBJ_FLAG_EVENT_BUBBLE);
     IS.mark = bz_mark(IS.disc, BZ_STALE, ISL_MARK);
     lv_obj_center(IS.mark);
+    /* in place of the mark while an activity is live */
+    IS.act_icon = bz_icon(IS.disc, BZ_I_TIMER, 24, BZ_C_INK);
+    lv_obj_center(IS.act_icon);
+    lv_obj_add_flag(IS.act_icon, LV_OBJ_FLAG_HIDDEN);
+    IS.act_time = bz_label(IS.disc, "", BZ_F_CAPTION, BZ_C_INK);
+    lv_obj_center(IS.act_time);
+    lv_obj_add_flag(IS.act_time, LV_OBJ_FLAG_HIDDEN);
     /* notifications not seen yet: a pip on the orb's shoulder */
     IS.pip = lv_obj_create(IS.obj);
     lv_obj_remove_style_all(IS.pip);
@@ -1268,12 +1281,15 @@ static void island_show(const char *icon, const char *text, bool flash)
 #define ACT_MAX 4
 #define ACT_STALE_S 90.0 /* a countdown nobody ended, this long after it reached zero: dropped */
 static pthread_mutex_t s_act_lock = PTHREAD_MUTEX_INITIALIZER;
+#define ACT_WORDS_S 4.0  /* an activity's words show this long when it begins (and when the orb is tapped) */
+#define ACT_URGENT_S 10  /* a countdown's words show again for its last seconds */
 static struct {
     int id;              /* 0: a free slot */
     char icon[8];
     char text[72];
     double ends;         /* hal_seconds() a countdown reaches zero (0: not a countdown) */
     double at;           /* when it began or last changed: the newest is the one shown */
+    double words_until;  /* its words show until then; after, it sits in the orb */
 } s_act[ACT_MAX];
 static struct {
     bool pending;
@@ -1305,6 +1321,7 @@ int ui_activity_begin(const char *icon, const char *text, double countdown_s)
     snprintf(s_act[slot].text, sizeof s_act[slot].text, "%s", text ? text : "");
     s_act[slot].ends = countdown_s > 0 ? now + countdown_s : 0;
     s_act[slot].at = now;
+    s_act[slot].words_until = now + ACT_WORDS_S;
     s_act_gen++;
     pthread_mutex_unlock(&s_act_lock);
     return id;
@@ -1360,7 +1377,8 @@ static bool island_activities(double now)
     held = false;
     char said_icon[ACT_MAX][8], said_text[ACT_MAX][96];
     int nsaid = 0;
-    char icon[8] = "", text[112] = "";
+    char icon[8] = "", text[112] = "", small[8] = "";
+    bool words = false;
     int live = 0;
     pthread_mutex_lock(&s_act_lock);
     gen = s_act_gen;
@@ -1384,12 +1402,19 @@ static bool island_activities(double now)
     }
     if (show >= 0) {
         snprintf(icon, sizeof icon, "%s", s_act[show].icon);
+        words = now < s_act[show].words_until;
         if (s_act[show].ends > 0) {
             int left = (int)ceil(s_act[show].ends - now);
             if (left < 0) left = 0;
             if (left >= 3600)
                 snprintf(text, sizeof text, "%s \xc2\xb7 %d:%02d:%02d", s_act[show].text, left / 3600, left / 60 % 60, left % 60);
             else snprintf(text, sizeof text, "%s \xc2\xb7 %d:%02d", s_act[show].text, left / 60, left % 60);
+            /* in the orb: "48s", "4:59", then whole units rounded up ("12m", "2h") where m:ss won't fit */
+            if (left >= 3600) snprintf(small, sizeof small, "%dh", (left + 3599) / 3600);
+            else if (left >= 600) snprintf(small, sizeof small, "%dm", (left + 59) / 60);
+            else if (left >= 60) snprintf(small, sizeof small, "%d:%02d", left / 60, left % 60);
+            else snprintf(small, sizeof small, "%ds", left);
+            words |= left <= ACT_URGENT_S;
         } else {
             snprintf(text, sizeof text, "%s", s_act[show].text);
         }
@@ -1400,13 +1425,56 @@ static bool island_activities(double now)
     }
     pthread_mutex_unlock(&s_act_lock);
     for (int i = 0; i < nsaid; i++) ui_island_say(said_icon[i], said_text[i]);
+    /* the orb: the robot's mark, or the activity folded into it (its time left, else its icon) */
+    bool in_orb = live > 0;
+    if (in_orb == !lv_obj_has_flag(IS.mark, LV_OBJ_FLAG_HIDDEN)) {
+        if (in_orb) lv_obj_add_flag(IS.mark, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_remove_flag(IS.mark, LV_OBJ_FLAG_HIDDEN);
+    }
+    bool want_time = in_orb && small[0], want_icon = in_orb && !small[0];
+    if (want_time != !lv_obj_has_flag(IS.act_time, LV_OBJ_FLAG_HIDDEN)) {
+        if (want_time) lv_obj_remove_flag(IS.act_time, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(IS.act_time, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (want_icon != !lv_obj_has_flag(IS.act_icon, LV_OBJ_FLAG_HIDDEN)) {
+        if (want_icon) lv_obj_remove_flag(IS.act_icon, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(IS.act_icon, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (want_time) {
+        ui_text(IS.act_time, "%s", small);
+        lv_obj_center(IS.act_time);
+    }
+    if (want_icon && strcmp(lv_label_get_text(IS.act_icon), icon)) lv_label_set_text(IS.act_icon, icon);
     if (!live) {
         if (IS.until == 0 && IS.w.target > ORB_D) bz_motion_to(&IS.w, ORB_D, BZ_SMOOTH);
         return false;
     }
-    if (IS.until == 0) island_words(icon, text); /* a message holding the capsule goes first */
-    held = true;
-    return true;
+    /* A message holding the capsule goes first. Otherwise the words show when the activity begins, when the
+     * orb is tapped and in a countdown's last seconds; the rest of the time it sits folded into the orb, so it
+     * never covers an app's buttons or the clock for long. */
+    if (IS.until == 0) {
+        if (words) island_words(icon, text);
+        else if (IS.w.target > ORB_D) bz_motion_to(&IS.w, ORB_D, BZ_SMOOTH);
+    }
+    held = words;
+    return words;
+}
+
+static bool island_act_words(void)
+{
+    double now = hal_seconds();
+    bool any = false;
+    pthread_mutex_lock(&s_act_lock);
+    int show = -1;
+    for (int i = 0; i < ACT_MAX; i++)
+        if (s_act[i].id && (show < 0 || s_act[i].at > s_act[show].at)) show = i;
+    if (show >= 0) {
+        s_act[show].words_until = now + ACT_WORDS_S;
+        s_act_gen++;
+        any = true;
+    }
+    pthread_mutex_unlock(&s_act_lock);
+    return any;
 }
 
 void ui_island_say(const char *icon, const char *text)
