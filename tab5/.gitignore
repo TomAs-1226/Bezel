@@ -1,3 +1,6 @@
 
 # per-agent build directories, so several builds can run side by side
 build-*/
+
+# tab5_dev.py writes its screenshots here
+shot.png
