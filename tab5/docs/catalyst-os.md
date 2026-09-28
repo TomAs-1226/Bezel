@@ -74,6 +74,20 @@ Two paths, chosen per motion:
   so starting a motion costs a few milliseconds, not a full redraw. At rest the real surface takes over
   without being sent again: the panel's second buffer is synced by DMA.
 
+- **Scrolling lists** move the pixels already on the panel (`bz_ui_scroll`, DMA2D from the newest picture)
+  and LVGL draws only the rows that scrolled into view. Pages run to the bottom edge, under the dock, so the
+  dock sits inside every page list's rectangle. Chrome drawn over a list is normally *carried*: moved with the
+  list and drawn again where it was and where its copy landed, which for the dock was ~120k px a frame and
+  held a fling at 30 fps. Chrome with an opaque middle registers it (`bz_ui_opaque_core`: the dock, its rect
+  inset by its radius), and the list is then shifted as the pieces around that core (the columns either side,
+  then above and below), each from itself; the core is never moved or drawn, and the rows each piece can't
+  fill from itself are exactly the ones coming out from under the dock. A glass piece counts as opaque only at
+  full strength (a dock tucking away fades). The shift itself (~720k px for a full page) is split between two
+  DMA2D copiers, and at ~11.8 ms it is the floor: PSRAM-bound, so overlapping the PPA's rotations with it
+  bought nothing. A fling on the library went from 0 to about two thirds of its frames at 60. Dev console:
+  `cut 0|1` (carry the dock as before, for timing), `dual 0|1` (one copier or two), `inv N` (log every
+  invalidated area, and what a scroll carried or cut around).
+
 ### 3. Services
 
 | Service | Where | Notes |
@@ -228,6 +242,17 @@ while one shows reshapes the capsule and restarts the hold. The link coming up (
 going ("lost the robot") shows the same way, once it has held a moment, but isn't kept. Cost: the capsule's own
 strip redraws while it moves, the orb's 48 px disc while it pulses, nothing at rest; nothing moves while a page
 or sheet picture slides.
+
+**Live activities** (`ui_activity_begin/update/end`, `ui_internal.h`) are what is going on right now: a timer
+counting down, an AI writing a document or running a longer tool. Any thread may begin, update and end one (the
+assistant's workers do); they write a small table under a lock and the island's frame draws it. An activity's
+words ("tea · 4:59", "editing notes.md", "· +1" when there are more) show for 4 s when it begins, when the orb is
+tapped (the first tap; the next opens the control center) and in a countdown's last 10 s; the rest of the time it
+is folded into the orb in place of the robot's mark, as the time left ("48s", "4:59", "12m", "2h") or its icon, so
+it never covers the status cluster or an app's head buttons for long. A message still shows over it. Ending one
+may leave a message ("timer done · tea", "saved the notes"), said and kept like any other; a countdown nobody ends
+is dropped 90 s after zero. The AIs' timers ring and their writes finish whatever is on screen, including after
+the companion or the assist app is closed (docs/assistant.md). Dev console: `act N words`, `act end [words]`.
 
 Layout contract: whatever sits at the band's right ends `ORB_CLEAR` (64 px) short of the page padding: the status
 cluster (link, battery, clock, centred on the orb) and every app head's buttons are aligned at `HEAD_RIGHT_X`
