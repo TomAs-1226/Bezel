@@ -32,6 +32,7 @@ struct bz_glass {
     int lite_amt, lite_tint; /* and the tint mixed into it, in sixteenths */
     bool lite_dark;
     const lv_image_dsc_t *lite_img; /* the baked surface it shows (a reference held on it, bz_frost.h) */
+    bool prewarmed;                 /* its surface was baked ahead, while idle (bz_ui_glass_prewarm_one) */
 };
 
 static struct {
@@ -670,13 +671,20 @@ static bool update_glass(void)
                  * cannot allocate for comes back NULL and the flat fill stands. */
                 const lv_image_dsc_t *fr = NULL;
                 int gw = lv_obj_get_width(g->obj), gh = lv_obj_get_height(g->obj);
-                if (opa > 0 && gw > 0 && gh > 0) fr = bz_frost(gw, gh, (int)g->radius, c, opa);
+                /* Baked once at full strength; a fade is the picture's opacity, not a picture per step. With the
+                 * strength in the bake, every one of a fade's 16 steps baked the surface again (five distance-field
+                 * evaluations a pixel), for each module of the control center as it came in: the ~370 ms freeze on
+                 * its first pull, and a cache that churned on every later one. */
+                if (opa > 0 && gw > 0 && gh > 0) fr = bz_frost(gw, gh, (int)g->radius, c, 255);
                 bz_frost_release(g->lite_img); /* after taking the new one: the same picture is kept, not freed */
+                bool same = fr && fr == g->lite_img;
                 g->lite_img = fr;
                 if (fr) {
-                    lv_obj_set_style_bg_opa(g->obj, LV_OPA_TRANSP, 0);
-                    lv_obj_set_style_bg_image_src(g->obj, fr, 0);
-                    lv_obj_set_style_bg_image_opa(g->obj, LV_OPA_COVER, 0);
+                    if (!same) {
+                        lv_obj_set_style_bg_opa(g->obj, LV_OPA_TRANSP, 0);
+                        lv_obj_set_style_bg_image_src(g->obj, fr, 0);
+                    }
+                    lv_obj_set_style_bg_image_opa(g->obj, (lv_opa_t)(opa > 255 ? 255 : opa), 0);
                 } else {
                     lv_obj_set_style_bg_image_src(g->obj, NULL, 0);
                     lv_obj_set_style_bg_color(g->obj, bz_lv_rgb(c), 0);
@@ -2076,6 +2084,27 @@ void bz_on_tap(lv_obj_t *obj, bz_tap_fn cb, void *user)
     lv_obj_add_event_cb(obj, tap_event, LV_EVENT_PRESSED, t);
     lv_obj_add_event_cb(obj, tap_event, LV_EVENT_CLICKED, t);
     lv_obj_add_event_cb(obj, tap_event, LV_EVENT_DELETE, t);
+}
+
+/* Bakes the surface of one glass piece that hasn't been baked yet, hidden ones included (the control center's
+ * modules), at full strength and untinted: what its first showing asks for. The first pull of the control
+ * center baked three panels in the middle of the gesture (~120 ms: a visible hitch, and before the bake itself
+ * got faster, a pull that snapped shut). true while there are more to do: call once per idle moment. */
+bool bz_ui_glass_prewarm_one(void)
+{
+#if BZ_LEAN
+    if (!U.calm) return false;
+    for (int i = 0; i < MAX_GLASS; i++) {
+        bz_glass_t *g = &U.glass[i];
+        if (!g->alive || g->prewarmed) continue;
+        g->prewarmed = true;
+        int gw = lv_obj_get_width(g->obj), gh = lv_obj_get_height(g->obj);
+        if (gw <= 0 || gh <= 0 || g->lite_img) continue;
+        bz_frost_release(bz_frost(gw, gh, (int)g->radius, bz_color(BZ_C_SURFACE2), 255));
+        return true;
+    }
+#endif
+    return false;
 }
 
 bool bz_drag_active(void) { return g_claimed != NULL; }

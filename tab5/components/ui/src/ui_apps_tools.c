@@ -1078,13 +1078,19 @@ static struct {
     char join_ssid[33];
 } ST;
 
-static const char *const ADDR_LABEL[5] = { "by team", "robot.local", "usb 172.22.11.2", "systemcore usb", "simulator" };
-static const char *const ADDR_VALUE[5] = { "", "robot.local", "172.22.11.2", "172.26.0.1", "127.0.0.1" };
+static const char *const ADDR_LABEL[6] = { "by team", "robot.local", "usb 172.22.11.2", "systemcore usb",
+                                           "the pc", "simulator" };
+static const char *const ADDR_VALUE[6] = { "", "robot.local", "172.22.11.2", "172.26.0.1", "", "127.0.0.1" };
+/* "the pc" is the paired Link's host, filled in when it is chosen: tools/fake_robot.py runs there, and
+ * without this there is no way to point the tablet at it -- every other address here is a real robot on
+ * a real field network, so nothing about the robot half of the interface could be exercised at a desk.
+ * Its value is blank in the table because it is not a constant; st_addr resolves it. */
+#define ADDR_PC 4
 /* the simulator's address is the tablet itself: offered only in the simulator */
 #ifdef ESP_PLATFORM
-#define ADDR_N 4
-#else
 #define ADDR_N 5
+#else
+#define ADDR_N 6
 #endif
 
 static void st_show_team(void)
@@ -1121,7 +1127,24 @@ static void st_addr(lv_obj_t *o, void *u)
 {
     (void)o;
     int i = (int)(intptr_t)u;
-    snprintf(S.address, sizeof S.address, "%s", ADDR_VALUE[i]);
+    if (i == ADDR_PC) {
+        /* the host out of the Link's url, "http://192.168.0.5:8765" -> "192.168.0.5" */
+        link_status_t ls;
+        link_status(&ls);
+        const char *h = strstr(ls.url, "://");
+        h = h ? h + 3 : ls.url;
+        char host[64];
+        snprintf(host, sizeof host, "%.63s", h);
+        char *colon = strchr(host, ':');
+        if (colon) *colon = 0;
+        if (!host[0]) {
+            ui_island_say(BZ_I_LAPS, "no pc yet: pair one first");
+            return;
+        }
+        snprintf(S.address, sizeof S.address, "%s", host);
+    } else {
+        snprintf(S.address, sizeof S.address, "%s", ADDR_VALUE[i]);
+    }
     for (int k = 0; k < ADDR_N; k++) ui_chip_set(ST.addr_chips[k], k == i);
     ui_settings_save();
     ui_apply_addresses();
@@ -1558,7 +1581,14 @@ static void settings_open(void)
 {
     ST.entry[0] = 0;
     st_show_team();
-    for (int k = 0; k < ADDR_N; k++) ui_chip_set(ST.addr_chips[k], !strcmp(S.address, ADDR_VALUE[k]));
+    /* "the pc" holds a resolved address rather than one of the constants, so it is the one that is lit
+     * when something is set and nothing else claims it */
+    bool named = false;
+    for (int k = 0; k < ADDR_N; k++)
+        if (k != ADDR_PC && !strcmp(S.address, ADDR_VALUE[k])) named = true;
+    for (int k = 0; k < ADDR_N; k++)
+        ui_chip_set(ST.addr_chips[k], k == ADDR_PC ? (!named && S.address[0] != 0)
+                                                   : (!strcmp(S.address, ADDR_VALUE[k]) && (k != 0 || !S.address[0])));
     bz_level_set(ST.bright, S.brightness, false);
     bz_level_set(ST.vol, S.volume, false);
     st_tone_chips();
