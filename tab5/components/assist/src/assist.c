@@ -1125,7 +1125,25 @@ void assist_import_card(void)
             snprintf(path, sizeof path, "%s/%s", sd, ENVS[i]);
             got |= import_env(path, wifi, wifi + 64);
         }
-        if (got & 1u << ENV_WIFI_SSID) hal_wifi_join(wifi, wifi + 64); /* no WIFI_PASS: an open network */
+        /* The card's network seeds the tablet; it does not re-impose itself on every boot.
+         *
+         * This ran unconditionally, so a KEYS.ENV naming the school's network joined it again at every
+         * start -- overwriting whatever network the owner had picked by hand in settings, which is how
+         * the driver's saved network kept reverting to one that was nowhere near. From the screen that
+         * looks like Wi-Fi refusing to remember anything and having to be scanned for by hand every
+         * time; underneath, the manual join had worked and was thrown away at the next boot.
+         *
+         * The last SSID taken from the card is remembered, so editing KEYS.ENV to name a different
+         * network still moves the tablet onto it, and leaving it alone leaves the owner's choice alone.
+         * Same rule the Link's address already follows: what the owner set wins over the default. */
+        if (got & 1u << ENV_WIFI_SSID) {
+            char seeded[33] = "";
+            hal_kv_get("wifi_env", seeded, sizeof seeded);
+            if (strcmp(seeded, wifi) != 0) {
+                hal_kv_set("wifi_env", wifi);
+                hal_wifi_join(wifi, wifi + 64); /* no WIFI_PASS: an open network */
+            }
+        }
         memset(wifi, 0, 1024);
         free(wifi);
     }

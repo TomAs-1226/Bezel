@@ -1,0 +1,3 @@
+
+# per-agent build directories, so several builds can run side by side
+build-*/
