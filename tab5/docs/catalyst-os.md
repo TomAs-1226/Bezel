@@ -258,7 +258,8 @@ bench` times the covers on the tablet.
 Dev console (`tools/tab5_dev.py COM9 "..."`): `say <text>` sends a message through the island, `accent <name|n>`
 sets the accent, `settings <section>` opens settings on a section (`settings look`). Home mode's own: `hm` (where
 it is), `hm page 0|1|2`, `hm face <name>`, `hm night 1|0|auto`, `hm song artist|album|title` (a made-up song as the
-PC's, `hm song off`), `hm art` (the covers), `hm art bench`, `hm art style <name>`.
+PC's, `hm song off`), `hm art` (the covers), `hm art bench`, `hm art style <name>`, `hm prof` (home mode's frame
+hook by part).
 
 ### 5. Apps
 

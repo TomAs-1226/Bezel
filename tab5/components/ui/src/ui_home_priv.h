@@ -73,8 +73,6 @@ void hm_open_settings(lv_obj_t *from); /* the settings app, on its home section 
 
 /* "3:07" (or "1:02:03"); "-:--" when unknown */
 void hm_fmt_time(double s, char *out, size_t n);
-/* The glyph for a WMO weather code (the icon font has sun, moon, bolt and a thermometer, no clouds). */
-const char *hm_wx_icon(int code, bool day);
 /* A Home Assistant entity's glyph and its state in a few words ("on", "21.5 °C", "tap"). */
 const char *hm_ha_icon(home_ha_kind_t k, const char *unit);
 void hm_ha_state_text(const home_ha_entity_t *e, char *out, size_t n);

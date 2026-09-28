@@ -932,13 +932,6 @@ void hm_ha_state_text(const home_ha_entity_t *e, char *out, size_t n)
     else snprintf(out, n, "%s", e->state);
 }
 
-const char *hm_wx_icon(int code, bool day)
-{
-    if (code >= 0 && code <= 1) return day ? BZ_I_LIGHT_MODE : BZ_I_DARK_MODE;
-    if (code >= 95) return BZ_I_ELECTRIC_BOLT;
-    return BZ_I_THERMOMETER;
-}
-
 static void refresh_ha(void)
 {
     if (!(hm_cfg()->cards & HM_CARD_HOME)) return; /* not on this look */
@@ -2040,7 +2033,8 @@ void ui_home_mode_cc_add(void)
  *   hm face dial|horizon|dots|words|moon|night   that face, on the clock page
  *   hm night 1|0|auto       night forced on or off, or back to the clock's say
  *   hm song a|b|t, hm song off   a made-up song as the PC's (artist|album|title), for its cover and tint
- *   hm art [bench|style X]  the covers: what's cached, their timing, every generated one in one style */
+ *   hm art [bench|style X]  the covers: what's cached, their timing, every generated one in one style
+ *   hm prof                 where home mode's frame hook spent its time since the last ask, by part */
 void ui_home_mode_dev(const char *a)
 {
     while (*a == ' ') a++;
