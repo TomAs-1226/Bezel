@@ -24,6 +24,7 @@
 #include "ui_sys.h"
 
 #include <math.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdlib.h>
 #include <string.h>
@@ -192,6 +193,82 @@ static void copy_tba(void)
     sb_follow(s->phase == TBA_READY && s->have_event ? s->event_key : "", s->live);
 }
 
+/* The calendar lives on the card: read on the assistant's worker every CAL_S (a job between its turns, the
+ * calendar tool's own reader), never on this thread. The next event of today and tomorrow is kept. */
+#define CAL_S 600.0
+static pthread_mutex_t g_cal_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    char text[80];             /* "18:00 team meeting", "" none */
+    time_t at;
+    bool busy;
+    double next;
+} CAL;
+
+static void cal_job(void *u)
+{
+    (void)u;
+    as_action_fn act = assist_action_handler();
+    char *out = malloc(4096);
+    char best[80] = "";
+    time_t best_at = 0, now = time(NULL);
+    if (act && out && act("calendar", "{\"action\":\"list\",\"days\":2}", AS_POOL_ASSIST, out, 4096)) {
+        /* "events from ...:\n2026-09-28 18:00 team meeting\n..." */
+        for (char *l = strchr(out, '\n'); l; l = strchr(l + 1, '\n')) {
+            int y, mo, d, hh, mi, used = 0;
+            if (sscanf(l + 1, "%4d-%2d-%2d %2d:%2d %n", &y, &mo, &d, &hh, &mi, &used) != 5 || !used) continue;
+            struct tm tm = { .tm_year = y - 1900, .tm_mon = mo - 1, .tm_mday = d, .tm_hour = hh, .tm_min = mi, .tm_isdst = -1 };
+            time_t at = mktime(&tm);
+            if (at <= now || (best_at && at >= best_at)) continue;
+            best_at = at;
+            const char *text = l + 1 + used;
+            snprintf(best, sizeof best, "%d:%02d %.*s", hh, mi, (int)strcspn(text, "\n"), text);
+        }
+    }
+    free(out);
+    pthread_mutex_lock(&g_cal_lock);
+    snprintf(CAL.text, sizeof CAL.text, "%s", best);
+    CAL.at = best_at;
+    CAL.busy = false;
+    pthread_mutex_unlock(&g_cal_lock);
+}
+
+static void cal_tick(double now)
+{
+    if (now < CAL.next) return;
+    pthread_mutex_lock(&g_cal_lock);
+    bool busy = CAL.busy;
+    if (!busy) CAL.busy = true;
+    pthread_mutex_unlock(&g_cal_lock);
+    if (busy) return;
+    if (assist_post_job(cal_job, NULL)) CAL.next = now + CAL_S;
+    else {
+        pthread_mutex_lock(&g_cal_lock);
+        CAL.busy = false; /* the worker is busy with another job: again in a minute */
+        pthread_mutex_unlock(&g_cal_lock);
+        CAL.next = now + 60;
+    }
+}
+
+/* the first alarm that is on, as the clock lists it ("06:30 weekdays"); in memory, cheap */
+static char g_alarm[24];
+static void alarm_line(void)
+{
+    char out[400];
+    g_alarm[0] = 0;
+    if (!ui_alarm_do("list", 0, 0, 0, out, sizeof out)) return;
+    for (char *l = out; l && *l; l = strchr(l, '\n') ? strchr(l, '\n') + 1 : NULL) {
+        char *e = strchr(l, '\n');
+        size_t len = e ? (size_t)(e - l) : strlen(l);
+        if (len > 5 && !strncmp(l + len - 4, ", on", 4)) {
+            const char *dot = strstr(l, ". ");
+            if (dot && dot < l + len) {
+                snprintf(g_alarm, sizeof g_alarm, "%.*s", (int)(l + len - 4 - (dot + 2)), dot + 2);
+                return;
+            }
+        }
+    }
+}
+
 static void fill(intel_in_t *in, double now)
 {
     memset(in, 0, sizeof *in);
@@ -348,6 +425,11 @@ static void fill(intel_in_t *in, double now)
         }
     }
     /* the day */
+    pthread_mutex_lock(&g_cal_lock);
+    snprintf(in->next_event, sizeof in->next_event, "%s", CAL.text);
+    in->next_event_at = CAL.at;
+    pthread_mutex_unlock(&g_cal_lock);
+    snprintf(in->next_alarm, sizeof in->next_alarm, "%s", g_alarm);
     home_weather_t w;
     home_weather_get(&w);
     in->rain_hour = -1;
@@ -493,6 +575,7 @@ static void tick(void *u)
     if (now >= IX.next_1s) {
         IX.next_1s = now + 1;
         sources_tick(now);
+        cal_tick(now);
     }
     /* not while a finger moves something or a page slides: a pass is under a millisecond, but a frame in a
      * gesture has none to spare, and the pass can wait half a second */
@@ -502,6 +585,7 @@ static void tick(void *u)
     }
     if (now >= IX.next_brief) {
         IX.next_brief = now + BRIEF_S;
+        alarm_line();
         make_brief();
         brief_due();
     }
@@ -1244,6 +1328,7 @@ void ui_intel_boot(void)
     sb_config(S.team);
     double now = hal_seconds();
     IX.next_pass = now + 6; /* after the first TBA read from the card */
+    CAL.next = now + 45;    /* the card's EIO spell at start-up is over by then */
     IX.next_brief = now + 8;
     ui_on_refresh(tick, NULL);
 }
