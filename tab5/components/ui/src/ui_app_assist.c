@@ -20,6 +20,7 @@
 #include "link.h"
 #include "ui_companion.h"
 #include "ui_md.h"
+#include "ui_sys.h"
 #include "voice.h"
 
 #include <math.h>
@@ -35,6 +36,8 @@
 #define TLIST_H (APP_H - BAR_H - BZ_GAP)
 #define VIEW_MAX 60                     /* transcript rows kept as objects; older ones leave */
 #define CORE_H 330
+#define MEM_BTN 64                      /* the memory button in the prompt bar: an icon */
+#define CHIPS_W (TW - 20 - 2 * 128 - 16 - MEM_BTN - 8) /* the suggestions' share of the prompt bar */
 #define LENS 150
 
 /* ================================================================== text */
@@ -70,6 +73,23 @@ static void plain(char *out, size_t n, const char *in)
 static const char *tool_icon(const char *t)
 {
     if (!t) return BZ_I_BUILD;
+    if (!strcmp(t, "remember") || !strcmp(t, "forget") || !strcmp(t, "recall") || strstr(t, "notebook") ||
+        strstr(t, "persona"))
+        return BZ_I_PSYCHOLOGY;
+    if (!strcmp(t, "triage")) return BZ_I_HEALTH_AND_SAFETY;
+    if (!strcmp(t, "swerve_check")) return BZ_I_EXPLORE;
+    if (!strcmp(t, "timer")) return BZ_I_TIMER;
+    if (!strcmp(t, "alarm") || !strcmp(t, "reminder")) return BZ_I_SCHEDULE;
+    if (!strcmp(t, "notes")) return BZ_I_EDIT_NOTE;
+    if (!strcmp(t, "documents")) return BZ_I_DESCRIPTION;
+    if (!strcmp(t, "calendar")) return BZ_I_GRID_VIEW;
+    if (!strcmp(t, "weather")) return BZ_I_LIGHT_MODE;
+    if (!strcmp(t, "notifications")) return BZ_I_NOTIFICATIONS;
+    if (!strcmp(t, "checklist")) return BZ_I_CHECKLIST_RTL;
+    if (!strcmp(t, "tablet_status") || !strcmp(t, "set_tablet")) return BZ_I_DISPLAY_SETTINGS;
+    if (!strcmp(t, "open_app")) return BZ_I_APPS;
+    if (!strcmp(t, "music")) return BZ_I_GRAPHIC_EQ;
+    if (!strcmp(t, "smart_home")) return BZ_I_LIGHTBULB;
     if (strstr(t, "patch")) return BZ_I_CALL_SPLIT;
     if (strstr(t, "work_order")) return BZ_I_OUTBOX;
     if (strstr(t, "snapshot")) return BZ_I_UNDO;
@@ -267,7 +287,10 @@ static void view_rich(view_t *v, const as_entry_t *e)
         v->rich = bz_box(v->row);
         lv_obj_set_pos(v->rich, 0, 0);
     }
-    ui_md_render(v->rich, t, TW - 2 * BZ_PAD_TILE);
+    char *f = strdup(t); /* the model's curly quotes folded: the faces don't carry them */
+    if (f) assist_fold_text(f);
+    ui_md_render(v->rich, f ? f : t, TW - 2 * BZ_PAD_TILE);
+    free(f);
     if (v->text) lv_obj_add_flag(v->text, LV_OBJ_FLAG_HIDDEN);
 }
 
@@ -301,6 +324,7 @@ static void view_fill(view_t *v, const as_entry_t *e, as_phase_t ph)
         char *buf = malloc(n);
         if (!buf) return;
         plain(buf, n, t);
+        assist_fold_text(buf);
         lv_label_set_text(v->text, buf);
         free(buf);
     } else if (v->kind == AS_E_THINKING) {
@@ -311,9 +335,15 @@ static void view_fill(view_t *v, const as_entry_t *e, as_phase_t ph)
             const char *sp = strchr(s, ' ');
             if (sp) s = sp + 1;
         }
-        ui_text(v->text, "%s%s", s != t ? "\xe2\x80\xa6" : "", s);
+        char line[400];
+        snprintf(line, sizeof line, "%s%s", s != t ? "\xe2\x80\xa6" : "", s);
+        assist_fold_text(line);
+        ui_text(v->text, "%s", line);
     } else {
-        ui_text(v->text, "%s", t);
+        char line[256];
+        snprintf(line, sizeof line, "%s", t);
+        assist_fold_text(line);
+        ui_text(v->text, "%s", line);
     }
     if (v->mark) bz_mark_set(v->mark, tool_status(e->tool_state));
 }
@@ -567,6 +597,12 @@ static void setup_tap(lv_obj_t *o, void *u)
     ui_app_open(&APP_LINK, o);
 }
 
+static void memory_tap(lv_obj_t *o, void *u)
+{
+    (void)u;
+    ui_memory_open(AS_POOL_ASSIST, o);
+}
+
 static void refresh_chips(void)
 {
     const char *s[5];
@@ -582,7 +618,7 @@ static void refresh_chips(void)
         AS.sugg[i] = keep[i];
         lv_obj_t *c = ui_chip(AS.chips, keep[i], chip_tap, (void *)(intptr_t)i);
         /* each its share of the row, and a long question ends in "…" instead of scrolling off the left */
-        int share = (TW - 20 - 2 * 128 - 16 - 8 * (n - 1)) / n; /* the row's width, as the build sets it */
+        int share = (CHIPS_W - 8 * (n - 1)) / n; /* the row's width, as the build sets it */
         lv_obj_set_style_max_width(c, share, 0);
         lv_obj_t *l = lv_obj_get_child(c, -1);
         if (l && lv_obj_check_type(l, &lv_label_class)) {
@@ -736,13 +772,18 @@ static void assist_build(lv_obj_t *b)
     lv_obj_set_style_pad_all(bar, 10, 0);
     lv_obj_set_style_radius(bar, 38, 0);
     AS.chips = bz_row(bar, 8);
-    lv_obj_set_width(AS.chips, TW - 20 - 2 * 128 - 16);
+    lv_obj_set_width(AS.chips, CHIPS_W);
     lv_obj_set_height(AS.chips, BAR_H - 20);
     lv_obj_set_style_clip_corner(AS.chips, false, 0);
     lv_obj_align(AS.chips, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_t *nb = ui_button(bar, BZ_I_REFRESH, "new", new_tap, NULL);
     lv_obj_set_width(nb, 120);
     lv_obj_align(nb, LV_ALIGN_RIGHT_MID, -128 - 8, 0);
+    /* what the technician remembers, and the way to take it back */
+    lv_obj_t *mb = ui_button(bar, BZ_I_PSYCHOLOGY, NULL, memory_tap, NULL);
+    lv_obj_set_style_pad_hor(mb, 0, 0);
+    lv_obj_set_width(mb, MEM_BTN);
+    lv_obj_align(mb, LV_ALIGN_RIGHT_MID, -128 - 8 - 120 - 8, 0);
     AS.send = ui_button(bar, BZ_I_KEYBOARD, "ask", send_tap, NULL);
     ui_chip_set(AS.send, true);
     lv_obj_set_width(AS.send, 128);
@@ -943,7 +984,7 @@ static struct {
 
 static const char *const KEY_TITLE[5] = { "the pc's address, e.g. http://192.168.1.20:8765 (empty: find it)",
                                           "the token catalyst-link printed", "anthropic api key (sk-ant-...)",
-                                          "openai api key (sk-...)", "openai model, e.g. gpt-4o-mini" };
+                                          "openai api key (sk-...)", "openai model, e.g. gpt-5 (empty: gpt-5)" };
 
 /* A key or model typed on either screen: stored, applied, and never shown again. */
 static void key_typed(int what, const char *text)
@@ -971,7 +1012,7 @@ static void keys_state(char *out, size_t n)
     }
     assist_config(c);
     snprintf(out, n, "claude key: %s · openai key: %s · openai model: %s", c->api_key[0] ? "saved" : "none",
-             c->oai_key[0] ? "saved" : "none", c->oai_model[0] ? c->oai_model : "gpt-4o-mini (default)");
+             c->oai_key[0] ? "saved" : "none", c->oai_model[0] ? c->oai_model : "gpt-5 (default)");
     memset(c, 0, sizeof *c);
     free(c);
 }
@@ -1180,12 +1221,13 @@ static void link_build(lv_obj_t *b)
 
 /* ================================================================== settings > assistant */
 
+#define NVOICES 7 /* the companion's voices on offer (VOICES, below) */
 static const int REMIND_S[4] = { 0, 60, 120, 300 };
 static const char *const REMIND_L[4] = { "once", "every minute", "every 2 min", "every 5 min" };
 
 static struct {
     lv_obj_t *route[3], *keys, *orb[2], *desk, *remind[4];
-    lv_obj_t *vout[3], *vwake, *vfollow, *vvoice[6], *vstate;
+    lv_obj_t *vout[3], *vwake, *vfollow, *vvoice[NVOICES], *vstate, *mem;
     ui_kb_t *kb;
     int editing;           /* 0-4 the keys (key_typed); 10-13 the companion's voice (VOICE_TITLE) */
 } SA;
@@ -1193,7 +1235,9 @@ static struct {
 /* the companion's voice */
 static const char *const VOUT_L[3] = { "speak and show", "speak only", "show only" };
 static const vo_out_t VOUT[3] = { VO_OUT_BOTH, VO_OUT_SPEAK, VO_OUT_SHOW };
-static const char *const VOICES[6] = { "coral", "sage", "verse", "alloy", "echo", "shimmer" };
+/* hers is a young woman's voice: the female voices first, marin (the default) leading; cedar is the one
+ * male voice kept for choice. tts-1 has neither marin nor cedar: voice.c picks the nearest it does have. */
+static const char *const VOICES[NVOICES] = { "marin", "coral", "nova", "shimmer", "sage", "alloy", "cedar" };
 static const char *const VOICE_TITLE[4] = { "the companion's chat model (empty: the openai model above)",
                                             "speech to text model (empty: " VO_STT_DEFAULT ")",
                                             "speech model (empty: " VO_TTS_DEFAULT ")",
@@ -1223,13 +1267,19 @@ static void sa_show(void)
     ui_chip_set(SA.orb[1], c->orb_companion);
     ui_chip_set(SA.desk, c->desk_auto);
     for (int i = 0; i < 4; i++) ui_chip_set(SA.remind[i], c->remind_s == REMIND_S[i]);
+    if (SA.mem) {
+        char a[160], b[160];
+        assist_mem_status(AS_POOL_ASSIST, a, sizeof a);
+        assist_mem_status(AS_POOL_COMPANION, b, sizeof b);
+        ui_text(SA.mem, "the technician: %s\nthe companion: %s", a, b);
+    }
     if (SA.vstate) {
         voice_config_t v;
         voice_config(&v);
         for (int i = 0; i < 3; i++) ui_chip_set(SA.vout[i], v.out == VOUT[i]);
         ui_chip_set(SA.vwake, v.wake);
         ui_chip_set(SA.vfollow, v.follow);
-        for (int i = 0; i < 6; i++) ui_chip_set(SA.vvoice[i], !strcmp(v.voice[0] ? v.voice : VO_VOICE_DEFAULT, VOICES[i]));
+        for (int i = 0; i < NVOICES; i++) ui_chip_set(SA.vvoice[i], !strcmp(v.voice[0] ? v.voice : VO_VOICE_DEFAULT, VOICES[i]));
         char t[256];
         voice_state_text(t, sizeof t);
         ui_text(SA.vstate, "%s", t);
@@ -1359,6 +1409,8 @@ static void sa_open_companion(lv_obj_t *o, void *u)
     ui_companion_open(false, o);
 }
 
+static void sa_memory(lv_obj_t *o, void *u) { ui_memory_open((int)(intptr_t)u, o); }
+
 static lv_obj_t *sa_row(lv_obj_t *parent, int w)
 {
     lv_obj_t *r = bz_row(parent, 10);
@@ -1389,8 +1441,22 @@ void ui_assist_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     ui_button(r, BZ_I_KEYBOARD, "openai key", sa_edit, (void *)3);
     ui_button(r, BZ_I_EDIT_NOTE, "openai model", sa_edit, (void *)4);
     lv_obj_t *n = bz_label(col, "OpenAI runs straight from the tablet over Wi-Fi, no PC needed; the key stays on the tablet. "
-                                "The default model is gpt-4o-mini: check that your OpenAI account offers it, or set another.",
+                                "The default model is gpt-5: check that your OpenAI account offers it, or set another.",
                            BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(n, w);
+    lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
+
+    bz_label(col, "memory", BZ_F_LABEL, BZ_C_DIM);
+    SA.mem = bz_label(col, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(SA.mem, w);
+    lv_label_set_long_mode(SA.mem, LV_LABEL_LONG_WRAP);
+    r = sa_row(col, w);
+    ui_button(r, BZ_I_PSYCHOLOGY, "the technician's", sa_memory, (void *)(intptr_t)AS_POOL_ASSIST);
+    ui_button(r, BZ_I_PSYCHOLOGY, "the companion's", sa_memory, (void *)(intptr_t)AS_POOL_COMPANION);
+    n = bz_label(col, "Each keeps its own long-term memory, and neither can read the other's: the technician its season "
+                      "notebook and what it learns about the robot and the team, the companion her persona and what she "
+                      "learns about you. Both on the card, in CATOS/DATA. See, delete, or forget everything there.",
+                 BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(n, w);
     lv_label_set_long_mode(n, LV_LABEL_LONG_WRAP);
 
@@ -1411,7 +1477,7 @@ void ui_assist_settings(lv_obj_t *pane, lv_obj_t *body, int w)
     SA.vwake = ui_chip(r, "wake word", sa_vwake, (void *)0);
     SA.vfollow = ui_chip(r, "listen for a follow-up", sa_vwake, (void *)1);
     r = sa_row(col, w);
-    for (int i = 0; i < 6; i++) SA.vvoice[i] = ui_chip(r, VOICES[i], sa_vvoice, (void *)(intptr_t)i);
+    for (int i = 0; i < NVOICES; i++) SA.vvoice[i] = ui_chip(r, VOICES[i], sa_vvoice, (void *)(intptr_t)i);
     r = sa_row(col, w);
     ui_button(r, BZ_I_EDIT_NOTE, "chat model", sa_vedit, (void *)10);
     ui_button(r, BZ_I_EDIT_NOTE, "hearing model", sa_vedit, (void *)11);
@@ -1448,3 +1514,367 @@ void ui_assist_settings_open(void)
 
 const ui_app_t APP_LINK = { .name = "link", .icon = BZ_I_COMPUTER, .build = link_build, .open = link_open,
                             .refresh = link_refresh };
+
+/* ================================================================== memory
+ *
+ * What each AI remembers, and the owner's way to take any of it back. Two pools, one screen: the chips at
+ * the top pick whose. On the left the self it carries into every conversation -- the technician's season
+ * notebook, the companion's persona -- each section with its own ×; on the right its memories, the most
+ * valuable first, each with an × (tap it twice: the second tap forgets); at the bottom of the left, forget
+ * everything (also twice). Built again only when a pool changes (assist_mem_gen), never per frame. */
+
+#define MEM_ROWS 120
+
+static struct {
+    lv_obj_t *chips[2], *status, *self_head, *self_list, *list, *all_btn, *all_label, *empty;
+    int pool;
+    uint32_t gen;
+    bool built_once;
+    int armed_id;          /* a memory whose × was tapped once; -1 none; 1000+i a self section */
+    double armed_at;
+    bool armed_all;
+    as_memory_t *rows;
+    int lw, rw, lh;
+} MM = { .armed_id = -1 };
+
+static const char *const POOL_WHO[2] = { "the technician", "the companion" };
+
+static void mm_rebuild(void);
+
+static void mm_disarm(void)
+{
+    MM.armed_id = -1;
+    if (MM.armed_all) {
+        MM.armed_all = false;
+        ui_text(MM.all_label, "forget everything");
+    }
+}
+
+static void mm_row_x(lv_obj_t *o, void *u)
+{
+    (void)o;
+    int id = (int)(intptr_t)u;
+    double now = hal_seconds();
+    if (MM.armed_id != id || now - MM.armed_at > 4) {
+        mm_disarm();
+        MM.armed_id = id;
+        MM.armed_at = now;
+        char key[24] = "that section";
+        if (id >= 1000) assist_mem_self((as_pool_t)MM.pool, id - 1000, key, sizeof key, NULL, 0);
+        for (char *p = key; *p; p++) if (*p == '_') *p = ' ';
+        if (id >= 1000) ui_text(MM.status, "tap \xc3\x97 again to empty \"%s\"", key);
+        else ui_text(MM.status, "tap \xc3\x97 again to forget #%d", id);
+        return;
+    }
+    MM.armed_id = -1;
+    bool ok = id >= 1000 ? assist_mem_clear_self((as_pool_t)MM.pool, id - 1000) : assist_mem_forget((as_pool_t)MM.pool, id);
+    hal_tone(ok ? 900 : 500, 30, S.volume * 0.5f);
+    if (!ok) ui_island_say(BZ_I_PSYCHOLOGY, "that memory couldn't be changed right now");
+    mm_rebuild();
+}
+
+static void mm_all(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    double now = hal_seconds();
+    if (!MM.armed_all || now - MM.armed_at > 4) {
+        mm_disarm();
+        MM.armed_all = true;
+        MM.armed_at = now;
+        ui_text(MM.all_label, "tap again to forget it all");
+        return;
+    }
+    MM.armed_all = false;
+    ui_text(MM.all_label, "forget everything");
+    assist_mem_forget_all((as_pool_t)MM.pool);
+    char msg[64];
+    snprintf(msg, sizeof msg, "%s's memory is empty now", POOL_WHO[MM.pool]);
+    ui_island_say(BZ_I_PSYCHOLOGY, msg);
+    mm_rebuild();
+}
+
+static void mm_pool(lv_obj_t *o, void *u)
+{
+    (void)o;
+    int p = (int)(intptr_t)u;
+    if (p == MM.pool) return;
+    MM.pool = p;
+    mm_disarm();
+    mm_rebuild();
+}
+
+/* a small round × on a row's top right */
+static lv_obj_t *mm_x(lv_obj_t *parent, int id)
+{
+    lv_obj_t *x = ui_button(parent, BZ_I_CLOSE, NULL, mm_row_x, (void *)(intptr_t)id);
+    lv_obj_set_style_pad_hor(x, 14, 0);
+    lv_obj_set_size(x, 52, 52);
+    lv_obj_add_flag(x, LV_OBJ_FLAG_IGNORE_LAYOUT);
+    lv_obj_align(x, LV_ALIGN_TOP_RIGHT, 0, 0);
+    return x;
+}
+
+static void mm_rebuild(void)
+{
+    MM.gen = assist_mem_gen();
+    for (int i = 0; i < 2; i++) ui_chip_set(MM.chips[i], MM.pool == i);
+    char st[160];
+    assist_mem_status((as_pool_t)MM.pool, st, sizeof st);
+    ui_text(MM.status, "%s", st);
+    ui_text(MM.self_head, "%s", MM.pool == AS_POOL_ASSIST ? "season notebook" : "persona");
+
+    /* the self sections */
+    lv_obj_clean(MM.self_list);
+    int iw = MM.lw - 2 * BZ_PAD_TILE;
+    char *text = malloc(1024);
+    for (int i = 0; text && i < 4; i++) {
+        char key[24];
+        if (!assist_mem_self((as_pool_t)MM.pool, i, key, sizeof key, text, 1024)) break;
+        lv_obj_t *r = bz_box(MM.self_list);
+        lv_obj_set_width(r, iw);
+        lv_obj_set_height(r, LV_SIZE_CONTENT);
+        lv_obj_t *k = bz_label(r, "", BZ_F_LABEL, BZ_C_DIM);
+        for (char *p = key; *p; p++) if (*p == '_') *p = ' ';
+        ui_text(k, "%s", key);
+        lv_obj_t *t = bz_label(r, "", BZ_F_BODY_S, text[0] ? BZ_C_INK : BZ_C_FAINT);
+        lv_label_set_text(t, text[0] ? text : "nothing yet");
+        lv_obj_set_width(t, iw - (text[0] ? 60 : 0));
+        lv_label_set_long_mode(t, LV_LABEL_LONG_WRAP);
+        lv_obj_set_pos(t, 0, 30);
+        if (text[0]) mm_x(r, 1000 + i);
+    }
+    free(text);
+
+    /* the memories */
+    lv_obj_clean(MM.list);
+    int n = MM.rows ? assist_mem_list((as_pool_t)MM.pool, MM.rows, MEM_ROWS) : -1;
+    if (n <= 0) {
+        MM.empty = ui_empty(MM.list, MM.rw,
+                            n < 0 ? "memory can't be read right now" : "nothing remembered yet",
+                            n < 0 ? "The card didn't answer: it is tried again in a moment."
+                                  : MM.pool == AS_POOL_ASSIST
+                                        ? "The technician remembers the robot's quirks, faults and fixes, the team's "
+                                          "procedures and the season as you work with it in Assist."
+                                        : "The companion remembers you: names, plans, what you like, the jokes you "
+                                          "share, as you talk with her.");
+        return;
+    }
+    for (int i = 0; i < n; i++) {
+        const as_memory_t *m = &MM.rows[i];
+        lv_obj_t *t = bz_tile(MM.list, MM.rw, LV_SIZE_CONTENT);
+        bz_tile_set_fill(t, BZ_C_SURFACE2);
+        lv_obj_set_style_pad_ver(t, 14, 0);
+        lv_obj_set_style_pad_hor(t, 20, 0);
+        lv_obj_set_style_radius(t, 20, 0);
+        char d[16] = "";
+        if (m->updated > 0) {
+            time_t tt = (time_t)m->updated;
+            struct tm tm;
+            localtime_r(&tt, &tm);
+            strftime(d, sizeof d, "%b %d", &tm);
+        }
+        lv_obj_t *meta = bz_label(t, "", BZ_F_CAPTION, m->imp >= 3 ? BZ_C_ICE : BZ_C_DIM);
+        ui_text(meta, "#%d · %s · %s%s%s", m->id, m->kind, m->imp >= 3 ? "important" : m->imp == 2 ? "useful" : "minor",
+                d[0] ? " · " : "", d);
+        lv_obj_t *tx = bz_label(t, "", BZ_F_BODY_S, BZ_C_INK);
+        lv_label_set_text(tx, m->text);
+        lv_obj_set_width(tx, MM.rw - 40 - 64);
+        lv_label_set_long_mode(tx, LV_LABEL_LONG_WRAP);
+        lv_obj_set_pos(tx, 0, 26);
+        mm_x(t, m->id);
+    }
+}
+
+static void memory_open(void)
+{
+    if (!MM.rows) MM.rows = malloc(sizeof *MM.rows * MEM_ROWS); /* 60 KB: PSRAM */
+    mm_disarm();
+    mm_rebuild();
+}
+
+static void memory_refresh(void)
+{
+    double now = hal_seconds();
+    if ((MM.armed_id >= 0 || MM.armed_all) && now - MM.armed_at > 4) {
+        mm_disarm();
+        char st[160];
+        assist_mem_status((as_pool_t)MM.pool, st, sizeof st);
+        ui_text(MM.status, "%s", st);
+    }
+    if (assist_mem_gen() != MM.gen) mm_rebuild(); /* a conversation remembered something meanwhile */
+}
+
+static void memory_build(lv_obj_t *b)
+{
+    lv_obj_t *head = bz_col(b, 2);
+    lv_obj_align(head, LV_ALIGN_TOP_RIGHT, HEAD_RIGHT_X, 26);
+    lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    bz_label(head, "what the ais remember", BZ_F_LABEL, BZ_C_DIM);
+    bz_label(head, "Memory", BZ_F_TITLE, BZ_C_INK);
+
+    /* landscape: the self on the left, the memories on the right; portrait: one above the other */
+    int lx = PAD, ly = APP_Y, rx, ry;
+    if (PORTRAIT) {
+        MM.lw = W - 2 * PAD;
+        MM.lh = 470;
+        MM.rw = W - 2 * PAD;
+        rx = PAD;
+        ry = APP_Y + MM.lh + BZ_GAP;
+    } else {
+        MM.lw = 470;
+        MM.lh = APP_H;
+        MM.rw = W - 2 * PAD - MM.lw - BZ_GAP;
+        rx = PAD + MM.lw + BZ_GAP;
+        ry = APP_Y;
+    }
+    lv_obj_t *l = bz_tile(b, MM.lw, MM.lh);
+    lv_obj_set_pos(l, lx, ly);
+    lv_obj_set_flex_flow(l, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(l, 10, 0);
+    lv_obj_t *cr = bz_row(l, 8);
+    MM.chips[0] = ui_chip(cr, "the technician", mm_pool, (void *)0);
+    MM.chips[1] = ui_chip(cr, "the companion", mm_pool, (void *)1);
+    MM.status = bz_label(l, "", BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(MM.status, MM.lw - 2 * BZ_PAD_TILE);
+    lv_label_set_long_mode(MM.status, LV_LABEL_LONG_WRAP);
+    MM.self_head = bz_label(l, "", BZ_F_NAME, BZ_C_INK);
+    MM.self_list = ui_scroller(l, MM.lw - 2 * BZ_PAD_TILE, 200);
+    lv_obj_set_flex_grow(lv_obj_get_parent(MM.self_list), 1); /* what the rest of the tile leaves */
+    lv_obj_set_style_pad_row(MM.self_list, 16, 0);
+    MM.all_btn = ui_button(l, BZ_I_CLOSE, "forget everything", mm_all, NULL);
+    MM.all_label = lv_obj_get_child(MM.all_btn, 1);
+
+    lv_obj_t *wrap = bz_box(b);
+    lv_obj_set_pos(wrap, rx, ry);
+    MM.list = ui_scroller(wrap, MM.rw, PORTRAIT ? H - ry - PAD : APP_H);
+    lv_obj_set_style_pad_row(MM.list, 10, 0);
+    lv_obj_set_style_pad_bottom(MM.list, 12, 0);
+}
+
+const ui_app_t APP_MEMORY = { .name = "memory", .icon = BZ_I_PSYCHOLOGY, .build = memory_build, .open = memory_open,
+                              .refresh = memory_refresh };
+
+/* ================================================================== the dev console
+ *
+ *   assist ask <text>     a typed question to the technician, as its keyboard would send it (the app opens)
+ *   assist new            a new conversation
+ *   assist dump           the transcript on the console, one "ASSIST" line an entry
+ *   memo [a|c]            a pool's status, self sections and memories on the console ("MEMO" lines)
+ *   memo digest a|c [q]   exactly what that model is shown at the start of a conversation
+ *   memo forget a|c <id>, memo clear a|c, memo open a|c
+ * The console's replies are read with tab5-shots/brain/tabcmd.py (tab5_dev.py prints only its own lines). */
+
+/* one console line for a long text: newlines as " / ", cut at `max` */
+static void dev_print(const char *tag, const char *head, const char *text, size_t max)
+{
+    size_t n = strlen(text ? text : "");
+    char *b = malloc(max + 8);
+    if (!b) return;
+    size_t k = 0;
+    for (size_t i = 0; i < n && k < max; i++) {
+        char c = text[i];
+        if (c == '\n') {
+            if (k + 3 >= max) break;
+            memcpy(b + k, " / ", 3);
+            k += 3;
+        } else if ((unsigned char)c >= 0x20 || c == '\t') b[k++] = c;
+    }
+    b[k] = 0;
+    printf("%s %s%s%s\n", tag, head, b, n > k ? " …" : "");
+    free(b);
+}
+
+void ui_assist_dev(const char *cmd)
+{
+    if (!strncmp(cmd, "assist ask ", 11)) {
+        if (!ui_app_is_open(&APP_ASSIST)) ui_app_open(&APP_ASSIST, NULL);
+        ask(cmd + 11);
+        printf("ASSIST asked: %s\n", cmd + 11);
+    } else if (!strcmp(cmd, "assist new")) {
+        new_tap(NULL, NULL);
+        printf("ASSIST a new conversation\n");
+    } else if (!strncmp(cmd, "assist dump", 11)) {
+        static const char *const KIND[] = { "you", "answer", "thinking", "tool", "note", "error" };
+        assist_lock();
+        int n = assist_count();
+        printf("ASSIST %d entries, phase %s\n", n, phase_word(assist_phase_locked()));
+        for (int i = 0; i < n; i++) {
+            const as_entry_t *e = assist_entry(i);
+            char head[64];
+            snprintf(head, sizeof head, "%d %s%s%s: ", i, KIND[e->kind < 6 ? e->kind : 4], e->tool && e->tool[0] ? " " : "",
+                     e->tool ? e->tool : "");
+            dev_print("ASSIST", head, e->text, e->kind == AS_E_TEXT ? 1400 : 300);
+        }
+        assist_unlock();
+    } else if (!strncmp(cmd, "memo", 4)) {
+        const char *a = cmd + 4;
+        while (*a == ' ') a++;
+        char verb[12] = "";
+        int k = 0;
+        while (*a && *a != ' ' && k < 11) verb[k++] = *a++;
+        verb[k] = 0;
+        while (*a == ' ') a++;
+        /* "memo a", "memo c": the verb is the pool */
+        bool list = !verb[0] || !strcmp(verb, "a") || !strcmp(verb, "c");
+        const char *pp = list ? verb : a;
+        as_pool_t pool = pp[0] == 'c' ? AS_POOL_COMPANION : AS_POOL_ASSIST;
+        if (!list) {
+            while (*a && *a != ' ') a++;
+            while (*a == ' ') a++;
+        }
+        if (list) {
+            for (int p = 0; p < 2; p++) {
+                if (verb[0] && p != (int)pool) continue;
+                char st[160];
+                assist_mem_status((as_pool_t)p, st, sizeof st);
+                printf("MEMO %s: %s\n", POOL_WHO[p], st);
+                char key[24], *text = malloc(1024);
+                for (int i = 0; text && assist_mem_self((as_pool_t)p, i, key, sizeof key, text, 1024); i++) {
+                    char head[40];
+                    snprintf(head, sizeof head, "  %s: ", key);
+                    dev_print("MEMO", head, text[0] ? text : "(empty)", 700);
+                }
+                free(text);
+                as_memory_t *rows = malloc(sizeof *rows * MEM_ROWS);
+                int n = rows ? assist_mem_list((as_pool_t)p, rows, MEM_ROWS) : -1;
+                for (int i = 0; i < n; i++) {
+                    char head[64];
+                    snprintf(head, sizeof head, "  #%d %s %d: ", rows[i].id, rows[i].kind, rows[i].imp);
+                    dev_print("MEMO", head, rows[i].text, 500);
+                }
+                free(rows);
+            }
+        } else if (!strcmp(verb, "digest")) {
+            char *d = assist_mem_digest(pool, a);
+            if (d) {
+                /* line by line: it is what the model reads */
+                for (char *s = d, *nl; s && *s; s = nl ? nl + 1 : NULL) {
+                    nl = strchr(s, '\n');
+                    if (nl) *nl = 0;
+                    printf("MEMO | %s\n", s);
+                }
+            }
+            free(d);
+        } else if (!strcmp(verb, "forget")) {
+            int id = atoi(a);
+            printf("MEMO forget %s #%d: %s\n", POOL_WHO[pool], id, assist_mem_forget(pool, id) ? "done" : "no such memory");
+        } else if (!strcmp(verb, "clear")) {
+            assist_mem_forget_all(pool);
+            printf("MEMO %s's memory cleared\n", POOL_WHO[pool]);
+        } else if (!strcmp(verb, "open")) {
+            ui_memory_open((int)pool, NULL);
+        } else {
+            printf("MEMO usage: memo [a|c] | memo digest a|c [question] | memo forget a|c ID | memo clear a|c | memo open a|c\n");
+        }
+    }
+}
+
+void ui_memory_open(int pool, lv_obj_t *from)
+{
+    MM.pool = pool == AS_POOL_COMPANION ? AS_POOL_COMPANION : AS_POOL_ASSIST;
+    if (ui_app_is_open(&APP_MEMORY) && MM.list) {
+        memory_open();
+        return;
+    }
+    ui_app_open(&APP_MEMORY, from);
+}
