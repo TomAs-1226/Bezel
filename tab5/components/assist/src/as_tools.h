@@ -54,7 +54,22 @@ typedef struct {
     void *user;
     int team;                              /* settings' team number, for preflight */
     int pool;                              /* whose memory the memory tools touch (AS_MEM_*; 0 the technician) */
+    int act;                               /* an island activity already begun for this call (0 none): the
+                                              technician's writes start one while their input streams in */
 } as_env_t;
+
+/* ---- the island (as_desk.c; no-ops until the ui registers its hooks, assist.h) ---- */
+void as_act_turn(int pool, const char *doing);
+int as_act_begin(const char *kind, const char *text);
+void as_act_update(int id, const char *text);
+void as_act_end(int id, const char *said);
+/* What a call is doing, in a few words for the island ("reading the alerts"). Never NULL. */
+const char *as_tool_label(const char *name);
+/* A call that writes something the owner will want to know is done (a document, the notes, a patch, a work
+ * order): its activity's kind ("edit", "patch", "send"), or NULL. `in` may be NULL or partial. */
+const char *as_tool_work(const char *name, const aj_t *in);
+/* The words for a write's activity while it runs ("editing pit-notes"), from its (possibly partial) input. */
+void as_tool_work_text(const char *name, const aj_t *in, char *out, size_t n);
 
 /* Runs one validated call. `out` receives the result text (JSON, ≤ ~8 KB); `summary` a one-liner for
  * the transcript. */

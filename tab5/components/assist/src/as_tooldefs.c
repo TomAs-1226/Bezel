@@ -168,10 +168,12 @@ const as_tooldef_t AS_TOOLS[] = {
       "countdown of `seconds` (1 s to 24 h); match starts the FRC match clock (autonomous, then teleop; `seconds` "
       "15 or 20 sets autonomous's length); stopwatch starts the stopwatch; pause, resume, reset; status says what "
       "it is doing and the time left. There is one timer: starting one replaces whatever was running (say so). "
-      "For a reminder with words, use reminder.",
+      "A countdown shows on the island and rings wherever the owner is; `label` names it there (\"tea\", "
+      "\"battery charge\"). For a reminder with words at a time, use reminder.",
       "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"countdown\",\"match\","
       "\"stopwatch\",\"pause\",\"resume\",\"reset\",\"status\"]},"
-      "\"seconds\":{\"type\":\"number\",\"minimum\":1,\"maximum\":86400}},"
+      "\"seconds\":{\"type\":\"number\",\"minimum\":1,\"maximum\":86400},"
+      "\"label\":{\"type\":\"string\",\"maxLength\":24}},"
       "\"required\":[\"action\"],\"additionalProperties\":false}",
       AS_T_DEVICE },
     { "alarm",
@@ -408,6 +410,62 @@ const as_tooldef_t *as_tool_find(const char *name)
 {
     for (int i = 0; name && i < AS_NTOOLS; i++) if (!strcmp(AS_TOOLS[i].name, name)) return &AS_TOOLS[i];
     return NULL;
+}
+
+const char *as_tool_label(const char *name)
+{
+    static const struct {
+        const char *name, *label;
+    } L[] = {
+        { "triage", "checking the robot" }, { "robot_overview", "looking at the robot" },
+        { "swerve_check", "checking the swerve modules" }, { "get_alerts", "reading the alerts" },
+        { "get_mechanisms", "reading the mechanisms" }, { "get_power", "reading the power" },
+        { "get_can", "reading the CAN bus" }, { "get_vision", "checking vision" },
+        { "run_preflight", "running preflight" }, { "list_topics", "reading NetworkTables" },
+        { "read_topics", "reading NetworkTables" }, { "list_tunables", "reading the tunables" },
+        { "list_autos", "reading the autos" }, { "get_matches", "checking the schedule" },
+        { "get_batteries", "checking the batteries" }, { "list_snapshots", "reading the snapshots" },
+        { "list_logs", "reading the logs" }, { "summarize_log", "reading a log" },
+        { "tba_query", "asking The Blue Alliance" }, { "list_recordings", "reading the recordings" },
+        { "analyze_recording", "analysing a recording" }, { "get_states", "reading the state timelines" },
+        { "systemcore_health", "asking Systemcore" }, { "motor_history", "reading motor history" },
+        { "open_app", "opening an app" }, { "set_tablet", "changing the tablet" }, { "tablet_status", "checking the tablet" },
+        { "timer", "setting the timer" }, { "alarm", "setting an alarm" }, { "reminder", "setting a reminder" },
+        { "notes", "the notes" }, { "documents", "the documents" }, { "checklist", "the checklist" },
+        { "calendar", "the calendar" }, { "weather", "checking the weather" }, { "notifications", "the notifications" },
+        { "music", "the music" }, { "smart_home", "the house" }, { "remember", "remembering" }, { "forget", "forgetting" },
+        { "recall", "remembering" }, { "update_notebook", "updating its notebook" }, { "update_persona", "thinking about herself" },
+        { "code_tree", "reading the code" }, { "code_read", "reading the code" }, { "code_search", "searching the code" },
+        { "list_patches", "checking the patches" }, { "list_work_orders", "checking the work orders" },
+        { "claude_sessions", "checking Claude Code" }, { "set_tunable", "waiting for your ok" },
+        { "select_auto", "waiting for your ok" }, { "revert_snapshot", "waiting for your ok" },
+        { "propose_patch", "writing a patch" }, { "create_work_order", "writing a work order" },
+    };
+    for (size_t i = 0; name && i < sizeof L / sizeof L[0]; i++)
+        if (!strcmp(L[i].name, name)) return L[i].label;
+    return "working";
+}
+
+const char *as_tool_work(const char *name, const aj_t *in)
+{
+    if (!name) return NULL;
+    const char *act = aj_gets(in, "action");
+    if (!strcmp(name, "documents")) return act && !strcmp(act, "write") ? "edit" : NULL;
+    if (!strcmp(name, "notes")) return act && (!strcmp(act, "append") || !strcmp(act, "replace")) ? "edit" : NULL;
+    if (!strcmp(name, "propose_patch")) return "patch";
+    if (!strcmp(name, "create_work_order")) return "send";
+    return NULL;
+}
+
+void as_tool_work_text(const char *name, const aj_t *in, char *out, size_t n)
+{
+    const char *nm = aj_gets(in, "name"), *title = aj_gets(in, "title");
+    if (name && !strcmp(name, "documents")) snprintf(out, n, "editing %.48s", nm && nm[0] ? nm : "a document");
+    else if (name && !strcmp(name, "notes")) snprintf(out, n, "editing the notes");
+    else if (name && !strcmp(name, "propose_patch")) snprintf(out, n, "patch%s%.52s", title ? ": " : "", title ? title : "");
+    else if (name && !strcmp(name, "create_work_order"))
+        snprintf(out, n, "work order%s%.48s", title ? ": " : "", title ? title : "");
+    else snprintf(out, n, "%s", as_tool_label(name));
 }
 
 bool as_tool_for(const as_tooldef_t *t, int pool)

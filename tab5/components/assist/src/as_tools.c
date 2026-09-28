@@ -2293,11 +2293,26 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     s[0] = 0;
     /* the last gate: a tool that isn't this conversation's is never run, whatever asked for it */
     if (!as_tool_for(as_tool_find(name), e->pool)) {
+        if (e->act > 0) as_act_end(e->act, NULL);
         ab_fmt(o, "{\"error\":\"%s is not one of this conversation's tools\"}", name);
         sum(s, sn, "not this conversation's tool");
         return AS_TR_ERROR;
     }
     e->refresh(e->robot);
+    /* A write the owner will want to know is done shows on the island while it runs, wherever the owner is,
+     * and leaves a word when it is ("saved pit-notes"). The technician's may already have begun, while the
+     * model was still writing the input. */
+    const char *work = as_tool_work(name, in);
+    int act = e->act;
+    char wt[80];
+    if (work) {
+        as_tool_work_text(name, in, wt, sizeof wt);
+        if (act > 0) as_act_update(act, wt);
+        else act = as_act_begin(work, wt);
+    } else if (act > 0) {
+        as_act_end(act, NULL); /* begun on a guess from the partial input: not a write after all */
+        act = 0;
+    }
     as_tres_t r;
     const as_tooldef_t *def = as_tool_find(name);
     if (!strcmp(name, "robot_overview")) r = t_overview(e, o, s, sn);
@@ -2353,6 +2368,25 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
         ab_free(o);
         ab_puts(o, "{\"error\":\"out of memory\"}");
         r = AS_TR_ERROR;
+    }
+    if (act > 0) {
+        char said[96];
+        const char *nm = aj_gets(in, "name");
+        if (!strcmp(name, "documents")) {
+            /* a saved one is announced by the documents app itself ("wrote pit-plan.MD to documents"):
+             * saying it twice, a moment apart, only hid one behind the other */
+            if (r == AS_TR_OK) said[0] = 0;
+            else snprintf(said, sizeof said, "couldn't save %.60s", nm ? nm : "the document");
+        }
+        else if (!strcmp(name, "notes"))
+            snprintf(said, sizeof said, "%s", r == AS_TR_OK ? "saved the notes" : "the notes weren't saved");
+        else if (!strcmp(name, "propose_patch"))
+            snprintf(said, sizeof said, "%.90s", r == AS_TR_OK ? s : r == AS_TR_DENIED ? "patch declined" : "patch refused");
+        else if (!strcmp(name, "create_work_order"))
+            snprintf(said, sizeof said, "%s", r != AS_TR_OK ? "work order not sent"
+                                              : strstr(s, "queued") ? "work order queued for the PC" : "work order sent to the PC");
+        else said[0] = 0;
+        as_act_end(act, said[0] ? said : NULL);
     }
     return r;
 }

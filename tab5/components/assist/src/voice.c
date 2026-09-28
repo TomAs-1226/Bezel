@@ -27,7 +27,8 @@
 #define CHUNK 320                  /* 20 ms at 16 kHz: what one hal_mic_read gives */
 #define REC_MAX (SR * 15)          /* the longest utterance */
 #define PREROLL (SR * 3 / 10)      /* kept from before the voice starts, so its onset isn't clipped */
-#define HIST_MAX 16                /* messages remembered (8 exchanges) */
+#define HIST_MAX 40                /* messages remembered: questions, tool calls and results, answers */
+#define HIST_TOOL_CHARS 600        /* a tool's result as the history keeps it (the answer already used it) */
 #define HIST_IDLE_S 600.0          /* quiet this long: the next question starts a new conversation */
 #define TOOL_ROUNDS 4
 #define TTS_RATE 24000             /* OpenAI's "pcm": 24 kHz, 16-bit, mono, little-endian */
@@ -48,9 +49,13 @@ static const char *TONE[VO_EMO_COUNT] = {
     "surprised", "affectionate and warm", "proud and bright", "puzzled",
 };
 
+/* One message of the conversation as Chat Completions takes it back: the owner's words, her tool calls and
+ * what they returned (cut short), her answer. The calls are kept, not only the words around them: a history
+ * of "okay, three minutes started" with no timer call in it teaches the model that saying it is doing it,
+ * and the next time it set no timer at all. */
 typedef struct {
-    bool user;
-    char *text;
+    aj_t *m;
+    bool starts;   /* the owner's question: an exchange starts here, and is dropped whole from here */
 } hmsg_t;
 
 static struct {
@@ -513,23 +518,56 @@ static char *transcribe(const int16_t *pcm, int n)
 
 /* ------------------------------------------------------------------ the answer */
 
-static void hist_add(bool user, const char *text)
+/* the oldest exchange, whole: the history always starts with the owner, and never splits a tool call from
+ * its result */
+static void hist_drop_oldest(void)
 {
-    if (g_nhist == HIST_MAX) {
-        /* the oldest exchange goes whole, so the history still starts with the owner */
-        int drop = g_nhist > 1 && !g_hist[1].user ? 2 : 1;
-        for (int i = 0; i < drop; i++) free(g_hist[i].text);
-        memmove(g_hist, g_hist + drop, (size_t)(g_nhist - drop) * sizeof *g_hist);
-        g_nhist -= drop;
+    int drop = 1;
+    while (drop < g_nhist && !g_hist[drop].starts) drop++;
+    for (int i = 0; i < drop; i++) aj_free(g_hist[i].m);
+    memmove(g_hist, g_hist + drop, (size_t)(g_nhist - drop) * sizeof *g_hist);
+    g_nhist -= drop;
+}
+
+/* One exchange into the history: the question, the turn's tool calls and results (each result cut to
+ * HIST_TOOL_CHARS), and the answer. Takes nothing it is given; copies what it keeps. */
+static void hist_add_exchange(const char *question, const aj_t *turn, const char *answer)
+{
+    if (turn && turn->n + 2 > HIST_MAX) turn = NULL; /* a turn too long to keep: its words only */
+    int need = 2 + (turn ? turn->n : 0);
+    while (g_nhist && g_nhist + need > HIST_MAX) hist_drop_oldest();
+    aj_t *q = aj_new(AJ_OBJ);
+    aj_set(q, "role", aj_new_str("user"));
+    aj_set(q, "content", aj_new_str(question));
+    g_hist[g_nhist].m = q;
+    g_hist[g_nhist++].starts = true;
+    for (int i = 0; turn && i < turn->n; i++) {
+        aj_t *m = aj_clone(turn->kid[i]);
+        const aj_t *c = aj_get(m, "content");
+        if (c && c->type == AJ_STR && c->len > HIST_TOOL_CHARS && !strcmp(aj_gets(m, "role") ? aj_gets(m, "role") : "", "tool")) {
+            size_t cut = HIST_TOOL_CHARS;
+            while (cut && ((unsigned char)c->s[cut] & 0xC0) == 0x80) cut--; /* not mid-character */
+            char *t = malloc(cut + 16);
+            if (t) {
+                memcpy(t, c->s, cut);
+                snprintf(t + cut, 16, " ...(cut)");
+                aj_set(m, "content", aj_new_str(t));
+                free(t);
+            }
+        }
+        g_hist[g_nhist].m = m;
+        g_hist[g_nhist++].starts = false;
     }
-    g_hist[g_nhist].user = user;
-    g_hist[g_nhist].text = as_strdup(text);
-    if (g_hist[g_nhist].text) g_nhist++;
+    aj_t *a = aj_new(AJ_OBJ);
+    aj_set(a, "role", aj_new_str("assistant"));
+    aj_set(a, "content", aj_new_str(answer));
+    g_hist[g_nhist].m = a;
+    g_hist[g_nhist++].starts = false;
 }
 
 static void hist_clear(void)
 {
-    for (int i = 0; i < g_nhist; i++) free(g_hist[i].text);
+    for (int i = 0; i < g_nhist; i++) aj_free(g_hist[i].m);
     g_nhist = 0;
 }
 
@@ -632,9 +670,8 @@ static void chat_body(ab_t *b, const char *model, const char *question, const aj
         ab_puts(b, "}");
     }
     for (int i = 0; i < g_nhist; i++) {
-        ab_puts(b, g_hist[i].user ? ",{\"role\":\"user\",\"content\":" : ",{\"role\":\"assistant\",\"content\":");
-        ab_str(b, g_hist[i].text);
-        ab_puts(b, "}");
+        ab_puts(b, ",");
+        aj_write(b, g_hist[i].m);
     }
     ab_puts(b, ",{\"role\":\"user\",\"content\":");
     ab_str(b, question);
@@ -717,6 +754,7 @@ static void run_call(const aj_t *call, aj_t *turn, cat_robot_t *robot)
     const char *id = aj_gets(call, "id");
     const aj_t *fn = aj_get(call, "function");
     const char *name = aj_gets(fn, "name"), *args = aj_gets(fn, "arguments");
+    as_act_turn(AS_MEM_COMPANION, as_tool_label(name)); /* on the island while her face isn't */
     ab_t out;
     ab_init(&out);
     const as_tooldef_t *def = name ? as_tool_find(name) : NULL;
@@ -797,6 +835,7 @@ static bool answer(const char *question, vo_reply_t *rep)
         fmt = 0;
         effort = true;
     }
+    as_act_turn(AS_MEM_COMPANION, "thinking");
     for (int round = 0; round <= TOOL_ROUNDS && !cancelled(); round++) {
         /* the last round offers no tools: it must answer */
         chat_body(&body, model, q, turn, round < TOOL_ROUNDS ? tools : NULL, fmt, effort);
@@ -857,8 +896,7 @@ static bool answer(const char *question, vo_reply_t *rep)
         ok = rep->say[0] != 0;
         if (!ok) set_err("the answer came back empty: ask me again");
         if (ok) {
-            hist_add(true, question);
-            hist_add(false, content ? content : rep->say);
+            hist_add_exchange(question, turn, content ? content : rep->say);
             V.last_turn = hal_seconds();
         }
         aj_free(d);
@@ -869,6 +907,7 @@ static bool answer(const char *question, vo_reply_t *rep)
     free(robot);
     free(tools);
     free(q);
+    as_act_turn(AS_MEM_COMPANION, NULL);
     return ok;
 }
 
@@ -1338,7 +1377,11 @@ void voice_enable(bool on)
 {
     pthread_mutex_lock(&V.lock);
     V.enabled = on;
-    if (!on) {
+    /* The face closing stops the microphones and the voice, never a question already being answered: its
+     * tools run and its writes finish (a note she was asked for is still saved, a timer still set), and the
+     * answer comes out of the island instead of her mouth. Only a stop (voice_cancel) abandons a turn. */
+    bool answering = V.working && (V.state == VO_HEARING || V.state == VO_THINKING || V.state == VO_SPEAKING);
+    if (!on && !answering) {
         V.cancel = true;
         /* off at once: reopened while a stopped request still waits on the network, the face mustn't come
          * back "thinking" about it */

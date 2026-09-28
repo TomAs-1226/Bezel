@@ -144,13 +144,102 @@ static void clear_locked(void)
 
 /* ---- the worker's side: every write checks it still belongs to the current conversation ---- */
 
+/* A write the model has started (a document, the notes, a patch, a work order), watched while its input
+ * streams in: its island activity begins the moment the input says what it is, long before the whole
+ * document has arrived and the tool can run. */
+#define WATCH_MAX 4
+typedef struct {
+    int index;                     /* its stream block */
+    char name[24];                 /* the tool */
+    char buf[640];                 /* its input as streamed: the head, then a window on the latest part */
+    size_t len;
+    char action[16];               /* its "action", once seen */
+    char shown[80];                /* what its activity says now */
+    bool named;                    /* the name or title is in: nothing more to learn */
+} watch_t;
+
 typedef struct {
     uint32_t gen;
     int ent[MAX_BLOCKS];           /* stream block index → transcript entry id */
+    int act[MAX_BLOCKS];           /* stream block index → its island activity (0 none) */
+    watch_t w[WATCH_MAX];
+    int nw;
     int cur;                       /* the tool entry being run */
     cat_robot_t *robot;
     bool fallback_noted;
 } wctx_t;
+
+/* a string member's value from the head of a streaming JSON object, once its closing quote has arrived */
+static bool peek_str(const char *js, const char *key, char *out, size_t n)
+{
+    char pat[32];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(js, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\n' || *p == '\t') p++;
+    if (*p++ != ':') return false;
+    while (*p == ' ' || *p == '\n' || *p == '\t') p++;
+    if (*p++ != '"') return false;
+    size_t k = 0;
+    for (; *p && *p != '"'; p++) {
+        if (*p == '\\' && p[1]) p++;
+        if (k + 1 < n) out[k++] = *p;
+    }
+    out[k] = 0;
+    return *p == '"';
+}
+
+static void watch_end_all(wctx_t *c)
+{
+    for (int i = 0; i < MAX_BLOCKS; i++)
+        if (c->act[i] > 0) {
+            as_act_end(c->act[i], NULL);
+            c->act[i] = 0;
+        }
+    c->nw = 0;
+}
+
+static void watch_delta(wctx_t *c, int index, const char *s, size_t n)
+{
+    for (int k = 0; k < c->nw; k++) {
+        watch_t *w = &c->w[k];
+        if (w->index != index || w->named) continue;
+        if (w->len + n >= sizeof w->buf - 1) {
+            /* the head is full (the document itself came before its name): keep the latest part only, so a
+             * name that follows the body is still found */
+            size_t keep = 200 < w->len ? 200 : w->len;
+            memmove(w->buf, w->buf + w->len - keep, keep);
+            w->len = keep;
+        }
+        size_t take = w->len + n < sizeof w->buf - 1 ? n : sizeof w->buf - 1 - w->len;
+        memcpy(w->buf + w->len, s + (n - take), take);
+        w->len += take;
+        w->buf[w->len] = 0;
+        char nm[64], title[80];
+        /* the action, once seen, is kept: the window may move past it */
+        if (!w->action[0]) peek_str(w->buf, "action", w->action, sizeof w->action);
+        bool ha = w->action[0] != 0, hn = peek_str(w->buf, "name", nm, sizeof nm);
+        bool ht = peek_str(w->buf, "title", title, sizeof title);
+        aj_t *o = aj_new(AJ_OBJ);
+        if (!o) return;
+        if (ha) aj_set(o, "action", aj_new_str(w->action));
+        if (hn) aj_set(o, "name", aj_new_str(nm));
+        if (ht) aj_set(o, "title", aj_new_str(title));
+        const char *kind = as_tool_work(w->name, o);
+        if (kind) {
+            char t[80];
+            as_tool_work_text(w->name, o, t, sizeof t);
+            if (!c->act[index]) c->act[index] = as_act_begin(kind, t);
+            else if (strcmp(t, w->shown)) as_act_update(c->act[index], t);
+            snprintf(w->shown, sizeof w->shown, "%s", t);
+            w->named = hn || ht || !strcmp(w->name, "notes");
+        } else if (ha) {
+            w->named = true; /* a read or a list: nothing to show */
+        }
+        aj_free(o);
+    }
+}
 
 /* This exchange still owns the transcript's end and the phase: not reset, and not stopped. A stopped exchange
  * may go on waiting on the network for a while; the technician already saw "Stopped." and may have asked
@@ -238,8 +327,25 @@ static void cb_start(void *user, int index, const aj_t *block)
     c->ent[index] = -1;
     if (!t) return;
     if (!strcmp(t, "tool_use")) {
-        c->ent[index] = w_add(c, AS_E_TOOL, "…", aj_gets(block, "name"));
+        const char *name = aj_gets(block, "name");
+        c->ent[index] = w_add(c, AS_E_TOOL, "…", name);
         w_phase(c, AS_PHASE_TOOL);
+        /* a write: watched from here, and a patch or a work order shown at once */
+        if (name && c->nw < WATCH_MAX &&
+            (!strcmp(name, "documents") || !strcmp(name, "notes") || !strcmp(name, "propose_patch") ||
+             !strcmp(name, "create_work_order"))) {
+            watch_t *w = &c->w[c->nw++];
+            memset(w, 0, sizeof *w);
+            w->index = index;
+            snprintf(w->name, sizeof w->name, "%s", name);
+            const char *kind = as_tool_work(name, NULL);
+            if (kind && !c->act[index]) {
+                char tx[80];
+                as_tool_work_text(name, NULL, tx, sizeof tx);
+                c->act[index] = as_act_begin(kind, tx);
+                snprintf(w->shown, sizeof w->shown, "%s", tx);
+            }
+        }
     } else if (!strcmp(t, "fallback") && !c->fallback_noted) {
         char n[160];
         const char *to = aj_gets(aj_get(block, "to"), "model");
@@ -254,7 +360,11 @@ static void cb_start(void *user, int index, const aj_t *block)
 static void cb_delta(void *user, int index, as_delta_t kind, const char *s, size_t n)
 {
     wctx_t *c = user;
-    if (index < 0 || index >= MAX_BLOCKS || kind == AS_D_INPUT || !n) return;
+    if (index < 0 || index >= MAX_BLOCKS || !n) return;
+    if (kind == AS_D_INPUT) {
+        if (c->nw) watch_delta(c, index, s, n);
+        return;
+    }
     if (c->ent[index] < 0) {
         /* made on the first words, so an empty block leaves no empty bubble */
         c->ent[index] = w_add(c, kind == AS_D_TEXT ? AS_E_TEXT : AS_E_THINKING, NULL, NULL);
@@ -408,6 +518,7 @@ static st_t stream_once(wctx_t *c, const char *body, size_t len, as_msg_t *m)
         as_msg_init(m, &cb);
         as_oai_init(&ot, m);
         for (int i = 0; i < MAX_BLOCKS; i++) c->ent[i] = -1;
+        watch_end_all(c); /* a response asked again: whatever the last one began is not happening */
         hal_http_req_t rq = { .method = "POST", .url = url, .headers = hdr, .body = body, .body_len = len,
                               .timeout_ms = READ_TIMEOUT_MS };
         int status = -1;
@@ -554,6 +665,20 @@ static int call_entry(wctx_t *c, const as_msg_t *m, const char *id)
     return -1;
 }
 
+/* the island activity a call's streaming began, handed over to the run (0 none) */
+static int call_act(wctx_t *c, const as_msg_t *m, const char *id)
+{
+    for (int i = 0; i < m->n && i < MAX_BLOCKS; i++) {
+        const char *bid = m->b[i].block ? aj_gets(m->b[i].block, "id") : NULL;
+        if (bid && !strcmp(bid, id)) {
+            int a = c->act[i];
+            c->act[i] = 0;
+            return a;
+        }
+    }
+    return 0;
+}
+
 static void run_tools(wctx_t *c, as_hist_t *h, const as_msg_t *m, const as_call_t *calls, int n)
 {
     as_result_t *res = calloc((size_t)n, sizeof *res);
@@ -572,6 +697,8 @@ static void run_tools(wctx_t *c, as_hist_t *h, const as_msg_t *m, const as_call_
         const as_call_t *k = &calls[i];
         int ent = call_entry(c, m, k->id);
         c->cur = ent;
+        env.act = call_act(c, m, k->id);
+        as_act_turn(AS_MEM_ASSIST, as_tool_label(k->name));
         res[i].id = k->id;
         char err[200], summary[200] = "";
         if (w_stopped(c)) {
@@ -604,14 +731,21 @@ static void run_tools(wctx_t *c, as_hist_t *h, const as_msg_t *m, const as_call_
                 ab_t out;
                 ab_init(&out);
                 as_tres_t r = as_tool_run(&env, k->name, k->input, &out, summary, sizeof summary);
+                env.act = 0; /* the run ended it */
                 own[i] = ab_take(&out);
                 res[i].is_error = r != AS_TR_OK;
                 w_set(c, ent, summary[0] ? summary : "done",
                       r == AS_TR_OK ? AS_TOOL_OK : r == AS_TR_DENIED ? AS_TOOL_DENIED : AS_TOOL_FAILED);
             }
         }
+        if (env.act > 0) {
+            as_act_end(env.act, NULL); /* never ran: nothing was written */
+            env.act = 0;
+        }
         res[i].content = own[i] ? own[i] : "";
     }
+    watch_end_all(c); /* anything begun for a call that didn't come to a run */
+    as_act_turn(AS_MEM_ASSIST, "thinking");
     /* every result of the turn in one user message */
     as_hist_results(h, res, n);
     for (int i = 0; i < n; i++) free(own[i]);
@@ -677,6 +811,7 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
     pthread_mutex_unlock(&A.lock);
     as_req_t q = { .model = model, .max_tokens = AS_MAX_TOKENS, .effort = "medium", .system = AS_PROMPT_TECH, .tools = tools };
     if (as_conv_trim(h, &q, AS_TRIM_BYTES)) w_note(c, "The oldest part of the conversation was dropped to keep requests small.");
+    as_act_turn(AS_MEM_ASSIST, "thinking"); /* on the island while the Assist screen isn't */
 
     bool budget_retried = false, ran_something = false;
     ab_t body;
@@ -775,6 +910,8 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
         if (round == MAX_ROUNDS - 1) w_add(c, AS_E_ERROR, "Stopped after too many tool rounds.", NULL);
     }
     ab_free(&body);
+    watch_end_all(c);
+    as_act_turn(AS_MEM_ASSIST, NULL); /* the turn is over */
 }
 
 static void *worker(void *arg)

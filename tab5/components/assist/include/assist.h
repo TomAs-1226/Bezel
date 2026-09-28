@@ -168,6 +168,22 @@ typedef bool (*as_action_fn)(const char *action, const char *args_json, int pool
 void assist_set_action_handler(as_action_fn fn);
 as_action_fn assist_action_handler(void);
 
+/* What the two conversations are doing, for the island's live activities, handed in by the ui for the same
+ * reason as the action handler. Any thread; each may be NULL.
+ *   turn(pool, doing)   what that conversation is doing now ("thinking", "reading the alerts"); NULL when its
+ *                       turn is over. The ui shows it only while that conversation's own screen is not.
+ *   begin(kind, text)   a piece of work worth showing wherever the owner is, from the moment it starts:
+ *                       kind "edit" (a document or the notes being written), "patch", "send" (a work order);
+ *                       returns an id (> 0), or 0 when it can't be shown;
+ *   update(id, text), end(id, said)   said: what to leave on the island ("saved notes.md"), or NULL. */
+typedef struct {
+    void (*turn)(int pool, const char *doing);
+    int (*begin)(const char *kind, const char *text);
+    void (*update)(int id, const char *text);
+    void (*end)(int id, const char *said);
+} as_activity_hooks_t;
+void assist_set_activity_hooks(const as_activity_hooks_t *h);
+
 typedef bool (*as_tba_read_fn)(const char *path, char *out, size_t n);
 void assist_set_tba_reader(as_tba_read_fn fn);
 as_tba_read_fn assist_tba_reader(void);
