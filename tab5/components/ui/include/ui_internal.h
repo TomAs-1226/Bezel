@@ -331,6 +331,8 @@ lv_obj_t *ui_empty(lv_obj_t *parent, int w, const char *title, const char *text)
  * ui_empty_row keeps the row (a card among others). */
 lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text);
 lv_obj_t *ui_empty_row(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text);
+/* No card of its own, for a surface that is one already: centred in w x h. */
+lv_obj_t *ui_empty_center(lv_obj_t *parent, int w, int h, const char *icon, const char *title, const char *text);
 /* A vertical scroller: returns the content container; drags coast and rubber-band at the ends. */
 lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h);
 /* Brings a scroller's end into view on the `smooth` spring (a transcript following its newest line).

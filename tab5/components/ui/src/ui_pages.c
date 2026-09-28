@@ -93,6 +93,34 @@ lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *t
     return t;
 }
 
+/* The same state with no card of its own, for a surface that already is one (a drawer, a column tile): `w` x `h`,
+ * the disc, the title and the words centred in it. */
+lv_obj_t *ui_empty_center(lv_obj_t *parent, int w, int h, const char *icon, const char *title, const char *text)
+{
+    lv_obj_t *t = bz_col(parent, 12);
+    lv_obj_set_size(t, w, h);
+    lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    if (icon) {
+        lv_obj_t *disc = bz_box(t);
+        lv_obj_set_size(disc, 96, 96);
+        lv_obj_add_style(disc, bz_style_fill(BZ_C_SURFACE2), 0);
+        lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_margin_bottom(disc, 6, 0);
+        lv_obj_center(bz_icon(disc, icon, 40, BZ_C_DIM));
+    }
+    if (title) {
+        lv_obj_t *h1 = bz_label(t, title, BZ_F_NAME, BZ_C_INK);
+        lv_obj_set_style_text_align(h1, LV_TEXT_ALIGN_CENTER, 0);
+    }
+    if (text && text[0]) {
+        lv_obj_t *l = bz_label(t, text, BZ_F_BODY_S, BZ_C_DIM);
+        lv_obj_set_width(l, w - 40 > 600 ? 600 : w - 40);
+        lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
+        lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+    }
+    return t;
+}
+
 lv_obj_t *ui_empty(lv_obj_t *parent, int w, const char *title, const char *text)
 {
     /* the glyph from what it says: not connected is a broken link, anything else "nothing here yet" */

@@ -50,23 +50,7 @@ static lv_obj_t *drawer(lv_obj_t *page, int x, int w)
  * dock -- a glyph in a disc, the title, the words under it -- rather than a strip at the top of an empty panel. */
 static lv_obj_t *drawer_empty(lv_obj_t *list, int w, const char *icon, const char *title, const char *text)
 {
-    lv_obj_t *t = bz_col(list, 14);
-    lv_obj_set_size(t, w, BODY_BOTTOM - BODY_Y - DRAWER_R);
-    lv_obj_set_flex_align(t, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_t *disc = bz_box(t);
-    lv_obj_set_size(disc, 96, 96);
-    lv_obj_add_style(disc, bz_style_fill(BZ_C_SURFACE2), 0);
-    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
-    lv_obj_t *g = bz_icon(disc, icon, 40, BZ_C_DIM);
-    lv_obj_center(g);
-    lv_obj_t *h = bz_label(t, title, BZ_F_NAME, BZ_C_INK);
-    lv_obj_set_style_pad_top(h, 6, 0);
-    int tw = w < 640 ? w - 40 : 600;
-    lv_obj_t *l = bz_label(t, text, BZ_F_BODY_S, BZ_C_DIM);
-    lv_obj_set_width(l, tw);
-    lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
-    lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-    return t;
+    return ui_empty_center(list, w, BODY_BOTTOM - BODY_Y - DRAWER_R, icon, title, text);
 }
 
 /* ================================================================== devices */

@@ -615,6 +615,7 @@ static lv_obj_t *batt_tile(lv_obj_t *parent, const cat_batt_t *b, int64_t now, t
     lv_obj_t *t = bz_tile(parent, o.w, o.h);
     lv_obj_set_style_pad_all(t, 16, 0);
     if (o.hl) bz_tile_set_fill(t, BZ_C_ICE);
+    else if (o.top) bz_tile_set_fill(t, BZ_C_CONTAINER); /* the one to put in: lit, in the grid of equals */
     bz_color_role_t ink = o.hl ? BZ_C_ON_ICE : BZ_C_INK, dim = o.hl ? BZ_C_ON_ICE : BZ_C_DIM;
     char nm[20], s[48];
     lv_obj_t *l = bz_label_line(t, bname(b, nm, sizeof nm), BZ_F_TITLE, ink, o.w - 32 - 24);

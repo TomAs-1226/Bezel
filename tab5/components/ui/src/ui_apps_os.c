@@ -596,8 +596,9 @@ static void clock_build(lv_obj_t *b)
 
     lv_obj_t *r = column_tile(b, PAD + lw + BZ_GAP, rw);
     bz_label(r, "alarms · they ring with the app closed", BZ_F_LABEL, BZ_C_DIM);
-    CL.empty = bz_label(r, "No alarms yet. Tap add alarm.", BZ_F_BODY, BZ_C_DIM);
-    lv_obj_set_pos(CL.empty, 0, 40);
+    CL.empty = ui_empty_center(r, IN(rw), APP_H - 2 * BZ_PAD_TILE - 40, BZ_I_ALARM, "no alarms yet",
+                               "add alarm, up top: they ring with the app closed and the screen asleep");
+    lv_obj_set_pos(CL.empty, 0, 30);
     for (int i = 0; i < NALARM; i++) {
         lv_obj_t *row = bz_tile(r, IN(rw), 64);
         lv_obj_set_pos(row, 0, 30 + i * 72);
@@ -1374,19 +1375,9 @@ static void docs_build(lv_obj_t *b)
     DC.text_w = IN(rw);
     vs_init(&DC.vs, box, DC.text_w, APP_H - 2 * BZ_PAD_TILE - 66, 0);
     /* nothing open: the reader says so in its middle, not with a blank page under a title */
-    DC.hint = bz_col(t, 12);
-    lv_obj_set_flex_align(DC.hint, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_size(DC.hint, IN(rw), APP_H - 2 * BZ_PAD_TILE - 80);
+    DC.hint = ui_empty_center(t, IN(rw), APP_H - 2 * BZ_PAD_TILE - 80, BZ_I_ARTICLE, NULL,
+                              "Markdown and text from CATOS/DOCS on the card, and what the assistant writes there.");
     lv_obj_set_pos(DC.hint, 0, 40);
-    lv_obj_t *disc = bz_box(DC.hint);
-    lv_obj_set_size(disc, 96, 96);
-    lv_obj_add_style(disc, bz_style_fill(BZ_C_SURFACE2), 0);
-    lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
-    lv_obj_center(bz_icon(disc, BZ_I_ARTICLE, 40, BZ_C_DIM));
-    lv_obj_t *hl = bz_label(DC.hint, "Markdown and text from CATOS/DOCS on the card, and what the assistant writes there.",
-                            BZ_F_BODY_S, BZ_C_DIM);
-    lv_obj_set_width(hl, IN(rw) > 520 ? 520 : IN(rw));
-    lv_obj_set_style_text_align(hl, LV_TEXT_ALIGN_CENTER, 0);
 }
 
 static void docs_open(void) { doc_list_start(); }
