@@ -595,10 +595,11 @@ static void context_note(char *out, size_t n)
     char cc[80] = "";
     if (ccw_available()) snprintf(cc, sizeof cc, " · Claude Code on the PC: %d running, %d need a look", running, att);
     /* the next match and the battery to use, as the UI last posted them (get_matches / get_batteries say more) */
-    char *now = assist_desk_get(AS_DESK_NOW);
-    snprintf(out, n, "[tablet: %s · %s%s%s%s]", when[0] ? when : "time unknown", robot, cc, now ? " · " : "",
-             now ? now : "");
+    char *now = assist_desk_get(AS_DESK_NOW), *seen = assist_desk_get(AS_DESK_INTEL);
+    snprintf(out, n, "[tablet: %s · %s%s%s%s%s%s]", when[0] ? when : "time unknown", robot, cc, now ? " · " : "",
+             now ? now : "", seen ? " · " : "", seen ? seen : "");
     free(now);
+    free(seen);
 }
 
 /* the read-only tools, as Chat Completions functions */

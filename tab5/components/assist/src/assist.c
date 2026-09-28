@@ -641,6 +641,11 @@ static void context_note(const cat_robot_t *r, bool full, char *out, size_t n, c
     size_t l = strlen(out);
     if (now && l > 1 && l + strlen(now) + 4 < n) snprintf(out + l - 1, n - l + 1, " %s.]", now);
     free(now);
+    /* what the tablet's intelligence core noticed that matters most (insights says the rest) */
+    char *seen = assist_desk_get(AS_DESK_INTEL);
+    l = strlen(out);
+    if (seen && l > 1 && l + strlen(seen) + 4 < n) snprintf(out + l - 1, n - l + 1, " %s.]", seen);
+    free(seen);
 }
 
 static void mark_unrun(wctx_t *c, const as_msg_t *m, const as_call_t *calls, int ncalls, const char *why)

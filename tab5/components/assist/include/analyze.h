@@ -38,6 +38,12 @@ unsigned analyze_gen(void);              /* cheap, no lock: changes with anythin
  * that answered, each malloc'd for the caller to free (NULL when there is none). Returns the phase. */
 an_phase_t analyze_get(char **name, char **answer, char **digest, char *model, size_t mn);
 
+/* One plain Chat Completions answer with the assistant's OpenAI key and model: `system` as the brief, `user` as
+ * the question. Blocking: call it from a job on the assistant's worker (assist_post_job), never the UI. The
+ * answer is malloc'd (the caller frees it), folded for the tablet's faces; NULL with `why` when there is none.
+ * timeout_ms <= 0: two minutes. For short jobs other components run (the intelligence core's summary). */
+char *assist_complete(const char *system, const char *user, int timeout_ms, char *why, size_t wn);
+
 #ifdef __cplusplus
 }
 #endif
