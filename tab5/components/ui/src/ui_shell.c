@@ -331,6 +331,21 @@ bool ui_scroller_follow(lv_obj_t *content)
     return false;
 }
 
+/* Back to the top at once, no motion: for a list whose page is off screen (the library, left scrolled). The
+ * caller makes sure nothing is drawing a picture of it (no slide or sheet under way). */
+void ui_scroller_reset(lv_obj_t *content)
+{
+    for (int i = 0; i < MAX_SCROLLERS; i++) {
+        scroller_t *s = g_scrollers[i];
+        if (!s || s->content != content || s->dragging) continue;
+        s->away = false;
+        if (s->y.value == 0 && s->y.target == 0) return;
+        bz_motion_set(&s->y, 0, 0);
+        lv_obj_set_y(s->content, 0);
+        return;
+    }
+}
+
 /* The clip is being deleted, so its scroller must stop existing too.
  *
  * Without this the scroller stays in g_scrollers with pointers to freed objects, and the first
@@ -704,6 +719,7 @@ static void build_dock(void)
         lv_obj_set_ext_click_area(it, 8);
         U.dock_icons[i] = bz_icon(it, PAGE_ICONS[i], 32, BZ_C_DIM);
         U.dock_labels[i] = bz_label(it, PAGE_NAMES[i], BZ_F_CAPTION, BZ_C_DIM);
+        if (!ui_look()->dock_labels) lv_obj_add_flag(U.dock_labels[i], LV_OBJ_FLAG_HIDDEN);
         U.dock_items[i] = it;
         bz_on_tap(it, dock_tap, (void *)(intptr_t)i);
     }
@@ -836,7 +852,7 @@ static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) && strncmp(line, "phone", 5) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
-        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
+        strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) && strncmp(line, "look ", 5) &&
         strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5))
         return false;
     if (s_dev_pending) return false;
@@ -954,6 +970,8 @@ static void dev_run(void)
         if (k >= 0) ui_set_accent(k);
     } else if (!strncmp(s_dev_cmd, "settings ", 9)) {
         ui_settings_show(s_dev_cmd + 9);
+    } else if (!strncmp(s_dev_cmd, "look ", 5)) {
+        ui_look_dev(s_dev_cmd + 5); /* "look ground aurora", "look icons tinted", "look tone light"... */
     } else if (!strncmp(s_dev_cmd, "bms", 3)) {
         /* the battery fleet: "bms" ranks it; scan, pick <label>, demo, reset, gpt, json */
         ui_batt_dev(s_dev_cmd + 3);
@@ -1122,6 +1140,7 @@ static void build_island(void)
     U.st_link = bz_icon(U.status, BZ_I_LINK_OFF, 24, BZ_C_DIM);
     U.st_batt_icon = bz_icon(U.status, BZ_I_BATTERY_FULL, 24, BZ_C_INK);
     U.st_batt = bz_label(U.status, "", BZ_F_LABEL, BZ_C_INK);
+    if (!ui_look()->batt_pct) lv_obj_add_flag(U.st_batt, LV_OBJ_FLAG_HIDDEN);
     U.st_clock = bz_label(U.status, "--:--", BZ_F_BODY, BZ_C_INK);
     lv_obj_update_layout(U.status);
     /* centred on the orb */
@@ -1198,8 +1217,26 @@ static void status_refresh(void)
     time_t now = time(NULL);
     struct tm tm;
     localtime_r(&now, &tm);
-    if (tm.tm_year > 120) ui_text(U.st_clock, "%d:%02d", tm.tm_hour, tm.tm_min);
-    else ui_text(U.st_clock, "--:--");
+    if (tm.tm_year > 120) {
+        char hm[16];
+        ui_fmt_hm(hm, sizeof hm, &tm);
+        ui_text(U.st_clock, "%s", hm);
+    } else {
+        ui_text(U.st_clock, "--:--");
+    }
+}
+
+/* settings > look changed the clock's hours, the battery's percent or the dock's words: shown now */
+void ui_status_look_changed(void)
+{
+    const ui_look_t *l = ui_look();
+    if (l->batt_pct) lv_obj_remove_flag(U.st_batt, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(U.st_batt, LV_OBJ_FLAG_HIDDEN);
+    for (int i = 0; i < NPAGES; i++) {
+        if (l->dock_labels) lv_obj_remove_flag(U.dock_labels[i], LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(U.dock_labels[i], LV_OBJ_FLAG_HIDDEN);
+    }
+    status_refresh();
 }
 
 /* A message out of the orb: the words set and measured, the capsule sent to their width. A message arriving
@@ -2331,6 +2368,7 @@ void ui_init(const ui_config_t *cfg)
     ui_page_power(U.pages[PG_POWER]);
     ui_page_motion(U.pages[PG_MOTION]);
     ui_page_tools(U.pages[PG_APPS]);
+    ui_ground_init(); /* the owner's ground under the pages (settings > look) */
 
     build_windows();
     build_dock();

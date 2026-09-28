@@ -1554,6 +1554,7 @@ static void settings_open(void)
     ui_assist_settings_open();
     ui_home_settings_open();
     ui_home_look_settings_open();
+    ui_look_settings_open();
     sx_swatches();
     if (ui_home_settings_wanted()) SX.cur = SS_HOME; /* "settings" from home mode */
     if (SX.wanted >= 0) SX.cur = SX.wanted;
@@ -1668,6 +1669,7 @@ static void settings_build(lv_obj_t *b)
                                      "The signal orange stays for the one thing to do and for the team itself.",
                                 BZ_F_CAPTION, BZ_C_DIM);
         lv_obj_set_width(an, iw);
+        ui_look_settings(col, iw); /* icons, ground, quick launch, status band and dock */
         ui_home_look_settings(col, iw);
         lv_obj_t *sp = bz_box(col);
         lv_obj_set_height(sp, 40);

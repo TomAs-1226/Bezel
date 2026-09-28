@@ -27,25 +27,55 @@ static lv_obj_t *tile_label(lv_obj_t *tile, const char *text, lv_obj_t **right)
     return l;
 }
 
-lv_obj_t *ui_empty(lv_obj_t *parent, int w, const char *title, const char *text)
+/* An empty state that looks meant: a glyph in a soft disc, the title, and the explanation in the body face
+ * (it used to be the caption face, tiny under a title and a screen of nothing). Sized by its content, never
+ * shorter than a comfortable block, centred down its height. */
+lv_obj_t *ui_empty_icon(lv_obj_t *parent, int w, const char *icon, const char *title, const char *text)
 {
-    /* sized by its content: a fixed height left a gap under one line and ran a wrapped one into the title */
     lv_obj_t *t = bz_tile(parent, w, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(t, 12, 0);
-    lv_obj_t *h = bz_label(t, title, BZ_F_NAME, BZ_C_INK);
-    lv_obj_set_width(h, w - 2 * BZ_PAD_TILE);
+    lv_obj_set_style_min_height(t, 180, 0);
+    lv_obj_set_style_pad_all(t, 30, 0);
+    lv_obj_set_flex_flow(t, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(t, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(t, 26, 0);
+    int inner = w - 60;
+    if (icon) {
+        lv_obj_t *disc = bz_box(t);
+        lv_obj_set_size(disc, 84, 84);
+        lv_obj_add_style(disc, bz_style_fill(BZ_C_SURFACE2), 0);
+        lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+        lv_obj_t *g = bz_icon(disc, icon, 32, BZ_C_DIM);
+        lv_obj_center(g);
+        inner -= 84 + 26;
+    }
+    lv_obj_t *col = bz_col(t, 10);
+    lv_obj_set_width(col, inner);
+    lv_obj_t *h = bz_label(col, title, BZ_F_NAME, BZ_C_INK);
+    lv_obj_set_width(h, inner);
     lv_label_set_long_mode(h, LV_LABEL_LONG_WRAP);
     if (text && text[0]) {
-        lv_obj_t *l = bz_label(t, text, BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_set_width(l, w - 2 * BZ_PAD_TILE);
+        lv_obj_t *l = bz_label(col, text, BZ_F_BODY_S, BZ_C_DIM);
+        lv_obj_set_width(l, inner);
         lv_label_set_long_mode(l, LV_LABEL_LONG_WRAP);
     }
     return t;
 }
 
+lv_obj_t *ui_empty(lv_obj_t *parent, int w, const char *title, const char *text)
+{
+    /* the glyph from what it says: not connected is a broken link, anything else "nothing here yet" */
+    const char *icon = strstr(title, "not connected") ? BZ_I_LINK_OFF : BZ_I_INBOX;
+    return ui_empty_icon(parent, w, icon, title, text);
+}
+
 static void open_app_tap(lv_obj_t *o, void *u) { ui_app_open((const ui_app_t *)u, o); }
 static void go_tap(lv_obj_t *o, void *u) { (void)o; ui_go((int)(intptr_t)u); }
+
+static void settings_robot_tap(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    ui_settings_show("robot");
+}
 
 static void make_tappable(lv_obj_t *tile)
 {
@@ -63,8 +93,10 @@ static struct {
     lv_obj_t *dev_v, *dev_mark, *dev_foot;
     lv_obj_t *vis_v, *vis_mark, *vis_foot;
     lv_obj_t *head_right, *team;
+    lv_obj_t *bottom[4], *offline, *off_line;
+    int shown_offline;
     double last_spark;
-} P;
+} P = { .shown_offline = -1 };
 
 static void pulse_refresh(void *u)
 {
@@ -196,6 +228,20 @@ static void pulse_refresh(void *u)
         ui_text(P.vis_foot, " ");
     }
 
+    /* Offline, the row of live numbers (loop, can, motors, vision) is only dashes: in its place, what the tablet
+     * is doing about it and where to go. Swapped only when the link changes. */
+    int off = !r->connected;
+    if (off != P.shown_offline) {
+        P.shown_offline = off;
+        for (int i = 0; i < 4; i++) {
+            if (off) lv_obj_add_flag(P.bottom[i], LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_remove_flag(P.bottom[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (off) lv_obj_remove_flag(P.offline, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_add_flag(P.offline, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (off) ui_text(P.off_line, "looking for team %d · trying %s", S.team, r->address[0] ? r->address : "every address it knows");
+
     /* the robot by its own name when it publishes one */
     if (r->connected && r->have_identity && r->name[0]) ui_text(P.team, "%s \xc2\xb7 team %d", r->name, r->team);
     else if (r->connected && r->have_identity) ui_text(P.team, "team %d", r->team);
@@ -285,6 +331,7 @@ void ui_page_overview(lv_obj_t *page)
     /* loop */
     int x = PAD;
     t = tile_at(page, x, y2, COL4, ROW_H);
+    P.bottom[0] = t;
     make_tappable(t);
     bz_on_tap(t, open_app_tap, (void *)&APP_ROBOT);
     tile_label(t, "loop", NULL);
@@ -297,6 +344,7 @@ void ui_page_overview(lv_obj_t *page)
     /* can */
     x += COL4 + BZ_GAP;
     t = tile_at(page, x, y2, COL4, ROW_H);
+    P.bottom[1] = t;
     make_tappable(t);
     bz_on_tap(t, open_app_tap, (void *)&APP_CANTAP);
     tile_label(t, "can", NULL);
@@ -319,6 +367,7 @@ void ui_page_overview(lv_obj_t *page)
     /* devices */
     x += COL4 + BZ_GAP;
     t = tile_at(page, x, y2, COL4, ROW_H);
+    P.bottom[2] = t;
     make_tappable(t);
     bz_on_tap(t, go_tap, (void *)(intptr_t)PG_DEVICES);
     tile_label(t, "motors", NULL);
@@ -331,6 +380,7 @@ void ui_page_overview(lv_obj_t *page)
     /* vision */
     x += COL4 + BZ_GAP;
     t = tile_at(page, x, y2, COL4, ROW_H);
+    P.bottom[3] = t;
     make_tappable(t);
     bz_on_tap(t, open_app_tap, (void *)&APP_FIELD);
     tile_label(t, "vision", NULL);
@@ -339,6 +389,21 @@ void ui_page_overview(lv_obj_t *page)
     value_row(t, BZ_F_VALUE, NULL, &P.vis_v, 58);
     P.vis_foot = bz_label_line(t, "", BZ_F_CAPTION, BZ_C_DIM, COL4 - 2 * BZ_PAD_TILE); /* a long camera name stays in */
     lv_obj_align(P.vis_foot, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+    /* offline: one card across the row instead of four of dashes */
+    P.offline = ui_empty_icon(page, W - 2 * PAD, BZ_I_LINK_OFF, "the robot isn't here",
+                              "On Wi-Fi, join the robot's network. At events Wi-Fi to the robot isn't allowed: an A-to-C "
+                              "cable into Systemcore, or a USB-Ethernet adapter into the radio, on the USB-A port.");
+    lv_obj_set_height(P.offline, ROW_H);
+    lv_obj_set_pos(P.offline, PAD, y2);
+    lv_obj_t *oc = lv_obj_get_child(P.offline, 1); /* the words' column */
+    P.off_line = bz_label(oc, "", BZ_F_LABEL, BZ_C_DIM);
+    lv_obj_t *ob = bz_row(oc, 10);
+    lv_obj_set_style_pad_top(ob, 6, 0);
+    ui_button(ob, BZ_I_SMART_TOY, "robot settings", settings_robot_tap, NULL);
+    ui_button(ob, BZ_I_CABLE, "can tap", open_app_tap, (void *)&APP_CANTAP);
+    ui_button(ob, BZ_I_LINK, "link", open_app_tap, (void *)&APP_LINK);
+    lv_obj_add_flag(P.offline, LV_OBJ_FLAG_HIDDEN);
 
     ui_on_page_refresh(PG_ROBOT, pulse_refresh, NULL);
 }
