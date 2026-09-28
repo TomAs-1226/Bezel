@@ -1084,6 +1084,12 @@ static struct {
 
 static const char *const ADDR_LABEL[5] = { "by team", "robot.local", "usb 172.22.11.2", "systemcore usb", "simulator" };
 static const char *const ADDR_VALUE[5] = { "", "robot.local", "172.22.11.2", "172.26.0.1", "127.0.0.1" };
+/* the simulator's address is the tablet itself: offered only in the simulator */
+#ifdef ESP_PLATFORM
+#define ADDR_N 4
+#else
+#define ADDR_N 5
+#endif
 
 static void st_show_team(void)
 {
@@ -1120,7 +1126,7 @@ static void st_addr(lv_obj_t *o, void *u)
     (void)o;
     int i = (int)(intptr_t)u;
     snprintf(S.address, sizeof S.address, "%s", ADDR_VALUE[i]);
-    for (int k = 0; k < 5; k++) ui_chip_set(ST.addr_chips[k], k == i);
+    for (int k = 0; k < ADDR_N; k++) ui_chip_set(ST.addr_chips[k], k == i);
     ui_settings_save();
     ui_apply_addresses();
     nt4_reconnect(cat_nt());
@@ -1531,7 +1537,7 @@ static void settings_open(void)
 {
     ST.entry[0] = 0;
     st_show_team();
-    for (int k = 0; k < 5; k++) ui_chip_set(ST.addr_chips[k], !strcmp(S.address, ADDR_VALUE[k]));
+    for (int k = 0; k < ADDR_N; k++) ui_chip_set(ST.addr_chips[k], !strcmp(S.address, ADDR_VALUE[k]));
     bz_level_set(ST.bright, S.brightness, false);
     bz_level_set(ST.vol, S.volume, false);
     ui_chip_set(ST.dark_chip, S.dark);
@@ -1708,7 +1714,7 @@ static void settings_build(lv_obj_t *b)
     }
     bz_label(t, "robot address", BZ_F_LABEL, BZ_C_DIM);
     r = sx_wrap_row(t, iw);
-    for (int i = 0; i < 5; i++) ST.addr_chips[i] = ui_chip(r, ADDR_LABEL[i], st_addr, (void *)(intptr_t)i);
+    for (int i = 0; i < ADDR_N; i++) ST.addr_chips[i] = ui_chip(r, ADDR_LABEL[i], st_addr, (void *)(intptr_t)i);
 
     /* network */
     t = sx_pane(b, SS_NETWORK, px, pw);

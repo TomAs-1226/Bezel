@@ -2008,6 +2008,15 @@ static void settings_load(void)
 #endif
     if (hal_kv_get("team", buf, sizeof buf)) S.team = atoi(buf);
     if (hal_kv_get("address", buf, sizeof buf)) snprintf(S.address, sizeof S.address, "%s", buf);
+#ifdef ESP_PLATFORM
+    /* The simulator's address is the tablet itself, where no robot ever answers. It was found stored on the
+     * owner's tablet (a random-tap test pressing the "simulator" chip, most likely), which left it looking
+     * for the robot at 127.0.0.1 and nowhere else: back to finding it by team. */
+    if (!strcmp(S.address, "127.0.0.1") || !strcmp(S.address, "localhost")) {
+        S.address[0] = 0;
+        hal_kv_set("address", "");
+    }
+#endif
     if (hal_kv_get("bright", buf, sizeof buf)) S.brightness = (float)atof(buf);
     if (hal_kv_get("volume", buf, sizeof buf)) S.volume = (float)atof(buf);
     if (hal_kv_get("dark", buf, sizeof buf)) S.dark = buf[0] == '1';
