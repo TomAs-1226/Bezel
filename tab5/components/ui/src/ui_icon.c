@@ -299,8 +299,9 @@ static void bake(entry_t *e)
         break;
     case UI_ICON_MONO:
         /* the surface and an outlined ink glyph: the library as it was, in the new shape */
-        top = dark ? lighten(bz_pal->surface3, 0.04f) : 0xFFFFFF;
-        bot = dark ? bz_pal->surface2 : bz_pal->surface2;
+        /* light: a grey tile, never white -- white on the white drawer had no edge at all */
+        top = dark ? lighten(bz_pal->surface3, 0.04f) : lighten(bz_pal->surface2, 0.3f);
+        bot = dark ? bz_pal->surface2 : bz_pal->surface3;
         ink = bz_pal->ink;
         filled = false;
         sheen = 0.03f;

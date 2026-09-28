@@ -450,6 +450,7 @@ static void apps_fill(void)
         bz_on_tap(c, apps_tap, (void *)app);
         shown++;
     }
+    if (!shown) bz_label(CA.row, "favourites: settings · look", BZ_F_LABEL, BZ_C_DIM);
     CA.gen = l->quick_gen;
 }
 

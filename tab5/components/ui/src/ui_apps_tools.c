@@ -1815,6 +1815,15 @@ static void settings_build(lv_obj_t *b)
 
     /* about */
     t = sx_pane(b, SS_ABOUT, px, pw);
+    /* the tablet as a thing with a name: its icon, what it is, whose it is */
+    lv_obj_t *ab = bz_row(t, 20);
+    lv_obj_set_style_pad_ver(ab, 8, 0);
+    ui_icon_named(ab, "system", 64);
+    lv_obj_t *abc = bz_col(ab, 2);
+    bz_label(abc, "Catalyst Tab", BZ_F_TITLE, BZ_C_INK);
+    char abl[48];
+    snprintf(abl, sizeof abl, "version %s \xc2\xb7 team %d's pit tablet", CATALYST_TAB_VERSION, S.team);
+    bz_label(abc, abl, BZ_F_LABEL, BZ_C_DIM);
     ST.about = bz_label(t, "", BZ_F_BODY, BZ_C_DIM);
     lv_obj_set_width(ST.about, iw);
     lv_label_set_long_mode(ST.about, LV_LABEL_LONG_WRAP);
