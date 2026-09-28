@@ -51,11 +51,50 @@ static struct {
     int last_beep;
     int nlaps;
     int col;                   /* the big numbers' colour as set (-1: not yet) */
+    /* started by an assistant (ui_timer_do): a live activity on the island while it runs, and a ring that
+     * reaches the owner wherever they are when it ends */
+    bool ai;
+    int act;                   /* its island activity (0 none) */
+    char label[28];
 } TM = { .count_s = 120, .auto_s = 20, .last_beep = -1, .col = -1 };
 
 #define TELEOP_S 140
 
 static double tm_elapsed(void) { return TM.acc + (TM.running ? hal_seconds() - TM.started : 0); }
+
+/* the ring an assistant's timer ends with: three pairs of notes, at least half volume (like the clock's
+ * alarms, it is meant to be heard), stepped from the 10 Hz hook whatever is on screen */
+static struct {
+    int left;
+    double next;
+} TR;
+
+static void tm_ring_tick(void)
+{
+    if (TR.left <= 0) return;
+    double now = hal_seconds();
+    if (now < TR.next) return;
+    hal_tone(TR.left % 2 ? 1175 : 880, 160, S.volume > 0.5f ? S.volume : 0.5f);
+    TR.left--;
+    TR.next = now + (TR.left % 2 ? 0.2 : 0.6);
+}
+
+/* an assistant's countdown or match clock reached its end */
+static void tm_finished(void)
+{
+    if (!TM.ai) return;
+    TM.ai = false;
+    char said[64];
+    snprintf(said, sizeof said, "timer done \xc2\xb7 %s",
+             TM.label[0] ? TM.label : TM.mode == TM_MATCH ? "the match clock" : "countdown");
+    if (TM.act) ui_activity_end(TM.act, said);
+    else ui_island_say(BZ_I_TIMER, said);
+    TM.act = 0;
+    TR.left = 6;
+    TR.next = 0;
+    bz_ui_wake();
+    printf("timer: %s, ringing (%s)\n", said, ui_app_any_open() ? "over an app" : "over the pages");
+}
 
 /* The field's cues and the ends, whether or not the app is on screen: a countdown closed behind another app
  * rang only when it was opened again. true when a countdown or a match just ended. */
@@ -73,12 +112,14 @@ static bool tm_tick(void)
         if (e >= total) {
             TM.acc = total;
             TM.running = false;
+            tm_finished();
             return true;
         }
     } else if (TM.mode == TM_COUNTDOWN && e >= TM.count_s) {
         TM.acc = TM.count_s;
         TM.running = false;
-        beep(660, 600);
+        if (!TM.ai) beep(660, 600); /* an assistant's rings louder, below */
+        tm_finished();
         return true;
     }
     return false;
@@ -141,6 +182,7 @@ static void tm_mode(lv_obj_t *o, void *u)
     (void)o;
     TM.mode = (int)(intptr_t)u;
     TM.running = false;
+    TM.ai = false; /* (its activity ends on the next tick) */
     TM.acc = 0;
     TM.nlaps = 0;
     TM.last_beep = -1;
@@ -174,6 +216,7 @@ static void tm_reset(lv_obj_t *o, void *u)
 {
     (void)o; (void)u;
     TM.running = false;
+    TM.ai = false;
     TM.acc = 0;
     TM.nlaps = 0;
     TM.last_beep = -1;
@@ -293,12 +336,29 @@ static void timer_frame(double now, double dt)
     }
 }
 
+/* An assistant's timer on the island: there while it runs, gone while paused or reset (back on resume). */
+static void tm_act_sync(void)
+{
+    if (TM.act && !ui_activity_live(TM.act)) TM.act = 0;
+    if (TM.act && !TM.running) {
+        ui_activity_end(TM.act, NULL);
+        TM.act = 0;
+    }
+    if (TM.ai && TM.running && !TM.act && TM.mode != TM_STOPWATCH) {
+        double left = (TM.mode == TM_COUNTDOWN ? TM.count_s : TM.auto_s + TELEOP_S) - tm_elapsed();
+        if (left > 0.5) TM.act = ui_activity_begin(BZ_I_TIMER, TM.label[0] ? TM.label : "timer", left);
+    }
+}
+
 /* 10 Hz, whatever is on screen: the timer keeps its cues and rings its end behind other apps */
 static void timer_bg(void *u)
 {
     (void)u;
+    tm_ring_tick();
+    tm_act_sync();
     if (!TM.running || ui_app_is_open(&APP_TIMER)) return;
-    if (tm_tick()) ui_island_say(BZ_I_TIMER, TM.mode == TM_COUNTDOWN ? "the countdown is done" : "the match timer is over");
+    bool ai = TM.ai;
+    if (tm_tick() && !ai) ui_island_say(BZ_I_TIMER, TM.mode == TM_COUNTDOWN ? "the countdown is done" : "the match timer is over");
 }
 
 const ui_app_t APP_TIMER = { .name = "timer", .icon = BZ_I_TIMER, .build = timer_build, .frame = timer_frame };
@@ -922,7 +982,7 @@ static void mmss(double s, char *out, size_t n)
     else snprintf(out, n, "%d:%02d", k / 60, k % 60);
 }
 
-bool ui_timer_do(const char *act, double seconds, char *out, size_t n)
+bool ui_timer_do(const char *act, double seconds, const char *label, char *out, size_t n)
 {
     tm_bg_ensure();
     bool built = TM.big != NULL;
@@ -973,6 +1033,11 @@ bool ui_timer_do(const char *act, double seconds, char *out, size_t n)
         TM.last_beep = -1;
         TM.started = hal_seconds();
         TM.running = true;
+        if (TM.act) ui_activity_end(TM.act, NULL); /* the one it replaces */
+        TM.act = 0;
+        TM.ai = mode != TM_STOPWATCH;
+        snprintf(TM.label, sizeof TM.label, "%s", label && label[0] ? label : "");
+        tm_act_sync(); /* on the island now, not at the next tick */
         if (built) {
             tm_presets_mark();
             tm_show();

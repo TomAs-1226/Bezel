@@ -1788,9 +1788,12 @@ void ui_companion_tick(double now, double dt)
         CP.voice_on = want;
         voice_enable(want);
     }
-    /* With the face closed nothing draws the answer, so home mode's own message strip carries it: every
-     * reply, and above all every failure, is said out of the island instead of vanishing. */
-    if (!CP.open && CP.voice_on) {
+    /* With the face closed nothing draws the answer -- home mode listening, the owner having closed her
+     * mid-answer (the turn goes on: voice.h), a question typed elsewhere -- so the island says it: every
+     * reply, and above all every failure, instead of vanishing. Looked at only when the voice has news. */
+    static uint32_t bg_rev;
+    if (!CP.open && voice_rev() != bg_rev) {
+        bg_rev = voice_rev();
         vo_reply_t *br = malloc(sizeof *br);
         if (br) {
             if (voice_reply(br) && br->seq != CP.bg_seq) {

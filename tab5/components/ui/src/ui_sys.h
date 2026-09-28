@@ -8,8 +8,10 @@
 #include "ui_internal.h"
 
 /* ui_apps_util.c: the timer. act: countdown (seconds), match (seconds: autonomous 15 or 20), stopwatch,
- * pause, resume, reset, status. */
-bool ui_timer_do(const char *act, double seconds, char *out, size_t n);
+ * pause, resume, reset, status. A countdown or the match clock started here is a live activity on the
+ * island ("tea · 4:59", `label` or "timer"), and when it ends it rings wherever the owner is -- another app,
+ * home mode, the lock screen -- and leaves "timer done · tea". */
+bool ui_timer_do(const char *act, double seconds, const char *label, char *out, size_t n);
 /* ui_apps_util.c: the notes app's notebook. act: read, append, replace. */
 bool ui_notes_do(const char *act, const char *text, char *out, size_t n);
 /* ui_apps_util.c: the pre-match checklist. act: status, check, uncheck, reset; item: "3" or words from it. */

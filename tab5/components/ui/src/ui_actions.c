@@ -238,6 +238,128 @@ static void defer_tick(double now)
     }
 }
 
+/* ---------------------------------------------------------------- the island: what the AIs are doing
+ *
+ * Two kinds of live activity (ui_activity_*). A conversation's turn -- "assist · reading the alerts",
+ * "ivy · checking the weather" -- shows only while that conversation's own screen doesn't: the Assist app
+ * and her face say it themselves, and it appears the moment the owner leaves mid-answer. A piece of work
+ * worth knowing about wherever the owner is -- a document being written, a patch, a work order -- shows
+ * from the moment it starts and leaves a word when it is done ("saved pit-notes"). The timer's own is the
+ * timer app's (ui_timer_do). assist hands these in through its hooks, from any thread. */
+
+static pthread_mutex_t g_turn_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    char doing[48];   /* "" when the turn is over */
+    int act;          /* its activity while shown (UI thread) */
+    char shown[72];   /* what the activity says */
+} TURN[2];
+
+static void hook_turn(int pool, const char *doing)
+{
+    if (pool < 0 || pool > 1) return;
+    pthread_mutex_lock(&g_turn_lock);
+    snprintf(TURN[pool].doing, sizeof TURN[pool].doing, "%s", doing ? doing : "");
+    pthread_mutex_unlock(&g_turn_lock);
+}
+
+static int hook_begin(const char *kind, const char *text)
+{
+    const char *icon = kind && !strcmp(kind, "patch") ? BZ_I_CALL_SPLIT
+                     : kind && !strcmp(kind, "send") ? BZ_I_OUTBOX : BZ_I_EDIT_NOTE;
+    char t[72];
+    snprintf(t, sizeof t, "%s", text ? text : "working");
+    assist_fold_text(t);
+    int id = ui_activity_begin(icon, t, 0);
+    printf("island: activity %d begins: %s\n", id, t); /* the timeline on the console, for testing */
+    return id;
+}
+
+static void hook_update(int id, const char *text)
+{
+    char t[72];
+    snprintf(t, sizeof t, "%s", text ? text : "");
+    assist_fold_text(t);
+    ui_activity_update(id, t);
+    printf("island: activity %d now: %s\n", id, t);
+}
+
+static void hook_end(int id, const char *said)
+{
+    char t[96];
+    snprintf(t, sizeof t, "%s", said ? said : "");
+    assist_fold_text(t);
+    ui_activity_end(id, said ? t : NULL);
+    printf("island: activity %d ends%s%s\n", id, said ? ": " : "", said ? t : "");
+}
+
+/* the technician's last answer, first line, for the island when its turn ends out of sight */
+static void last_answer(char *out, size_t n)
+{
+    out[0] = 0;
+    assist_lock();
+    for (int i = assist_count() - 1; i >= 0; i--) {
+        const as_entry_t *e = assist_entry(i);
+        if (e->kind == AS_E_USER) break;
+        if (e->kind != AS_E_TEXT || !e->text || !e->text[0]) continue;
+        const char *t = e->text;
+        while (*t == '#' || *t == '-' || *t == '*' || *t == ' ' || *t == '\n') t++;
+        snprintf(out, n, "%.*s", (int)strcspn(t, "\n"), t);
+        break;
+    }
+    assist_unlock();
+    /* the marks a label would show as characters */
+    char *w = out;
+    for (const char *r = out; *r; r++)
+        if (*r != '*' && *r != '`') *w++ = *r;
+    *w = 0;
+    assist_fold_text(out);
+}
+
+static void turn_tick(void)
+{
+    for (int p = 0; p < 2; p++) {
+        char doing[48];
+        pthread_mutex_lock(&g_turn_lock);
+        snprintf(doing, sizeof doing, "%s", TURN[p].doing);
+        pthread_mutex_unlock(&g_turn_lock);
+        bool seen = p == AS_POOL_ASSIST ? ui_app_is_open(&APP_ASSIST) : ui_app_is_open(&APP_COMPANION);
+        seen = seen && !ui_asleep() && !ui_locked();
+        if (TURN[p].act && !ui_activity_live(TURN[p].act)) TURN[p].act = 0;
+        if (doing[0] && !seen) {
+            char who[24] = "companion", text[72];
+            if (p == AS_POOL_ASSIST) snprintf(who, sizeof who, "assist");
+            else {
+                /* her name, once the owner has given her one */
+                char key[16], name[64];
+                if (assist_mem_self(AS_POOL_COMPANION, 0, key, sizeof key, name, sizeof name) && name[0])
+                    snprintf(who, sizeof who, "%.23s", name);
+            }
+            snprintf(text, sizeof text, "%s \xc2\xb7 %s", who, doing);
+            if (!TURN[p].act) {
+                TURN[p].act = ui_activity_begin(p == AS_POOL_ASSIST ? BZ_I_AUTO_AWESOME : BZ_I_VISIBILITY, text, 0);
+                printf("island: activity %d begins: %s\n", TURN[p].act, text);
+            } else if (strcmp(text, TURN[p].shown)) {
+                ui_activity_update(TURN[p].act, text);
+                printf("island: activity %d now: %s\n", TURN[p].act, text);
+            }
+            snprintf(TURN[p].shown, sizeof TURN[p].shown, "%s", text);
+        } else if (TURN[p].act) {
+            /* over, or its own screen is back. The technician's answer, finished out of sight, is said;
+             * the companion's is said by her own hook (ui_companion_tick), with her face's words. */
+            char said[96] = "";
+            if (!doing[0] && !seen && p == AS_POOL_ASSIST) {
+                char first[80];
+                last_answer(first, sizeof first);
+                if (first[0]) snprintf(said, sizeof said, "assist: %s", first);
+            }
+            ui_activity_end(TURN[p].act, said[0] ? said : NULL);
+            printf("island: activity %d ends%s%s\n", TURN[p].act, said[0] ? ": " : "", said);
+            TURN[p].act = 0;
+            TURN[p].shown[0] = 0;
+        }
+    }
+}
+
 /* ---------------------------------------------------------------- the actions (UI thread) */
 
 static bool do_open_app(args_t *a, int pool, char *out, size_t n)
@@ -747,7 +869,7 @@ static bool do_status(char *out, size_t n)
     addf(out, n, "\n%s; %d notification%s", ui_app_any_open() ? "an app is open" : "on the pages",
          ui_notify_count(), ui_notify_count() == 1 ? "" : "s");
     char t[160];
-    ui_timer_do("status", 0, t, sizeof t);
+    ui_timer_do("status", 0, NULL, t, sizeof t);
     addf(out, n, "\ntimer: %s", t);
     char *al = malloc(400);
     if (al && ui_alarm_do("list", 0, 0, 0, al, 400)) {
@@ -794,14 +916,15 @@ static bool do_notifications(args_t *a, char *out, size_t n)
 
 static bool do_timer(args_t *a, char *out, size_t n)
 {
-    char act[16];
+    char act[16], label[28] = "";
     double secs = 0;
     if (!args_str(a, "action", act, sizeof act)) {
         snprintf(out, n, "which timer action?");
         return false;
     }
     args_num(a, "seconds", &secs);
-    return ui_timer_do(act, secs, out, n);
+    args_str(a, "label", label, sizeof label);
+    return ui_timer_do(act, secs, label, out, n);
 }
 
 static bool do_alarm(args_t *a, char *out, size_t n)
@@ -914,6 +1037,7 @@ static void tick(void *user)
     assist_mem_tick();  /* memory saves that are waiting (a failed write, kv without a card) */
     rem_tick(now);
     defer_tick(now);
+    turn_tick();
     pthread_mutex_lock(&g_lock);
     job_t *j = g_job;
     if (!j || j->taken) {
@@ -1224,4 +1348,7 @@ void ui_actions_init(void)
 {
     ui_on_refresh(tick, NULL);
     assist_set_action_handler(handle);
+    static const as_activity_hooks_t HOOKS = { .turn = hook_turn, .begin = hook_begin, .update = hook_update,
+                                               .end = hook_end };
+    assist_set_activity_hooks(&HOOKS);
 }
