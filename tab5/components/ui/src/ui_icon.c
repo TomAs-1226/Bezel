@@ -19,11 +19,12 @@
  * reverse in light); mono is Bezel's surface and its ink. Both two-tone, both follow the tone and the accent.
  *
  * The cost. Each (app, size, what it sits on) is baked once into PSRAM and every place that shows it shares it;
- * LVGL only ever blits it. An icon on a known opaque surface (the library's drawer, the home page's ground while
- * it is plain) is baked onto that surface as plain RGB565: 2 bytes a pixel (8 KB at 64 px) and drawn as a copy,
- * not a per-pixel blend. Elsewhere (glass, a tinted card) it is RGB565A8, 3 bytes a pixel. A press shows the
+ * LVGL only ever blits it. An icon on a known opaque surface (the library's drawer, a settings pane) is baked onto
+ * that surface as plain RGB565: 2 bytes a pixel (8 KB at 64 px) and drawn as a copy, not a per-pixel blend.
+ * Elsewhere (the ground, which can be a picture; glass; a tinted card) it is RGB565A8, 3 bytes a pixel, and one
+ * picture serves all of them: the home page's quick row and the control center's favourites are the same six. A press shows the
  * surface3 platter under a cell: for that instant the icon swaps to a copy whose corners are the platter's
- * (ui_icon_press_with), fixed up from the resting one in microseconds. A change of style, tone, accent or ground
+ * (ui_icon_press_with), fixed up from the resting one in microseconds. A change of style, tone or accent
  * bakes the same buffers again in place and the caller's one redraw shows it. Nothing here runs per frame. */
 #include "ui_internal.h"
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
@@ -290,7 +291,7 @@ static uint32_t utf8_cp(const char *s)
  * placed it, which the two faces share, so the outlined and the filled glyph land on each other). From the 32 or
  * the 40 px face, the smallest at least that big, both of which exist filled and outlined; bilinear, with four
  * taps a pixel when it shrinks. */
-static void glyph_mask(uint8_t *out, int s, const char *glyph, float em, bool filled)
+static void glyph_mask(uint8_t *out, int s, const char *glyph, float em, bool filled, int bb[4])
 {
     memset(out, 0, (size_t)s * s);
     const lv_font_t *font = em > 32.5f ? (filled ? &bz_icons_fill_40 : &bz_icons_outline_40)
@@ -314,6 +315,13 @@ static void glyph_mask(uint8_t *out, int s, const char *glyph, float em, bool fi
     float x0 = ex + g.ofs_x * k, y0 = ey + (px - g.box_h - g.ofs_y) * k;
     float gw = g.box_w * k, gh = g.box_h * k;
     int taps = k < 0.85f ? 2 : 1;
+    /* the part of the picture it can reach, for whoever blurs it afterwards */
+    int bx0 = (int)floorf(x0) - 1, by0 = (int)floorf(y0) - 1, bx1 = (int)ceilf(x0 + gw) + 1, by1 = (int)ceilf(y0 + gh) + 1;
+    if (bx0 < bb[0]) bb[0] = bx0 < 0 ? 0 : bx0;
+    if (by0 < bb[1]) bb[1] = by0 < 0 ? 0 : by0;
+    if (bx1 > bb[2]) bb[2] = bx1 > s - 1 ? s - 1 : bx1;
+    if (by1 > bb[3]) bb[3] = by1 > s - 1 ? s - 1 : by1;
+    const float ik = 1.0f / k;
     for (int y = (int)floorf(y0) - 1; y <= (int)ceilf(y0 + gh) + 1; y++) {
         if (y < 0 || y >= s) continue;
         for (int x = (int)floorf(x0) - 1; x <= (int)ceilf(x0 + gw) + 1; x++) {
@@ -322,7 +330,7 @@ static void glyph_mask(uint8_t *out, int s, const char *glyph, float em, bool fi
             for (int ty = 0; ty < taps; ty++)
                 for (int tx = 0; tx < taps; tx++) {
                     /* the output pixel's (sub)sample in the glyph's own pixels */
-                    float u = (x + (tx + 0.5f) / taps - x0) / k - 0.5f, v = (y + (ty + 0.5f) / taps - y0) / k - 0.5f;
+                    float u = (x + (tx + 0.5f) / taps - x0) * ik - 0.5f, v = (y + (ty + 0.5f) / taps - y0) * ik - 0.5f;
                     int iu = (int)floorf(u), iv = (int)floorf(v);
                     float fu = u - iu, fv = v - iv;
                     int c[4];
@@ -340,28 +348,29 @@ static void glyph_mask(uint8_t *out, int s, const char *glyph, float em, bool fi
     lv_draw_buf_destroy(db);
 }
 
-/* a box blur of radius 2, rows then columns, in place (tmp: s*s) */
-static void box5(uint8_t *m, uint8_t *tmp, int s)
+/* A box blur of radius 2 over the rectangle x0..x1, y0..y1 of an s-wide mask, rows then columns, in place (tmp: s*s);
+ * outside it the mask is zero and stays so. /5 as a multiply and a shift (exact for sums up to 1275). */
+static void box5(uint8_t *m, uint8_t *tmp, int s, int x0, int y0, int x1, int y1)
 {
-    for (int y = 0; y < s; y++) {
+    for (int y = y0; y <= y1; y++) {
         const uint8_t *r = m + y * s;
-        for (int x = 0; x < s; x++) {
+        for (int x = x0; x <= x1; x++) {
             int a = 0;
             for (int d = -2; d <= 2; d++) {
                 int xx = x + d;
-                if (xx >= 0 && xx < s) a += r[xx];
+                if (xx >= x0 && xx <= x1) a += r[xx];
             }
-            tmp[y * s + x] = (uint8_t)(a / 5);
+            tmp[y * s + x] = (uint8_t)((a * 13108) >> 16);
         }
     }
-    for (int x = 0; x < s; x++)
-        for (int y = 0; y < s; y++) {
+    for (int x = x0; x <= x1; x++)
+        for (int y = y0; y <= y1; y++) {
             int a = 0;
             for (int d = -2; d <= 2; d++) {
                 int yy = y + d;
-                if (yy >= 0 && yy < s) a += tmp[yy * s + x];
+                if (yy >= y0 && yy <= y1) a += tmp[yy * s + x];
             }
-            m[y * s + x] = (uint8_t)(a / 5);
+            m[y * s + x] = (uint8_t)((a * 13108) >> 16);
         }
 }
 
@@ -458,8 +467,7 @@ static uint16_t role565(int role)
     return (uint16_t)((c.red & 0xF8) << 8 | (c.green & 0xFC) << 3 | c.blue >> 3);
 }
 
-/* opaque on its surface: always for a surface, for the ground only while nothing is drawn on it */
-static bool opaque_on(int bg) { return bg != BG_NONE && (bg != BZ_C_GROUND || !ui_ground_active()); }
+static bool opaque_on(int bg) { return bg != BG_NONE; }
 
 static void bake(entry_t *e)
 {
@@ -473,33 +481,47 @@ static void bake(entry_t *e)
     e->dsc.data_size = (uint32_t)(n * (opaque ? 2 : 3));
     lv_image_cache_drop(&e->dsc);
     const uint16_t bgpx = opaque ? role565(e->bg) : 0;
-    uint8_t *m = sh ? lv_malloc(n * 4) : NULL;
+    /* the masks and the two colour tables, in one PSRAM block for the bake */
+    uint8_t *m = sh ? lv_malloc(n * 4 + sizeof(float) * RAMP * 3 * 2) : NULL;
     if (!m) {
         for (size_t i = 0; i < n; i++) rgb[i] = bgpx;
         if (!opaque) memset(alpha, 0, n);
         return;
     }
     const look_t k = look_for(e->def, e->style, bz_ui_dark());
-    static float tile[RAMP][3], ink[RAMP][3]; /* UI thread only */
+    float(*tile)[3] = (float(*)[3])(m + n * 4), (*ink)[3] = tile + RAMP; /* n * 4 keeps floats aligned */
     ramp(tile, k.t0, k.t1);
     ramp(ink, k.i0, k.i1);
 
     /* the glyph: outlined (its lines) and filled; the inside is the difference; the glow is the whole of it, soft */
     uint8_t *fo = m, *ff = m + n, *gl = m + 2 * n, *tmp = m + 3 * n;
     const float em = s * 0.58f;
-    glyph_mask(fo, s, DEFS[e->def].glyph, em, false);
-    glyph_mask(ff, s, DEFS[e->def].glyph, em, true);
-    if (k.glow > 0) {
-        for (size_t i = 0; i < n; i++) gl[i] = fo[i] > ff[i] ? fo[i] : ff[i];
-        for (int p = 0; p < 3; p++) box5(gl, tmp, s); /* ~ a gaussian of sigma 2.5 */
+    int bb[4] = { s, s, -1, -1 };
+    glyph_mask(fo, s, DEFS[e->def].glyph, em, false, bb);
+    glyph_mask(ff, s, DEFS[e->def].glyph, em, true, bb);
+    if (k.glow > 0 && bb[2] >= bb[0]) {
+        /* three passes spread it 6 px: blur only the glyph's box grown by that */
+        int x0 = bb[0] - 6 < 0 ? 0 : bb[0] - 6, y0 = bb[1] - 6 < 0 ? 0 : bb[1] - 6;
+        int x1 = bb[2] + 6 > s - 1 ? s - 1 : bb[2] + 6, y1 = bb[3] + 6 > s - 1 ? s - 1 : bb[3] + 6;
+        memset(gl, 0, n);
+        for (int y = y0; y <= y1; y++)
+            for (int x = x0; x <= x1; x++) {
+                int i = y * s + x;
+                gl[i] = fo[i] > ff[i] ? fo[i] : ff[i];
+            }
+        for (int p = 0; p < 3; p++) box5(gl, tmp, s, x0, y0, x1, y1); /* ~ a gaussian of sigma 2.5 */
     }
 
     const float bgr = opaque ? (float)((bgpx >> 11 & 31) * 255 / 31) : 0;
     const float bgg = opaque ? (float)((bgpx >> 5 & 63) * 255 / 63) : 0;
     const float bgb = opaque ? (float)((bgpx & 31) * 255 / 31) : 0;
-    static const uint8_t BAYER[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+    /* the ordered dither's thresholds, as fractions of a 565 step */
+    static const float BAYER[16] = { 0 / 16.f, 8 / 16.f, 2 / 16.f, 10 / 16.f, 12 / 16.f, 4 / 16.f, 14 / 16.f, 6 / 16.f,
+                                     3 / 16.f, 11 / 16.f, 1 / 16.f, 9 / 16.f, 15 / 16.f, 7 / 16.f, 13 / 16.f, 5 / 16.f };
+    const float is = 1.0f / s, i127 = k.rim / 127.0f, i255 = 1.0f / 255.0f, isd = 1.0f / 0.85f;
+    const float glow = k.glow * i255, second = k.second * i255, K5 = 31.0f / 255.0f, K6 = 63.0f / 255.0f;
     for (int y = 0; y < s; y++) {
-        const float v = (y + 0.5f) / s;
+        const float v = (y + 0.5f) * is;
         /* the glyph's colour runs down the glyph's own height, not the tile's */
         float gv = (v - 0.21f) / 0.58f;
         gv = gv < 0 ? 0 : gv > 1 ? 1 : gv;
@@ -512,7 +534,7 @@ static void bake(entry_t *e)
                 if (!opaque) alpha[i] = 0;
                 continue;
             }
-            const float u = (x + 0.5f) / s;
+            const float u = (x + 0.5f) * is;
             /* lit from the top left: mostly down the icon, a little across */
             float t = 0.30f * u + 0.70f * v;
             const float *tc = tile[(int)(t * (RAMP - 1) + 0.5f)];
@@ -520,7 +542,7 @@ static void bake(entry_t *e)
             /* a soft sheen near the light */
             if (k.sheen > 0) {
                 float dx = u - 0.18f, dy = v - 0.02f;
-                float sd = 1 - sqrtf(dx * dx + dy * dy) / 0.85f;
+                float sd = 1 - sqrtf(dx * dx + dy * dy) * isd;
                 if (sd > 0) {
                     float q = k.sheen * sd * sd;
                     r += (255 - r) * q;
@@ -529,7 +551,7 @@ static void bake(entry_t *e)
                 }
             }
             /* the rim: light off the top edge, a shade along the bottom (baked glass, as the dock's) */
-            float el = sh->edge[i] / 127.0f * k.rim;
+            float el = sh->edge[i] * i127;
             if (el > 0) {
                 float q = 0.38f * el;
                 r += (255 - r) * q;
@@ -542,10 +564,10 @@ static void bake(entry_t *e)
                 b *= q;
             }
             /* the glyph's light on the tile, its inside, its lines */
-            float q = k.glow > 0 ? k.glow * gl[i] / 255.0f : 0;
+            float q = k.glow > 0 ? glow * gl[i] : 0;
             int inside = ff[i] - fo[i];
-            if (inside > 0) q += (1 - q) * k.second * inside / 255.0f;
-            if (fo[i]) q += (1 - q) * fo[i] / 255.0f;
+            if (inside > 0) q += (1 - q) * second * inside;
+            if (fo[i]) q += (1 - q) * fo[i] * i255;
             if (q > 0) {
                 r += (ic[0] - r) * q;
                 g += (ic[1] - g) * q;
@@ -553,15 +575,13 @@ static void bake(entry_t *e)
             }
             if (opaque && cov < 255) {
                 /* onto the surface it sits on */
-                float a = cov / 255.0f;
+                float a = cov * i255;
                 r = bgr + (r - bgr) * a;
                 g = bgg + (g - bgg) * a;
                 b = bgb + (b - bgb) * a;
             }
-            int bay = BAYER[((y & 3) << 2) | (x & 3)];
-            int r5 = ((int)r * 31 * 16 + bay * 255) / (255 * 16);
-            int g6 = ((int)g * 63 * 16 + bay * 255) / (255 * 16);
-            int b5 = ((int)b * 31 * 16 + bay * 255) / (255 * 16);
+            float bay = BAYER[((y & 3) << 2) | (x & 3)];
+            int r5 = (int)(r * K5 + bay), g6 = (int)(g * K6 + bay), b5 = (int)(b * K5 + bay);
             r5 = r5 < 0 ? 0 : r5 > 31 ? 31 : r5;
             g6 = g6 < 0 ? 0 : g6 > 63 ? 63 : g6;
             b5 = b5 < 0 ? 0 : b5 > 31 ? 31 : b5;
@@ -691,8 +711,8 @@ static entry_t *entry_for(int def, int size, int style, bool fixed, int bg)
         bz_theme_on_change(theme_changed);
     }
     entry_t *e = &g_entries[g_nentries];
-    /* a surface is always under it: two bytes a pixel; the ground may turn into a picture: room for alpha */
-    size_t n = (size_t)size * size * (bg == BG_NONE || bg == BZ_C_GROUND ? 3 : 2);
+    /* a surface under it: two bytes a pixel; anything else carries its alpha */
+    size_t n = (size_t)size * size * (bg == BG_NONE ? 3 : 2);
     e->px = lv_malloc(n);
     if (!e->px) return NULL;
     g_nentries++;
@@ -788,19 +808,12 @@ void ui_icon_set_style(int style)
     lv_obj_invalidate(bz_ui_glass());
 }
 
-/* the ground became a picture, or plain again: what sits on it is baked with or without its alpha */
-void ui_icon_ground_changed(void)
-{
-    for (int i = 0; i < g_nentries; i++)
-        if (g_entries[i].bg == BZ_C_GROUND) bake(&g_entries[i]);
-}
-
 size_t ui_icon_bytes(void)
 {
     size_t n = g_press.cap;
     for (int i = 0; i < g_nentries; i++) {
         const entry_t *e = &g_entries[i];
-        n += (size_t)e->size * e->size * (e->bg == BG_NONE || e->bg == BZ_C_GROUND ? 3 : 2);
+        n += (size_t)e->size * e->size * (e->bg == BG_NONE ? 3 : 2);
     }
     for (int i = 0; i < MAX_SHAPES; i++) n += (size_t)g_shapes[i].size * g_shapes[i].size * 2;
     return n;
