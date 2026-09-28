@@ -1380,11 +1380,19 @@ static void sx_accent(lv_obj_t *o, void *u)
     sx_swatches();
 }
 
+/* a row of the rail: the accent's capsule with its ink when chosen, the rail's own surface otherwise */
+static void sx_nav_set(lv_obj_t *n, bool on)
+{
+    bz_tile_set_fill(n, on ? BZ_C_ICE : BZ_C_SURFACE1);
+    uint32_t c = lv_obj_get_child_count(n);
+    for (uint32_t k = 0; k < c; k++) bz_set_color(lv_obj_get_child(n, (int32_t)k), on ? BZ_C_ON_ICE : BZ_C_INK);
+}
+
 static void sx_show(int i)
 {
     SX.cur = i;
     for (int k = 0; k < SS_COUNT; k++) {
-        ui_chip_set(SX.nav[k], k == i);
+        sx_nav_set(SX.nav[k], k == i);
         if (k == i) lv_obj_remove_flag(SX.pane[k], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(SX.pane[k], LV_OBJ_FLAG_HIDDEN);
     }
@@ -1545,6 +1553,16 @@ static lv_obj_t *sx_scroll(lv_obj_t *pane, int w)
     return col;
 }
 
+/* A paragraph in a pane: its width, and room between its lines. The faces' own line height is barely more than
+ * their size (the body's 25 on 24), right for a value, cramped for prose; captions get 4 more, body text 6. */
+static lv_obj_t *sx_para(lv_obj_t *l, int w)
+{
+    lv_obj_set_width(l, w);
+    const lv_font_t *f = lv_obj_get_style_text_font(l, 0);
+    lv_obj_set_style_text_line_space(l, f == bz_font(BZ_F_CAPTION) ? 4 : 6, 0);
+    return l;
+}
+
 static lv_obj_t *sx_wrap_row(lv_obj_t *parent, int w)
 {
     lv_obj_t *r = bz_row(parent, 10);
@@ -1626,27 +1644,33 @@ static void settings_build(lv_obj_t *b)
 
     int nav_w = 300, px = PAD + nav_w + BZ_GAP, pw = W - 2 * PAD - nav_w - BZ_GAP, iw = pw - 2 * BZ_PAD_TILE;
     /* the sections */
+    /* The sections: a rail of rows on the tile's own surface, the chosen one an accent capsule (M3's navigation
+     * drawer). Rows touch, so each is the tile's height over twelve -- 48 px, a whole touch target -- and a press
+     * shows as the state layer on the row itself. The capsule sits 12 in from the rail's sides (M3's drawer inset)
+     * and 5 from its top and foot; a capsule keeps its ends round at any width. */
     lv_obj_t *nav = bz_tile(b, nav_w, APP_H);
     lv_obj_set_pos(nav, PAD, APP_Y);
-    lv_obj_set_style_pad_all(nav, 12, 0);
+    lv_obj_set_style_pad_ver(nav, 5, 0);
+    lv_obj_set_style_pad_hor(nav, 12, 0);
     lv_obj_set_flex_flow(nav, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(nav, 4, 0);
+    lv_obj_set_style_pad_row(nav, 0, 0);
     for (int i = 0; i < SS_COUNT; i++) {
         lv_obj_t *n = ui_button(nav, SS_ICON[i], SS_NAME[i], sx_nav, (void *)(intptr_t)i);
-        /* twelve sections in the tile's height (APP_H less its padding) */
-        lv_obj_set_size(n, nav_w - 24, (APP_H - 24 - (SS_COUNT - 1) * 4) / SS_COUNT);
-        lv_obj_set_style_radius(n, 16, 0);
+        lv_obj_set_size(n, nav_w - 24, (APP_H - 10) / SS_COUNT);
+        lv_obj_set_ext_click_area(n, 0); /* rows touch: an enlarged area would reach into the next row */
+        lv_obj_set_style_pad_left(n, 20, 0);
+        lv_obj_set_style_pad_column(n, 14, 0);
         lv_obj_set_flex_align(n, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         SX.nav[i] = n;
     }
 
     /* display */
     lv_obj_t *t = sx_pane(b, SS_DISPLAY, px, pw);
-    bz_label(t, "brightness", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "brightness");
     ST.bright = bz_level(t, iw, 52, 0.05f, 1, 0.01f);
     bz_level_on_change(ST.bright, st_level, (void *)(intptr_t)0);
     /* the picture: which way up, and the frame-rate overlay (one row: the pane ran out under the dim chips) */
-    bz_label(t, "the picture", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "the picture");
     lv_obj_t *r = sx_wrap_row(t, iw);
 #if BZ_LEAN
     ST.calm_chip = ui_chip(r, "auto-rotate", st_autorot, NULL);
@@ -1655,10 +1679,10 @@ static void settings_build(lv_obj_t *b)
     ST.calm_chip = ui_chip(r, "calm", st_calm, NULL);
 #endif
     ST.perf_chip = ui_chip(r, "frame-rate overlay", st_perf, NULL);
-    bz_label(t, "the frame the interface is laid out in", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "the frame the interface is laid out in");
     r = sx_wrap_row(t, iw);
     ST.phone_chip = ui_chip(r, "phone mode · portrait", st_phone, NULL);
-    bz_label(t, "dim when untouched for", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "dim when untouched for");
     r = sx_wrap_row(t, iw);
     for (int i = 0; i < 4; i++) SX.dim_chips[i] = ui_chip(r, DIM_L[i], sx_dim, (void *)(intptr_t)i);
 
@@ -1666,12 +1690,12 @@ static void settings_build(lv_obj_t *b)
     t = sx_pane(b, SS_LOOK, px, pw);
     {
         lv_obj_t *col = sx_scroll(t, iw);
-        bz_label(col, "tone", BZ_F_LABEL, BZ_C_DIM);
+        ui_section(col, "tone");
         r = sx_wrap_row(col, iw);
         ST.dark_chip = ui_chip(r, "dark", st_tone, (void *)(intptr_t)0);
         ST.light_chip = ui_chip(r, "light", st_tone, (void *)(intptr_t)1);
         ST.auto_chip = ui_chip(r, "light by day, dark from 7 pm", st_tone, (void *)(intptr_t)2);
-        bz_label(col, "accent", BZ_F_LABEL, BZ_C_DIM);
+        ui_section(col, "accent");
         r = sx_wrap_row(col, iw);
         for (int i = 0; i < BZ_NACCENTS; i++) {
             lv_obj_t *sw = bz_tile(r, 96, 108);
@@ -1691,7 +1715,7 @@ static void settings_build(lv_obj_t *b)
         lv_obj_t *an = bz_label(col, "The accent fills what is on or chosen everywhere: chips, levels, meters, lit tiles. "
                                      "The signal orange stays for the one thing to do and for the team itself.",
                                 BZ_F_CAPTION, BZ_C_DIM);
-        lv_obj_set_width(an, iw);
+        sx_para(an, iw);
         ui_look_settings(col, iw); /* icons, ground, quick launch, status band and dock */
         ui_home_look_settings(col, iw);
         lv_obj_t *sp = bz_box(col);
@@ -1700,7 +1724,7 @@ static void settings_build(lv_obj_t *b)
 
     /* sound */
     t = sx_pane(b, SS_SOUND, px, pw);
-    bz_label(t, "volume", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "volume");
     ST.vol = bz_level(t, iw, 52, 0, 1, 0.01f);
     bz_level_on_change(ST.vol, st_level, (void *)(intptr_t)1);
     r = sx_wrap_row(t, iw);
@@ -1731,26 +1755,26 @@ static void settings_build(lv_obj_t *b)
         lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         if (k == 11) ui_chip_set(btn, true);
     }
-    bz_label(t, "robot address", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "robot address");
     r = sx_wrap_row(t, iw);
     for (int i = 0; i < ADDR_N; i++) ST.addr_chips[i] = ui_chip(r, ADDR_LABEL[i], st_addr, (void *)(intptr_t)i);
 
     /* network */
     t = sx_pane(b, SS_NETWORK, px, pw);
     t = sx_scroll(t, iw); /* a scan's list and the dns notes run past the pane */
-    bz_label(t, "wi-fi", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "wi-fi");
     ST.wifi_state = bz_label_line(t, "", BZ_F_BODY, BZ_C_INK, iw);
     ui_button(t, BZ_I_WIFI, "scan for networks", st_scan, NULL);
     ST.wifi_list = sx_wrap_row(t, iw);
-    bz_label(t, "usb tether", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "usb tether");
     ST.usb_state = bz_label(t, "", BZ_F_BODY, BZ_C_INK);
     lv_obj_set_width(ST.usb_state, iw);
     lv_obj_t *note = bz_label(t, "At events Wi-Fi to the robot isn't allowed: an A-to-C cable into Systemcore, or a USB-Ethernet "
                                  "adapter into the radio, on the USB-A port.",
                               BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_set_width(note, iw);
+    sx_para(note, iw);
 
-    bz_label(t, "dns", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "dns");
     SX.dns_state = bz_label_line(t, "", BZ_F_BODY, BZ_C_INK, iw);
     r = sx_wrap_row(t, iw);
     for (int i = 0; i < 3; i++) SX.dns_chips[i] = ui_chip(r, DNS_L[i], sx_dns, (void *)(intptr_t)i);
@@ -1759,7 +1783,7 @@ static void settings_build(lv_obj_t *b)
                                "Wi-Fi is fine. This changes which resolver is asked; it does nothing about a network that "
                                "blocks by address instead.",
                             BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_set_width(dn, iw);
+    sx_para(dn, iw);
     lv_obj_t *nsp = bz_box(t);
     lv_obj_set_height(nsp, 40);
 
@@ -1768,13 +1792,13 @@ static void settings_build(lv_obj_t *b)
     lv_obj_t *lt = bz_label(t, "Catalyst Link runs on the PC: code, patch branches, work orders for the PC's coding agent, "
                                "and the way the assistant reaches Claude.",
                             BZ_F_BODY, BZ_C_DIM);
-    lv_obj_set_width(lt, iw);
+    sx_para(lt, iw);
     ui_button(t, BZ_I_COMPUTER, "open link", sx_open_app, (void *)&APP_LINK);
     t = sx_pane(b, SS_ASSIST, px, pw);
     lv_obj_t *at = bz_label(t, "The assistant runs on your Claude subscription through Claude Code on the PC (Catalyst Link), "
                                "or on an API key. It reads everything the tablet sees and changes nothing without your ok.",
                             BZ_F_BODY, BZ_C_DIM);
-    lv_obj_set_width(at, iw);
+    sx_para(at, iw);
     SX.link_state = bz_label(t, "", BZ_F_LABEL, BZ_C_DIM);
     r = sx_wrap_row(t, iw);
     ui_button(r, BZ_I_AUTO_AWESOME, "open assist", sx_open_app, (void *)&APP_ASSIST);
@@ -1788,13 +1812,13 @@ static void settings_build(lv_obj_t *b)
     /* date and time */
     t = sx_pane(b, SS_TIME, px, pw);
     SX.clock = bz_label(t, "", BZ_F_NAME, BZ_C_INK);
-    bz_label(t, "time zone", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "time zone");
     r = sx_wrap_row(t, iw);
     for (int i = 0; i < 5; i++) SX.tz_chips[i] = ui_chip(r, TZ_L[i], sx_tz, (void *)(intptr_t)i);
     lv_obj_t *tn = bz_label(t, "The clock sets itself from the network whenever Wi-Fi reaches the internet, and from the PC "
                                "with tools/tab5_dev.py settime. The real-time clock keeps it through power-offs.",
                             BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_set_width(tn, iw);
+    sx_para(tn, iw);
 
     /* storage */
     t = sx_pane(b, SS_STORAGE, px, pw);
@@ -1810,28 +1834,28 @@ static void settings_build(lv_obj_t *b)
     r = sx_wrap_row(t, iw);
     ui_button(r, BZ_I_BEDTIME, "screen off", sx_sleep, NULL);
     SX.off_btn = ui_button(r, BZ_I_POWER, "turn off", sx_off, NULL);
-    bz_label(t, "screen off when untouched for", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(t, "screen off when untouched for");
     r = sx_wrap_row(t, iw);
     for (int i = 0; i < 4; i++) SX.sleep_chips[i] = ui_chip(r, SLEEP_L[i], sx_sleep_after, (void *)(intptr_t)i);
     r = sx_wrap_row(t, iw);
     SX.lock_chip = ui_chip(r, "wake to the lock screen", sx_lock, NULL);
     lv_obj_t *sn = bz_label(t, "Off, the robot link and recording keep running. A tap wakes the screen, and that tap "
                                "presses nothing; a push up opens the lock screen.", BZ_F_CAPTION, BZ_C_DIM);
-    lv_obj_set_width(sn, iw);
+    sx_para(sn, iw);
 
     /* about */
     t = sx_pane(b, SS_ABOUT, px, pw);
     /* the tablet as a thing with a name: its icon, what it is, whose it is */
     lv_obj_t *ab = bz_row(t, 20);
     lv_obj_set_style_pad_ver(ab, 8, 0);
-    ui_icon_named(ab, "system", 64);
+    ui_app_icon_on(ab, &APP_SYSMON, 64, BZ_C_SURFACE1); /* on the pane: the library's own picture, shared */
     lv_obj_t *abc = bz_col(ab, 2);
     bz_label(abc, "Catalyst Tab", BZ_F_TITLE, BZ_C_INK);
     char abl[48];
     snprintf(abl, sizeof abl, "version %s \xc2\xb7 team %d's pit tablet", CATALYST_TAB_VERSION, S.team);
     bz_label(abc, abl, BZ_F_LABEL, BZ_C_DIM);
     ST.about = bz_label(t, "", BZ_F_BODY, BZ_C_DIM);
-    lv_obj_set_width(ST.about, iw);
+    sx_para(ST.about, iw);
     lv_label_set_long_mode(ST.about, LV_LABEL_LONG_WRAP);
     ui_button(t, BZ_I_MONITORING, "system monitor", sx_open_app, (void *)&APP_SYSMON);
 
