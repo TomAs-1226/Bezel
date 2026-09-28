@@ -1459,6 +1459,9 @@ void ui_intel_dev(const char *args)
         int k = intel_services(lines, 4);
         for (int i = 0; i < k; i++) printf("INTEL %s\n", lines[i]);
         printf("INTEL pass %.2f ms (worst %.2f ms, %d passes), run %d\n", IX.pass_ms, IX.pass_max_ms, IX.passes, IX.session);
+        pthread_mutex_lock(&g_cal_lock);
+        printf("INTEL calendar next: \"%s\"%s; alarm: \"%s\"\n", CAL.text, CAL.busy ? " (reading)" : "", g_alarm);
+        pthread_mutex_unlock(&g_cal_lock);
         intel_insight_t *l = malloc(sizeof *l * INTEL_MAX);
         int n = l ? intel_list(l, INTEL_MAX) : 0;
         for (int i = 0; i < n; i++)
