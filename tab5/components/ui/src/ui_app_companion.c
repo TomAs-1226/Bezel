@@ -33,6 +33,7 @@
 #include "voice.h"
 #include "ui_home_mode.h"
 #include "ui_md.h"
+#include "ui_sys.h"
 
 #include "lvgl_private.h" /* lv_area_intersect, and the layer's clip for drawing an eye */
 
@@ -669,7 +670,10 @@ static void assist_sync(double now)
                 {
                     size_t l = strlen(e->text) + 1;
                     answer = malloc(l);
-                    if (answer) memcpy(answer, e->text, l); /* the lock goes below; caption reads it after */
+                    if (answer) {
+                        memcpy(answer, e->text, l); /* the lock goes below; caption reads it after */
+                        assist_fold_text(answer);
+                    }
                 }
                 break;
             }
@@ -744,6 +748,12 @@ static void assist_tap(lv_obj_t *o, void *u)
 {
     (void)u;
     ui_app_open(&APP_ASSIST, o);
+}
+
+static void memory_tap(lv_obj_t *o, void *u)
+{
+    (void)u;
+    ui_memory_open(AS_POOL_COMPANION, o);
 }
 
 static void refresh_chips(void)
@@ -1664,13 +1674,17 @@ static void comp_build(lv_obj_t *b)
     ui_chip_set(CP.talk_btn, true);
     lv_obj_set_width(CP.talk_btn, 140);
     CP.chips = bz_row(CP.bar, 8);
-    lv_obj_set_size(CP.chips, W - 2 * PAD - 140 - 170 - 150 - 3 * 10, BAR_H);
+    lv_obj_set_size(CP.chips, W - 2 * PAD - 140 - 170 - 150 - 64 - 4 * 10, BAR_H);
     lv_obj_set_style_clip_corner(CP.chips, false, 0);
     CP.cc_btn = ui_button(CP.bar, BZ_I_TERMINAL, "claude", cc_tap, NULL);
     lv_obj_set_width(CP.cc_btn, 170);
     CP.cc_label = lv_obj_get_child(CP.cc_btn, 1);
     lv_obj_t *as = ui_button(CP.bar, BZ_I_AUTO_AWESOME, "assist", assist_tap, NULL);
     lv_obj_set_width(as, 150);
+    /* what she remembers (her own pool; the technician's is apart) */
+    lv_obj_t *mb = ui_button(CP.bar, BZ_I_PSYCHOLOGY, NULL, memory_tap, NULL);
+    lv_obj_set_style_pad_hor(mb, 0, 0);
+    lv_obj_set_width(mb, 64);
     lv_obj_add_flag(CP.bar, LV_OBJ_FLAG_HIDDEN);
 
     /* claude code's sessions */
@@ -1774,9 +1788,12 @@ void ui_companion_tick(double now, double dt)
         CP.voice_on = want;
         voice_enable(want);
     }
-    /* With the face closed nothing draws the answer, so home mode's own message strip carries it: every
-     * reply, and above all every failure, is said out of the island instead of vanishing. */
-    if (!CP.open && CP.voice_on) {
+    /* With the face closed nothing draws the answer -- home mode listening, the owner having closed her
+     * mid-answer (the turn goes on: voice.h), a question typed elsewhere -- so the island says it: every
+     * reply, and above all every failure, instead of vanishing. Looked at only when the voice has news. */
+    static uint32_t bg_rev;
+    if (!CP.open && voice_rev() != bg_rev) {
+        bg_rev = voice_rev();
         vo_reply_t *br = malloc(sizeof *br);
         if (br) {
             if (voice_reply(br) && br->seq != CP.bg_seq) {

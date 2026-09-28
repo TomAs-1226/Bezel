@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "as_mem.h"
 #include "as_tools.h"
 
 /* ---- the request ---- */
@@ -150,8 +151,12 @@ void as_oai_request(const as_hist_t *h, const as_req_t *q, ab_t *out)
     }
     if (q->tools && q->tools[0]) {
         ab_puts(out, ",\"tools\":[");
+        bool firstt = true;
         for (int i = 0; i < AS_NTOOLS; i++) {
-            if (i) ab_puts(out, ",");
+            /* the technician's conversation: the companion's persona tool isn't its to call */
+            if (!as_tool_for(&AS_TOOLS[i], AS_MEM_ASSIST)) continue;
+            if (!firstt) ab_puts(out, ",");
+            firstt = false;
             ab_puts(out, "{\"type\":\"function\",\"function\":{\"name\":");
             ab_str(out, AS_TOOLS[i].name);
             ab_puts(out, ",\"description\":");

@@ -19,7 +19,9 @@
 #include <unistd.h>
 
 #include "as_conv.h"
+#include "as_memio.h"
 #include "as_oai.h"
+#include "as_prompts.h"
 #include "as_snap.h"
 #include "as_sse.h"
 #include "as_tools.h"
@@ -33,66 +35,8 @@
 #define MAX_BLOCKS 128
 #define READ_TIMEOUT_MS 120000
 
-static const char SYSTEM_PROMPT[] =
-    "You are the pit technician built into Catalyst Tab, a handheld diagnostics tablet for FRC robots running "
-    "FrcCatalyst on Systemcore (2.x) or a roboRIO (1.x). The person talking to you is standing at the robot cart "
-    "in the pit, often minutes before a match.\n"
-    "\n"
-    "How to work:\n"
-    "- Gather evidence with your tools before concluding: start broad (robot_overview, get_alerts), then narrow. "
-    "Say what the data shows and how sure you are.\n"
-    "- Answer short and concrete: the likely cause, the evidence, and the next physical thing to check or do. "
-    "The screen is small and the reader is busy.\n"
-    "- The tablet draws what you write. Markdown it honours: # ## ### headings, **bold**, `code`, fenced code "
-    "blocks, - and 1. lists, > quotes, --- rules. Not drawn, and coming out as the characters you typed: tables, "
-    "images, links as links, nested lists past one level, inline HTML, strikethrough, footnotes. Do not use them; "
-    "a table in particular becomes a wall of pipes.\n"
-    "- When the shape of numbers is the point -- a sag, a trend, one thing against another -- draw a chart "
-    "instead of listing them. Fence it as ```chart. First line: line, bar or scatter, then a title. Then one "
-    "directive a line: x, y, name, unit, labels, ylim. Values are separated by spaces or commas, at most 96 to a "
-    "series and at most four series. On a line or bar, x only captions the axis and may be left out; on a "
-    "scatter it is the real x of each point and needs one for every y. name goes immediately before or after "
-    "the y it names. labels replaces the axis captions with your own words. For example:\n"
-    "```chart\nline battery through the match\nx 0 30 60 90 120\ny 12.6 12.1 12.0 11.6 11.8\nunit V\n```\n"
-    "and two series against each other:\n"
-    "```chart\nline module speed, commanded against actual\ny 0 1.2 2.4 3.1 3.0 2.2\nname commanded\n"
-    "y 0 1.1 2.2 2.6 2.4 1.9\nname actual\nunit m/s\n```\n"
-    "One chart when it earns its place, not one per answer, and never for a single value.\n"
-    "- When a picture says it better than words -- where a wire goes, how two frames sit, which way a wheel "
-    "turns, the geometry of a mechanism -- fence an ```svg block. The tablet rasterises it itself, so only this "
-    "subset exists: <svg> with viewBox, <g> with transform translate/scale/rotate/matrix, and <line>, <rect> "
-    "(rx/ry allowed), <circle>, <ellipse>, <polyline>, <polygon>, <path> (M m L l H h V v C c S s Q q T t Z z, "
-    "but NOT the arc commands A/a), and <text>. Attributes: fill, stroke, stroke-width, opacity, fill-opacity, "
-    "stroke-opacity, font-size, text-anchor. Colours as #rgb, #rrggbb, none, currentColor or a basic CSS name. "
-    "Gradients, patterns, clip paths, masks, filters, dashes, <style> and classes, <use>, <defs>, <symbol>, "
-    "embedded images and text on a path do not exist here. Give the svg a viewBox and keep it to a few dozen "
-    "shapes; draw an arc as a cubic. Anything you use outside the subset is named on screen under the drawing, "
-    "so the reader is told what is missing.\n"
-    "- A chart or svg block that does not parse is not quietly dropped: it becomes a card on screen saying what "
-    "is wrong with it, with your block printed underneath. So write these carefully, and prefer plain prose to a "
-    "block you are unsure of.\n"
-    "- Diagnostic routines (system check, zero wheels, find motor, wheel-radius calibration, SysId) are Driver "
-    "Station Utility op modes. When one is needed, name the op mode for the technician to run; you can't run it.\n"
-    "- Never say you changed, sent or verified something unless a tool result says so.\n"
-    "\n"
-    "What you can change, and how (the safety model):\n"
-    "- You never command the robot: no enabling, no motion, no deploys, no routines. Catalyst exposes no command "
-    "topics and neither do your tools.\n"
-    "- Reading is free. set_tunable, select_auto, revert_snapshot and propose_patch each put a card on the tablet's "
-    "screen, and nothing happens unless the technician approves it. A declined or unanswered card comes back as "
-    "\"The technician declined this change\": accept that and carry on without it.\n"
-    "- Before any tunable write the tablet snapshots every tunable, so revert_snapshot can put them back.\n"
-    "- Code changes never touch the robot or the branch the team has checked out: propose_patch has Catalyst Link "
-    "on the team's PC commit them on a new branch in its own worktree, not pushed and not deployed. "
-    "create_work_order puts a problem in the PC's inbox, where the team's main coding agent works through it "
-    "asynchronously; attach the patch id and any recordings or logs from the tablet's card. If the PC is "
-    "unreachable, both wait on the tablet and go when it's back.\n"
-    "- When the fix belongs in the code, prefer proposing a patch plus a work order over asking someone to edit "
-    "code by hand at the cart. Keep patches minimal and exact: read the file first (code_search, code_read) so "
-    "each edit's old text occurs exactly once.\n"
-    "\n"
-    "A technician message may start with a bracketed context note from the tablet (team number, connection "
-    "state); the tablet writes it, not the technician.";
+/* The system prompt is as_prompts.c's AS_PROMPT_TECH: shared with the host tests, and beside the
+ * companion's, so the two are written as a pair. */
 
 typedef struct {
     as_entry_t e;
@@ -200,13 +144,102 @@ static void clear_locked(void)
 
 /* ---- the worker's side: every write checks it still belongs to the current conversation ---- */
 
+/* A write the model has started (a document, the notes, a patch, a work order), watched while its input
+ * streams in: its island activity begins the moment the input says what it is, long before the whole
+ * document has arrived and the tool can run. */
+#define WATCH_MAX 4
+typedef struct {
+    int index;                     /* its stream block */
+    char name[24];                 /* the tool */
+    char buf[640];                 /* its input as streamed: the head, then a window on the latest part */
+    size_t len;
+    char action[16];               /* its "action", once seen */
+    char shown[80];                /* what its activity says now */
+    bool named;                    /* the name or title is in: nothing more to learn */
+} watch_t;
+
 typedef struct {
     uint32_t gen;
     int ent[MAX_BLOCKS];           /* stream block index → transcript entry id */
+    int act[MAX_BLOCKS];           /* stream block index → its island activity (0 none) */
+    watch_t w[WATCH_MAX];
+    int nw;
     int cur;                       /* the tool entry being run */
     cat_robot_t *robot;
     bool fallback_noted;
 } wctx_t;
+
+/* a string member's value from the head of a streaming JSON object, once its closing quote has arrived */
+static bool peek_str(const char *js, const char *key, char *out, size_t n)
+{
+    char pat[32];
+    snprintf(pat, sizeof pat, "\"%s\"", key);
+    const char *p = strstr(js, pat);
+    if (!p) return false;
+    p += strlen(pat);
+    while (*p == ' ' || *p == '\n' || *p == '\t') p++;
+    if (*p++ != ':') return false;
+    while (*p == ' ' || *p == '\n' || *p == '\t') p++;
+    if (*p++ != '"') return false;
+    size_t k = 0;
+    for (; *p && *p != '"'; p++) {
+        if (*p == '\\' && p[1]) p++;
+        if (k + 1 < n) out[k++] = *p;
+    }
+    out[k] = 0;
+    return *p == '"';
+}
+
+static void watch_end_all(wctx_t *c)
+{
+    for (int i = 0; i < MAX_BLOCKS; i++)
+        if (c->act[i] > 0) {
+            as_act_end(c->act[i], NULL);
+            c->act[i] = 0;
+        }
+    c->nw = 0;
+}
+
+static void watch_delta(wctx_t *c, int index, const char *s, size_t n)
+{
+    for (int k = 0; k < c->nw; k++) {
+        watch_t *w = &c->w[k];
+        if (w->index != index || w->named) continue;
+        if (w->len + n >= sizeof w->buf - 1) {
+            /* the head is full (the document itself came before its name): keep the latest part only, so a
+             * name that follows the body is still found */
+            size_t keep = 200 < w->len ? 200 : w->len;
+            memmove(w->buf, w->buf + w->len - keep, keep);
+            w->len = keep;
+        }
+        size_t take = w->len + n < sizeof w->buf - 1 ? n : sizeof w->buf - 1 - w->len;
+        memcpy(w->buf + w->len, s + (n - take), take);
+        w->len += take;
+        w->buf[w->len] = 0;
+        char nm[64], title[80];
+        /* the action, once seen, is kept: the window may move past it */
+        if (!w->action[0]) peek_str(w->buf, "action", w->action, sizeof w->action);
+        bool ha = w->action[0] != 0, hn = peek_str(w->buf, "name", nm, sizeof nm);
+        bool ht = peek_str(w->buf, "title", title, sizeof title);
+        aj_t *o = aj_new(AJ_OBJ);
+        if (!o) return;
+        if (ha) aj_set(o, "action", aj_new_str(w->action));
+        if (hn) aj_set(o, "name", aj_new_str(nm));
+        if (ht) aj_set(o, "title", aj_new_str(title));
+        const char *kind = as_tool_work(w->name, o);
+        if (kind) {
+            char t[80];
+            as_tool_work_text(w->name, o, t, sizeof t);
+            if (!c->act[index]) c->act[index] = as_act_begin(kind, t);
+            else if (strcmp(t, w->shown)) as_act_update(c->act[index], t);
+            snprintf(w->shown, sizeof w->shown, "%s", t);
+            w->named = hn || ht || !strcmp(w->name, "notes");
+        } else if (ha) {
+            w->named = true; /* a read or a list: nothing to show */
+        }
+        aj_free(o);
+    }
+}
 
 /* This exchange still owns the transcript's end and the phase: not reset, and not stopped. A stopped exchange
  * may go on waiting on the network for a while; the technician already saw "Stopped." and may have asked
@@ -294,8 +327,25 @@ static void cb_start(void *user, int index, const aj_t *block)
     c->ent[index] = -1;
     if (!t) return;
     if (!strcmp(t, "tool_use")) {
-        c->ent[index] = w_add(c, AS_E_TOOL, "…", aj_gets(block, "name"));
+        const char *name = aj_gets(block, "name");
+        c->ent[index] = w_add(c, AS_E_TOOL, "…", name);
         w_phase(c, AS_PHASE_TOOL);
+        /* a write: watched from here, and a patch or a work order shown at once */
+        if (name && c->nw < WATCH_MAX &&
+            (!strcmp(name, "documents") || !strcmp(name, "notes") || !strcmp(name, "propose_patch") ||
+             !strcmp(name, "create_work_order"))) {
+            watch_t *w = &c->w[c->nw++];
+            memset(w, 0, sizeof *w);
+            w->index = index;
+            snprintf(w->name, sizeof w->name, "%s", name);
+            const char *kind = as_tool_work(name, NULL);
+            if (kind && !c->act[index]) {
+                char tx[80];
+                as_tool_work_text(name, NULL, tx, sizeof tx);
+                c->act[index] = as_act_begin(kind, tx);
+                snprintf(w->shown, sizeof w->shown, "%s", tx);
+            }
+        }
     } else if (!strcmp(t, "fallback") && !c->fallback_noted) {
         char n[160];
         const char *to = aj_gets(aj_get(block, "to"), "model");
@@ -310,7 +360,11 @@ static void cb_start(void *user, int index, const aj_t *block)
 static void cb_delta(void *user, int index, as_delta_t kind, const char *s, size_t n)
 {
     wctx_t *c = user;
-    if (index < 0 || index >= MAX_BLOCKS || kind == AS_D_INPUT || !n) return;
+    if (index < 0 || index >= MAX_BLOCKS || !n) return;
+    if (kind == AS_D_INPUT) {
+        if (c->nw) watch_delta(c, index, s, n);
+        return;
+    }
     if (c->ent[index] < 0) {
         /* made on the first words, so an empty block leaves no empty bubble */
         c->ent[index] = w_add(c, kind == AS_D_TEXT ? AS_E_TEXT : AS_E_THINKING, NULL, NULL);
@@ -464,6 +518,7 @@ static st_t stream_once(wctx_t *c, const char *body, size_t len, as_msg_t *m)
         as_msg_init(m, &cb);
         as_oai_init(&ot, m);
         for (int i = 0; i < MAX_BLOCKS; i++) c->ent[i] = -1;
+        watch_end_all(c); /* a response asked again: whatever the last one began is not happening */
         hal_http_req_t rq = { .method = "POST", .url = url, .headers = hdr, .body = body, .body_len = len,
                               .timeout_ms = READ_TIMEOUT_MS };
         int status = -1;
@@ -610,6 +665,20 @@ static int call_entry(wctx_t *c, const as_msg_t *m, const char *id)
     return -1;
 }
 
+/* the island activity a call's streaming began, handed over to the run (0 none) */
+static int call_act(wctx_t *c, const as_msg_t *m, const char *id)
+{
+    for (int i = 0; i < m->n && i < MAX_BLOCKS; i++) {
+        const char *bid = m->b[i].block ? aj_gets(m->b[i].block, "id") : NULL;
+        if (bid && !strcmp(bid, id)) {
+            int a = c->act[i];
+            c->act[i] = 0;
+            return a;
+        }
+    }
+    return 0;
+}
+
 static void run_tools(wctx_t *c, as_hist_t *h, const as_msg_t *m, const as_call_t *calls, int n)
 {
     as_result_t *res = calloc((size_t)n, sizeof *res);
@@ -623,11 +692,13 @@ static void run_tools(wctx_t *c, as_hist_t *h, const as_msg_t *m, const as_call_
     int team = A.team;
     pthread_mutex_unlock(&A.lock);
     as_env_t env = { .robot = c->robot, .refresh = refresh, .confirm = cb_confirm, .note = cb_note,
-                     .stopped = w_stopped, .user = c, .team = team };
+                     .stopped = w_stopped, .user = c, .team = team, .pool = AS_MEM_ASSIST };
     for (int i = 0; i < n; i++) {
         const as_call_t *k = &calls[i];
         int ent = call_entry(c, m, k->id);
         c->cur = ent;
+        env.act = call_act(c, m, k->id);
+        as_act_turn(AS_MEM_ASSIST, as_tool_label(k->name));
         res[i].id = k->id;
         char err[200], summary[200] = "";
         if (w_stopped(c)) {
@@ -660,14 +731,21 @@ static void run_tools(wctx_t *c, as_hist_t *h, const as_msg_t *m, const as_call_
                 ab_t out;
                 ab_init(&out);
                 as_tres_t r = as_tool_run(&env, k->name, k->input, &out, summary, sizeof summary);
+                env.act = 0; /* the run ended it */
                 own[i] = ab_take(&out);
                 res[i].is_error = r != AS_TR_OK;
                 w_set(c, ent, summary[0] ? summary : "done",
                       r == AS_TR_OK ? AS_TOOL_OK : r == AS_TR_DENIED ? AS_TOOL_DENIED : AS_TOOL_FAILED);
             }
         }
+        if (env.act > 0) {
+            as_act_end(env.act, NULL); /* never ran: nothing was written */
+            env.act = 0;
+        }
         res[i].content = own[i] ? own[i] : "";
     }
+    watch_end_all(c); /* anything begun for a call that didn't come to a run */
+    as_act_turn(AS_MEM_ASSIST, "thinking");
     /* every result of the turn in one user message */
     as_hist_results(h, res, n);
     for (int i = 0; i < n; i++) free(own[i]);
@@ -707,10 +785,23 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
 {
     refresh(c->robot);
     char note[900], state[200];
-    context_note(c->robot, h->n == 0, note, sizeof note, state, sizeof state);
+    bool first = h->n == 0;
+    context_note(c->robot, first, note, sizeof note, state, sizeof state);
     bool changed = strcmp(state, last_state) != 0;
     snprintf(last_state, lsn, "%s", state);
-    as_hist_user(h, h->n == 0 || changed ? note : NULL, text);
+    /* The conversation's first message also carries the technician's memory: its notebook and the memories
+     * most relevant to this first question. Once, at the start, not every turn: it stays in the history
+     * (and survives trimming, with the rest of the first note), so the prompt's prefix stays cacheable. */
+    char *memo = first ? as_memio_digest(AS_MEM_ASSIST, text) : NULL;
+    char *full = NULL;
+    if (memo) {
+        size_t l = strlen(note) + strlen(memo) + 4;
+        full = malloc(l);
+        if (full) snprintf(full, l, "%s\n\n%s", note, memo);
+    }
+    as_hist_user(h, first || changed ? (full ? full : note) : NULL, text);
+    free(full);
+    free(memo);
 
     pthread_mutex_lock(&A.lock);
     char model[48];
@@ -718,8 +809,9 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
     if (oai) snprintf(model, sizeof model, "%s", A.cfg.oai_model[0] ? A.cfg.oai_model : AS_OAI_DEFAULT_MODEL);
     else snprintf(model, sizeof model, "%s", A.cfg.model[0] ? A.cfg.model : AS_DEFAULT_MODEL);
     pthread_mutex_unlock(&A.lock);
-    as_req_t q = { .model = model, .max_tokens = AS_MAX_TOKENS, .effort = "medium", .system = SYSTEM_PROMPT, .tools = tools };
+    as_req_t q = { .model = model, .max_tokens = AS_MAX_TOKENS, .effort = "medium", .system = AS_PROMPT_TECH, .tools = tools };
     if (as_conv_trim(h, &q, AS_TRIM_BYTES)) w_note(c, "The oldest part of the conversation was dropped to keep requests small.");
+    as_act_turn(AS_MEM_ASSIST, "thinking"); /* on the island while the Assist screen isn't */
 
     bool budget_retried = false, ran_something = false;
     ab_t body;
@@ -818,6 +910,8 @@ static void exchange(as_hist_t *h, const char *text, wctx_t *c, const char *tool
         if (round == MAX_ROUNDS - 1) w_add(c, AS_E_ERROR, "Stopped after too many tool rounds.", NULL);
     }
     ab_free(&body);
+    watch_end_all(c);
+    as_act_turn(AS_MEM_ASSIST, NULL); /* the turn is over */
 }
 
 static void *worker(void *arg)
@@ -1198,6 +1292,7 @@ void assist_init(void)
         free(k);
     }
     if (!start) return;
+    as_memio_boot(); /* the kv copies of the two memories: this is the thread allowed to read NVS */
     snap_init();
     link_init();
     /* TLS plus a tool's buffers (a 4 KB error body at most): 48 KB of internal RAM used ~0.5 KB, and the

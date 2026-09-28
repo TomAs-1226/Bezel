@@ -96,7 +96,7 @@ class Robot:
         self.t0 = time.monotonic()
         self.topics = {}   # name -> [type, value, id]
         self.next_id = 1
-        self.enabled = scenario == "match"
+        self.enabled = scenario in ("match", "jam")
         self.heading = 37.0
         self.build()
 
@@ -300,7 +300,9 @@ class Robot:
         base = 1.4 if self.enabled else 0.0
         ang = 0.6 * math.sin(t * 0.5)
         p("/Catalyst/Swerve/ModuleStates", "struct:SwerveModuleState[]",
-          modules([(base * (1 + 0.05 * i), ang + 0.03 * i) for i in range(4)]))
+          # "jam": the back-left module follows at about half its command (a binding drive, a loose wheel)
+          modules([(base * (1 + 0.05 * i) * (0.55 if self.scenario == "jam" and i == 2 else 1), ang + 0.03 * i)
+                   for i in range(4)]))
         p("/Catalyst/Swerve/ModuleTargets", "struct:SwerveModuleState[]",
           modules([(base * 1.05, ang) for _ in range(4)]))
         p("/Catalyst/Vision/Health/Rows", "string[]",
@@ -402,7 +404,7 @@ async def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=5810)
-    ap.add_argument("--scenario", default="pit", choices=["pit", "pit-ok", "match", "sick"])
+    ap.add_argument("--scenario", default="pit", choices=["pit", "pit-ok", "match", "sick", "jam"])
     a = ap.parse_args()
     robot = Robot(a.scenario)
     sessions = set()

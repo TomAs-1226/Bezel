@@ -85,7 +85,7 @@ Two paths, chosen per motion:
 | network | `hal_tab5_net.c` | Wi-Fi (C6 over SDIO), USB tether, mDNS, HTTPS streaming |
 | time | SNTP, RTC | alarms ring with the app closed (`ui_os_boot`) |
 | robot | `components/catalyst` (NT4 model) | see docs/catalyst-integration.md for the library contract |
-| assistant | `components/assist`, Catalyst Link | Claude via the PC or a key; GPT with a key (branch tab5-companion) |
+| assistant | `components/assist`, Catalyst Link | Claude via the PC or a key; GPT with a key. Each AI has its own long-term memory, the tablet's own tools, and shows its work on the island: docs/assistant.md |
 | audio | `hal_tab5_audio.c` | one speaker task mixing tones and streamed speech (48 kHz); microphones at 16 kHz, on only while the companion is on screen; ESP-SR WakeNet "Hi, ESP" from the `model` partition |
 | voice | `components/assist/src/voice.c` | the companion's own conversation: wake word or tap, energy VAD, OpenAI transcription, a JSON reply with a feeling, OpenAI speech streamed to the speaker |
 | match alerts | `ui_match.c`, `components/home/src/home_tba.c` | alarms before the team's matches from The Blue Alliance; schedule changes as notifications (below) |

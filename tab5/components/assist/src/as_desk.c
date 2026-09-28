@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "as_json.h"
+#include "as_tools.h"
 #include "assist.h"
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -42,6 +43,38 @@ static as_tba_read_fn g_tba;
 
 void assist_set_tba_reader(as_tba_read_fn fn) { g_tba = fn; }
 as_tba_read_fn assist_tba_reader(void) { return g_tba; }
+
+void assist_fold_text(char *s) { as_fold_text(s); }
+
+/* ---- the island's live activities, registered by the ui (as_tools.h has the calls) ---- */
+
+static as_activity_hooks_t g_act;
+
+void assist_set_activity_hooks(const as_activity_hooks_t *h)
+{
+    if (h) g_act = *h;
+    else memset(&g_act, 0, sizeof g_act);
+}
+
+void as_act_turn(int pool, const char *doing)
+{
+    if (g_act.turn) g_act.turn(pool, doing);
+}
+
+int as_act_begin(const char *kind, const char *text)
+{
+    return g_act.begin ? g_act.begin(kind, text) : 0;
+}
+
+void as_act_update(int id, const char *text)
+{
+    if (id > 0 && g_act.update) g_act.update(id, text);
+}
+
+void as_act_end(int id, const char *said)
+{
+    if (id > 0 && g_act.end) g_act.end(id, said);
+}
 
 /* ---- the tablet's and the house's actions, registered by whoever can see the ui ---- */
 

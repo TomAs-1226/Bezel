@@ -37,7 +37,7 @@ typedef struct {
     char api_key[160];     /* the Anthropic key (AS_ROUTE_DIRECT) */
     char model[48];        /* Claude's model; "" → "claude-opus-5" */
     char oai_key[256];     /* the OpenAI key (AS_ROUTE_OPENAI) */
-    char oai_model[48];    /* "" → "gpt-4o-mini" */
+    char oai_model[48];    /* "" → "gpt-5" (AS_OAI_DEFAULT_MODEL) */
 } assist_config_t;
 
 typedef enum {
@@ -100,7 +100,7 @@ void assist_config(assist_config_t *out);
 void assist_use(as_route_t route);
 void assist_set_anthropic(const char *key, const char *model);
 void assist_set_openai(const char *key, const char *model);
-/* "Claude through the PC", "Claude (key on tablet)", "OpenAI gpt-4o-mini" */
+/* "Claude through the PC", "Claude (key on tablet)", "OpenAI gpt-5" */
 const char *assist_provider_name(as_route_t r);
 /* false with a reason when it can't run: no Link and no key, Link unreachable… */
 bool assist_ready(char *why, size_t n);
@@ -161,10 +161,28 @@ typedef enum { AS_DESK_MATCHES, AS_DESK_BATTERIES, AS_DESK_NOW, AS_DESK_N } as_d
  *
  * `args` is the validated input re-serialised as JSON, not a parsed object: as_json.h is private to
  * this component, and a public header that leaks it would drag the parser into everyone who talks
- * to the assistant. The handler parses it with whatever it already has. */
-typedef bool (*as_action_fn)(const char *action, const char *args_json, char *out, size_t n);
+ * to the assistant. The handler parses it with whatever it already has. `pool` says which conversation
+ * is asking (AS_POOL_ASSIST or AS_POOL_COMPANION): the companion is on screen and talking, so what
+ * would take the screen from her waits until she has finished. */
+typedef bool (*as_action_fn)(const char *action, const char *args_json, int pool, char *out, size_t n);
 void assist_set_action_handler(as_action_fn fn);
 as_action_fn assist_action_handler(void);
+
+/* What the two conversations are doing, for the island's live activities, handed in by the ui for the same
+ * reason as the action handler. Any thread; each may be NULL.
+ *   turn(pool, doing)   what that conversation is doing now ("thinking", "reading the alerts"); NULL when its
+ *                       turn is over. The ui shows it only while that conversation's own screen is not.
+ *   begin(kind, text)   a piece of work worth showing wherever the owner is, from the moment it starts:
+ *                       kind "edit" (a document or the notes being written), "patch", "send" (a work order);
+ *                       returns an id (> 0), or 0 when it can't be shown;
+ *   update(id, text), end(id, said)   said: what to leave on the island ("saved notes.md"), or NULL. */
+typedef struct {
+    void (*turn)(int pool, const char *doing);
+    int (*begin)(const char *kind, const char *text);
+    void (*update)(int id, const char *text);
+    void (*end)(int id, const char *said);
+} as_activity_hooks_t;
+void assist_set_activity_hooks(const as_activity_hooks_t *h);
 
 typedef bool (*as_tba_read_fn)(const char *path, char *out, size_t n);
 void assist_set_tba_reader(as_tba_read_fn fn);
@@ -173,12 +191,47 @@ as_tba_read_fn assist_tba_reader(void);
 void assist_desk_post(as_desk_t which, const char *text);
 char *assist_desk_get(as_desk_t which);
 
+/* A model's typography folded, in place, into what the tablet's faces carry: curly quotes to straight, the
+ * en dash to '-', odd spaces to ' ', a bullet to '·' (they came out as nothing at all: "wheels" for
+ * "wheel’s"). The em dash and the ellipsis stay. Never lengthens the text. Any thread. */
+void assist_fold_text(char *s);
+
+/* ---- memory (as_memio.c) ----
+ * Each AI keeps its own long-term memory, and neither can read the other's: the technician's (this app's
+ * conversation) and the companion's (voice.h). A pool is a few "self" sections the model rewrites whole
+ * (the technician's season notebook: robot, team, season, watchlist; the companion's persona: name,
+ * personality, relationship, running_jokes) and up to 120 memories. The models keep them with their
+ * remember / forget / recall tools; these calls are for the screens that show them and let the owner
+ * delete them. On the card at CATOS/DATA/MEM-ASSIST.JSON and MEM-COMPANION.JSON; without one, the most
+ * valuable part in kv. Any thread, except assist_mem_tick. */
+typedef enum { AS_POOL_ASSIST, AS_POOL_COMPANION } as_pool_t;
+typedef struct {
+    int id;
+    char kind[16];                 /* fact, preference, decision, fix, fault, procedure, event, person, plan */
+    char text[480];
+    int imp;                       /* 1 minor, 2 useful, 3 important */
+    long long updated;             /* unix seconds, 0 unknown */
+} as_memory_t;
+/* The pool's memories, most valuable first (at most max); -1 while the pool can't be read. */
+int assist_mem_list(as_pool_t pool, as_memory_t *out, int max);
+/* Self section i (0..3): its name and its text (""). false past the last, or while the pool can't be read. */
+bool assist_mem_self(as_pool_t pool, int i, char *key, size_t kn, char *text, size_t tn);
+bool assist_mem_forget(as_pool_t pool, int id);
+bool assist_mem_clear_self(as_pool_t pool, int i);
+void assist_mem_forget_all(as_pool_t pool);          /* every memory, and the self sections */
+void assist_mem_status(as_pool_t pool, char *out, size_t n); /* "37 memories of 120 · on the card, ..." or why not */
+uint32_t assist_mem_gen(void);                       /* changes whenever either pool does */
+void assist_mem_tick(void);                          /* UI thread, 10 Hz: finishes saves that failed, kv without a card */
+/* Exactly what that pool's model is shown at the start of a conversation whose first question is `query`
+ * (the dev console's "memo digest"). malloc'd; the caller frees. */
+char *assist_mem_digest(as_pool_t pool, const char *query);
+
 /* Runs fn(arg) once on the assistant's worker, between conversation turns (a turn in flight finishes first):
  * for one-shot jobs like a log analysis (analyze.h), which then need no thread of their own. false while
  * another job is queued or running. Any thread. */
 bool assist_post_job(void (*fn)(void *), void *arg);
 /* OpenAI's Chat Completions URL, the headers with the stored key ("oai_key") for a plain JSON answer, and the
- * model from settings ("oai_model", default gpt-4o-mini). false when no key is stored. The caller wipes hdr
+ * model from settings ("oai_model", default gpt-5). false when no key is stored. The caller wipes hdr
  * after use. Any thread. */
 bool assist_oai_endpoint(char *url, size_t un, char *hdr, size_t hn, char *model, size_t mn);
 

@@ -14,7 +14,9 @@
 #include <unistd.h>
 
 #include "as_json.h"
+#include "as_memio.h"
 #include "as_oai.h"
+#include "as_prompts.h"
 #include "as_tools.h"
 #include "assist.h"
 #include "ccwatch.h"
@@ -25,7 +27,8 @@
 #define CHUNK 320                  /* 20 ms at 16 kHz: what one hal_mic_read gives */
 #define REC_MAX (SR * 15)          /* the longest utterance */
 #define PREROLL (SR * 3 / 10)      /* kept from before the voice starts, so its onset isn't clipped */
-#define HIST_MAX 16                /* messages remembered (8 exchanges) */
+#define HIST_MAX 40                /* messages remembered: questions, tool calls and results, answers */
+#define HIST_TOOL_CHARS 600        /* a tool's result as the history keeps it (the answer already used it) */
 #define HIST_IDLE_S 600.0          /* quiet this long: the next question starts a new conversation */
 #define TOOL_ROUNDS 4
 #define TTS_RATE 24000             /* OpenAI's "pcm": 24 kHz, 16-bit, mono, little-endian */
@@ -33,65 +36,7 @@
  * nothing for this long is lost (the HAL retries only a request that failed quickly) */
 #define HTTP_TIMEOUT_MS 40000
 
-static const char SYSTEM_PROMPT[] =
-    "You are the companion that lives in Catalyst Tab, a small tablet standing on its owner's desk. The owner is on an "
-    "FRC robotics team, and the tablet is also their pit diagnostics tool. You have a face: two expressive eyes on the "
-    "screen. You are warm, curious and a little playful, and you are also a capable general assistant: answer anything "
-    "well, from facts and maths to code, writing, planning and advice.\n"
-    "\n"
-    "Your words are spoken aloud by a text-to-speech voice and may also be shown on the screen, so:\n"
-    "- Talk like a person in conversation: short, natural sentences. Usually one to three of them; go longer only when "
-    "asked for detail or when the answer truly needs it.\n"
-    "- Plain words only in what you say: no markdown, lists, headings, emoji, links or code blocks. Write numbers, "
-    "units and symbols the way they are spoken. Anything you put there is read out loud exactly as written.\n"
-    "- When something is better looked at than listened to, put it in the separate \"show\" field, which is drawn "
-    "on the screen under your answer and is never spoken. Keep saying the point in words as well -- \"show\" is the "
-    "picture, not the answer. Leave it \"\" in almost every reply; reach for it when the shape of numbers is what "
-    "matters (a battery sagging through a match, current by mechanism, two things against each other), or when a "
-    "short list or a few lines of code are genuinely easier to read than to hear.\n"
-    "- \"show\" is drawn as markdown: # ## ### headings, **bold**, `code`, fenced code, - and 1. lists, > quotes, "
-    "--- rules. Tables, images and links are not drawn. A chart goes in a ```chart block: first line line, bar or "
-    "scatter then a title, then one directive a line -- x, y (one series, up to four), name (just before or after "
-    "its y), unit, labels, ylim lo hi -- values separated by spaces or commas. For example:\n"
-    "```chart\nline battery through the match\nx 0 30 60 90 120\ny 12.6 12.1 12.0 11.6 11.8\nunit V\n```\n"
-    "A chart that does not parse is drawn as a card saying what is wrong with it, so write it carefully or leave "
-    "it out.\n"
-    "- The question was transcribed from speech. If it looks garbled or cut off, say so briefly and ask again rather "
-    "than guessing.\n"
-    "- Be honest about what you don't know.\n"
-    "\n"
-    "Tools: you can read the robot (connection, alerts, mechanisms, power, CAN, logs, preflight, Systemcore), the team's "
-    "matches at its event (The Blue Alliance: times, alliance, partners, results, rank), the team's battery fleet and which "
-    "battery should go in next, the robot's code through Catalyst Link on the PC, and the Claude Code sessions running on "
-    "the owner's PC. Use them when the question "
-    "is about those things; never guess a robot fact you could look up. You can also read what the tablet has "
-    "recorded itself: its run recordings (analysed on the tablet, so ask for the analysis rather than the samples) "
-    "and the state timelines it keeps from boot.\n"
-    "\n"
-    "You can DO things, without asking permission first, and you should when asked: open any app by the name on its "
-    "icon, set the screen brightness and the speaker volume, play, pause, skip and stop music -- the tablet's own, or "
-    "the PC's through Catalyst Link -- and work the Home Assistant lights, switches and thermostats the owner has set "
-    "up in home mode. List them before touching one you are not sure of; only the entities the owner picked exist to "
-    "you. Do the thing, then say in a few words what you did.\n"
-    "\n"
-    "You cannot change anything on the ROBOT -- a tunable, the auto choice, its code. That needs a card the owner "
-    "approves, so send them to the Assist app for it.\n"
-    "\n"
-    "If a tool comes back saying the network filters or blocks a host, say that plainly and say what it means: the "
-    "Wi-Fi is working and something between the tablet and the internet is refusing. It is not being offline, and "
-    "the owner can change which DNS the tablet asks, in settings under network.\n"
-    "\n"
-    "A message may begin with a bracketed note from the tablet (time, robot and PC state). The tablet writes it, not "
-    "the owner; use it only when it matters.\n"
-    "\n"
-    "Always reply with a JSON object: {\"say\": what you say, \"show\": what to draw under it, or \"\", "
-    "\"emotion\": how you honestly feel about this moment, "
-    "\"intensity\": 0 to 1, \"look\": where your eyes glance}. Emotions: neutral, happy, excited, curious, thinking, "
-    "sleepy, sad, worried, surprised, love, proud, confused. Choose from the content, honestly: good news is happy or "
-    "excited, a problem is worried, a puzzle is curious or thinking, kind words are love, a success is proud, the "
-    "unexpected is surprised, a sad topic is sad, not understanding is confused; plain facts are neutral. Intensity "
-    "0.2 to 0.5 is mild, 0.6 to 1 strong. look is center unless a glance fits: up while recalling, down when shy or "
-    "sad, left or right when pointing at something.";
+/* The system prompt is as_prompts.c's AS_PROMPT_COMPANION, written beside the technician's. */
 
 static const char *EMO[VO_EMO_COUNT] = { "neutral", "happy", "excited", "curious", "thinking", "sleepy",
                                          "sad", "worried", "surprised", "love", "proud", "confused" };
@@ -104,9 +49,13 @@ static const char *TONE[VO_EMO_COUNT] = {
     "surprised", "affectionate and warm", "proud and bright", "puzzled",
 };
 
+/* One message of the conversation as Chat Completions takes it back: the owner's words, her tool calls and
+ * what they returned (cut short), her answer. The calls are kept, not only the words around them: a history
+ * of "okay, three minutes started" with no timer call in it teaches the model that saying it is doing it,
+ * and the next time it set no timer at all. */
 typedef struct {
-    bool user;
-    char *text;
+    aj_t *m;
+    bool starts;   /* the owner's question: an exchange starts here, and is dropped whole from here */
 } hmsg_t;
 
 static struct {
@@ -128,12 +77,14 @@ static struct {
     double last_turn;
     bool clear_hist;               /* voice_reset: forget before the next question */
     bool stt_fallback, tts_fallback;
+    bool tts_voice_safe;           /* the chosen voice was refused once: AS_TTS_VOICE_SAFE until the setting changes */
     bool tts_pcm;                  /* MP3 speech failed once (undecodable, or a rate the speaker won't take): PCM */
     uint32_t rev;
 } V = { .lock = PTHREAD_MUTEX_INITIALIZER, .wake = PTHREAD_COND_INITIALIZER };
 
 static hmsg_t g_hist[HIST_MAX];
 static int g_nhist;
+static char *g_memo; /* her memory as this conversation began (as_memio_digest); remade when a new one starts */
 
 static void bump(void) { __atomic_add_fetch(&V.rev, 1, __ATOMIC_RELAXED); }
 uint32_t voice_rev(void) { return __atomic_load_n(&V.rev, __ATOMIC_RELAXED); }
@@ -244,6 +195,11 @@ void voice_config(voice_config_t *out)
 void voice_set_config(const voice_config_t *c)
 {
     pthread_mutex_lock(&V.lock);
+    if (strcmp(V.cfg.voice, c->voice) || strcmp(V.cfg.tts_model, c->tts_model)) {
+        /* a new voice or speech model gets a fresh try, not the fallback an old one earned */
+        V.tts_voice_safe = false;
+        V.tts_fallback = false;
+    }
     V.cfg = *c;
     pthread_mutex_unlock(&V.lock);
     hal_kv_set("v_out", c->out == VO_OUT_SPEAK ? "speak" : c->out == VO_OUT_SHOW ? "show" : "both");
@@ -562,23 +518,56 @@ static char *transcribe(const int16_t *pcm, int n)
 
 /* ------------------------------------------------------------------ the answer */
 
-static void hist_add(bool user, const char *text)
+/* the oldest exchange, whole: the history always starts with the owner, and never splits a tool call from
+ * its result */
+static void hist_drop_oldest(void)
 {
-    if (g_nhist == HIST_MAX) {
-        /* the oldest exchange goes whole, so the history still starts with the owner */
-        int drop = g_nhist > 1 && !g_hist[1].user ? 2 : 1;
-        for (int i = 0; i < drop; i++) free(g_hist[i].text);
-        memmove(g_hist, g_hist + drop, (size_t)(g_nhist - drop) * sizeof *g_hist);
-        g_nhist -= drop;
+    int drop = 1;
+    while (drop < g_nhist && !g_hist[drop].starts) drop++;
+    for (int i = 0; i < drop; i++) aj_free(g_hist[i].m);
+    memmove(g_hist, g_hist + drop, (size_t)(g_nhist - drop) * sizeof *g_hist);
+    g_nhist -= drop;
+}
+
+/* One exchange into the history: the question, the turn's tool calls and results (each result cut to
+ * HIST_TOOL_CHARS), and the answer. Takes nothing it is given; copies what it keeps. */
+static void hist_add_exchange(const char *question, const aj_t *turn, const char *answer)
+{
+    if (turn && turn->n + 2 > HIST_MAX) turn = NULL; /* a turn too long to keep: its words only */
+    int need = 2 + (turn ? turn->n : 0);
+    while (g_nhist && g_nhist + need > HIST_MAX) hist_drop_oldest();
+    aj_t *q = aj_new(AJ_OBJ);
+    aj_set(q, "role", aj_new_str("user"));
+    aj_set(q, "content", aj_new_str(question));
+    g_hist[g_nhist].m = q;
+    g_hist[g_nhist++].starts = true;
+    for (int i = 0; turn && i < turn->n; i++) {
+        aj_t *m = aj_clone(turn->kid[i]);
+        const aj_t *c = aj_get(m, "content");
+        if (c && c->type == AJ_STR && c->len > HIST_TOOL_CHARS && !strcmp(aj_gets(m, "role") ? aj_gets(m, "role") : "", "tool")) {
+            size_t cut = HIST_TOOL_CHARS;
+            while (cut && ((unsigned char)c->s[cut] & 0xC0) == 0x80) cut--; /* not mid-character */
+            char *t = malloc(cut + 16);
+            if (t) {
+                memcpy(t, c->s, cut);
+                snprintf(t + cut, 16, " ...(cut)");
+                aj_set(m, "content", aj_new_str(t));
+                free(t);
+            }
+        }
+        g_hist[g_nhist].m = m;
+        g_hist[g_nhist++].starts = false;
     }
-    g_hist[g_nhist].user = user;
-    g_hist[g_nhist].text = as_strdup(text);
-    if (g_hist[g_nhist].text) g_nhist++;
+    aj_t *a = aj_new(AJ_OBJ);
+    aj_set(a, "role", aj_new_str("assistant"));
+    aj_set(a, "content", aj_new_str(answer));
+    g_hist[g_nhist].m = a;
+    g_hist[g_nhist++].starts = false;
 }
 
 static void hist_clear(void)
 {
-    for (int i = 0; i < g_nhist; i++) free(g_hist[i].text);
+    for (int i = 0; i < g_nhist; i++) aj_free(g_hist[i].m);
     g_nhist = 0;
 }
 
@@ -620,9 +609,9 @@ static char *tools_json(void)
     ab_puts(&b, "[");
     bool first = true;
     for (int i = 0; i < AS_NTOOLS; i++) {
-        /* Reads, and the tablet's and the house's own actions. Never AS_T_CHANGE: those touch the
-         * robot and need a card, and a spoken conversation is the wrong place for one. */
-        if (AS_TOOLS[i].kind != AS_T_READ && AS_TOOLS[i].kind != AS_T_DEVICE) continue;
+        /* Reads, the tablet's and the house's own actions, and its own memory. Never AS_T_CHANGE: those
+         * touch the robot and need a card, and a spoken conversation is the wrong place for one. */
+        if (!as_tool_for(&AS_TOOLS[i], AS_MEM_COMPANION)) continue;
         ab_puts(&b, first ? "" : ",");
         first = false;
         ab_puts(&b, "{\"type\":\"function\",\"function\":{\"name\":");
@@ -671,12 +660,18 @@ static void chat_body(ab_t *b, const char *model, const char *question, const aj
         }
     }
     ab_puts(b, ",\"messages\":[{\"role\":\"system\",\"content\":");
-    ab_str(b, SYSTEM_PROMPT);
+    ab_str(b, AS_PROMPT_COMPANION);
     ab_puts(b, "}");
-    for (int i = 0; i < g_nhist; i++) {
-        ab_puts(b, g_hist[i].user ? ",{\"role\":\"user\",\"content\":" : ",{\"role\":\"assistant\",\"content\":");
-        ab_str(b, g_hist[i].text);
+    /* her memory and persona, as they stood when this conversation began: the same text every turn of it,
+     * so the prefix OpenAI caches stays the same (what she saves meanwhile, she already knows) */
+    if (g_memo) {
+        ab_puts(b, ",{\"role\":\"system\",\"content\":");
+        ab_str(b, g_memo);
         ab_puts(b, "}");
+    }
+    for (int i = 0; i < g_nhist; i++) {
+        ab_puts(b, ",");
+        aj_write(b, g_hist[i].m);
     }
     ab_puts(b, ",{\"role\":\"user\",\"content\":");
     ab_str(b, question);
@@ -735,6 +730,9 @@ static void parse_reply(const char *content, vo_reply_t *r)
         snprintf(r->say, sizeof r->say, "%s", content);
     }
     aj_free(d);
+    /* curly quotes and the like: the caption's face doesn't carry them (and the voice reads either the same) */
+    as_fold_text(r->say);
+    as_fold_text(r->show);
 }
 
 static void tool_refresh(cat_robot_t *r) { assist_robot(r); }
@@ -756,12 +754,13 @@ static void run_call(const aj_t *call, aj_t *turn, cat_robot_t *robot)
     const char *id = aj_gets(call, "id");
     const aj_t *fn = aj_get(call, "function");
     const char *name = aj_gets(fn, "name"), *args = aj_gets(fn, "arguments");
+    as_act_turn(AS_MEM_COMPANION, as_tool_label(name)); /* on the island while her face isn't */
     ab_t out;
     ab_init(&out);
     const as_tooldef_t *def = name ? as_tool_find(name) : NULL;
     char err[200] = "", summary[200];
     aj_t *in = args ? aj_parse(args, strlen(args), err, sizeof err) : aj_new(AJ_OBJ);
-    if (!def || (def->kind != AS_T_READ && def->kind != AS_T_DEVICE))
+    if (!def || !as_tool_for(def, AS_MEM_COMPANION))
         ab_puts(&out, "{\"error\":\"that tool is not one this conversation may use\"}");
     else if (!in) ab_fmt(&out, "{\"error\":\"arguments aren't valid JSON\"}");
     else if (!as_tool_check(def, in, err, sizeof err)) {
@@ -774,7 +773,7 @@ static void run_call(const aj_t *call, aj_t *turn, cat_robot_t *robot)
         int team = 0;
         if (hal_kv_get("team", tstr, sizeof tstr)) team = atoi(tstr);
         as_env_t env = { .robot = robot, .refresh = tool_refresh, .confirm = tool_confirm, .note = tool_note,
-                         .stopped = tool_stopped, .user = NULL, .team = team };
+                         .stopped = tool_stopped, .user = NULL, .team = team, .pool = AS_MEM_COMPANION };
         assist_robot(robot);
         as_tool_run(&env, name, in, &out, summary, sizeof summary);
     }
@@ -810,7 +809,11 @@ static bool answer(const char *question, vo_reply_t *rep)
     bool fresh = V.clear_hist || hal_seconds() - V.last_turn > HIST_IDLE_S;
     V.clear_hist = false;
     pthread_mutex_unlock(&V.lock);
-    if (fresh) hist_clear();
+    if (fresh || !g_memo) {
+        hist_clear();
+        free(g_memo);
+        g_memo = as_memio_digest(AS_MEM_COMPANION, question);
+    }
     char note[400];
     context_note(note, sizeof note);
     size_t ql = strlen(note) + strlen(question) + 4;
@@ -832,6 +835,7 @@ static bool answer(const char *question, vo_reply_t *rep)
         fmt = 0;
         effort = true;
     }
+    as_act_turn(AS_MEM_COMPANION, "thinking");
     for (int round = 0; round <= TOOL_ROUNDS && !cancelled(); round++) {
         /* the last round offers no tools: it must answer */
         chat_body(&body, model, q, turn, round < TOOL_ROUNDS ? tools : NULL, fmt, effort);
@@ -892,8 +896,7 @@ static bool answer(const char *question, vo_reply_t *rep)
         ok = rep->say[0] != 0;
         if (!ok) set_err("the answer came back empty: ask me again");
         if (ok) {
-            hist_add(true, question);
-            hist_add(false, content ? content : rep->say);
+            hist_add_exchange(question, turn, content ? content : rep->say);
             V.last_turn = hal_seconds();
         }
         aj_free(d);
@@ -904,6 +907,7 @@ static bool answer(const char *question, vo_reply_t *rep)
     free(robot);
     free(tools);
     free(q);
+    as_act_turn(AS_MEM_COMPANION, NULL);
     return ok;
 }
 
@@ -939,17 +943,20 @@ static bool speak(const vo_reply_t *rep)
 {
     voice_config_t c;
     voice_config(&c);
-    for (int attempt = 0; attempt < 2; attempt++) {
+    /* Three tries at most: the voice asked for, then a safe female voice if that one was refused, then the
+     * older speech model (with the nearest voice it has) if the model itself was. */
+    for (int attempt = 0; attempt < 3; attempt++) {
         pthread_mutex_lock(&V.lock);
-        bool fb = V.tts_fallback;
+        bool fb = V.tts_fallback, safe = V.tts_voice_safe;
         pthread_mutex_unlock(&V.lock);
         const char *model = c.tts_model[0] ? c.tts_model : fb ? VO_TTS_FALLBACK : VO_TTS_DEFAULT;
+        const char *voice = as_tts_voice(model, safe ? AS_TTS_VOICE_SAFE : c.voice);
         ab_t b;
         ab_init(&b);
         ab_puts(&b, "{\"model\":");
         ab_str(&b, model);
         ab_puts(&b, ",\"voice\":");
-        ab_str(&b, c.voice[0] ? c.voice : VO_VOICE_DEFAULT);
+        ab_str(&b, voice);
         ab_puts(&b, ",\"input\":");
         ab_str(&b, rep->say);
         pthread_mutex_lock(&V.lock);
@@ -958,9 +965,12 @@ static bool speak(const vo_reply_t *rep)
         hal_mp3_t *mp3 = want_pcm ? NULL : hal_mp3_open();
         ab_puts(&b, mp3 ? ",\"response_format\":\"mp3\"" : ",\"response_format\":\"pcm\"");
         if (!strncmp(model, "gpt-", 4)) {
-            ab_fmt(&b, ",\"instructions\":\"A friendly little desk companion talking with its owner. Natural, "
-                       "conversational pace. Tone: %s%s.\"",
-                   TONE[rep->emotion < VO_EMO_COUNT ? rep->emotion : 0], rep->intensity > 0.7f ? ", clearly" : "");
+            /* who is speaking, and the feeling of this line (only gpt-4o-mini-tts takes instructions) */
+            char ins[320];
+            as_tts_instructions(ins, sizeof ins, TONE[rep->emotion < VO_EMO_COUNT ? rep->emotion : 0],
+                                rep->intensity > 0.7f);
+            ab_puts(&b, ",\"instructions\":");
+            ab_str(&b, ins);
         }
         ab_puts(&b, "}");
         char url[200], *hdr = malloc(512), *key = oai_key();
@@ -979,10 +989,15 @@ static bool speak(const vo_reply_t *rep)
         hal_http_req_t rq = { .method = "POST", .url = url, .headers = hdr, .body = b.p, .body_len = b.n,
                               .timeout_ms = 20000 };
         resp_t r = { .status = -1 };
+        double t_req = hal_seconds();
         hal_http_t *h = hal_http_open(&rq, &r.status, r.err, sizeof r.err);
         memset(hdr, 0, 512);
         free(hdr);
         ab_free(&b);
+        /* the speech request's outcome on the console, as post() prints the others': which model and voice,
+         * and what came back */
+        printf("voice: POST /v1/audio/speech %s/%s -> %d in %.1f s%s%s\n", model, voice, h ? r.status : -1,
+               hal_seconds() - t_req, r.err[0] ? ": " : "", r.err);
         if (!h) {
             describe(&r, "speaking");
             hal_mp3_close(mp3);
@@ -995,7 +1010,16 @@ static bool speak(const vo_reply_t *rep)
             e[n] = 0;
             hal_http_close(h);
             hal_mp3_close(mp3);
-            if (!c.tts_model[0] && !fb && (r.status == 400 || r.status == 403 || r.status == 404)) {
+            bool refusal = r.status == 400 || r.status == 403 || r.status == 404;
+            if (refusal && !safe && strcmp(voice, AS_TTS_VOICE_SAFE) != 0 && strstr(e, "voice")) {
+                /* the voice itself was refused (a new voice this key or model doesn't have): a safe one */
+                printf("voice: the voice %s was refused: speaking as %s from now on\n", voice, AS_TTS_VOICE_SAFE);
+                pthread_mutex_lock(&V.lock);
+                V.tts_voice_safe = true;
+                pthread_mutex_unlock(&V.lock);
+                continue;
+            }
+            if (!c.tts_model[0] && !fb && refusal) {
                 pthread_mutex_lock(&V.lock);
                 V.tts_fallback = true;
                 pthread_mutex_unlock(&V.lock);
@@ -1353,7 +1377,11 @@ void voice_enable(bool on)
 {
     pthread_mutex_lock(&V.lock);
     V.enabled = on;
-    if (!on) {
+    /* The face closing stops the microphones and the voice, never a question already being answered: its
+     * tools run and its writes finish (a note she was asked for is still saved, a timer still set), and the
+     * answer comes out of the island instead of her mouth. Only a stop (voice_cancel) abandons a turn. */
+    bool answering = V.working && (V.state == VO_HEARING || V.state == VO_THINKING || V.state == VO_SPEAKING);
+    if (!on && !answering) {
         V.cancel = true;
         /* off at once: reopened while a stopped request still waits on the network, the face mustn't come
          * back "thinking" about it */

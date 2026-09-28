@@ -8,6 +8,7 @@
 #include "ui.h"
 #include "as_snap.h"
 #include "assist.h"
+#include "ui_sys.h"
 #include "link.h"
 #include "voice.h"
 #include "ui_home_mode.h"
@@ -833,7 +834,7 @@ static void island_tap(lv_obj_t *o, void *u)
 }
 
 /* The dev console's UI commands (tools/tab5_dev.py): taken on the console's task, run on the UI's loop. */
-static char s_dev_cmd[96];
+static char s_dev_cmd[192]; /* room for a typed question ("ask ...", "assist ask ...") */
 static volatile bool s_dev_pending;
 
 /* the dev console's "perf": what a band of the neighbour costs, split — refreshing the page's numbers,
@@ -847,7 +848,7 @@ static bool dev_handler(const char *line)
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) && strncmp(line, "phone", 5) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) && strncmp(line, "act", 3) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
-        strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5) &&
+        strncmp(line, "docwrite", 8) && strncmp(line, "assist", 6) && strncmp(line, "memo", 4) && strncmp(line, "carry", 5) &&
         strncmp(line, "cut", 3))
         return false;
     if (s_dev_pending) return false;
@@ -1010,6 +1011,8 @@ static void dev_run(void)
         assist_reset();
         for (int i = 0; i < (n > 0 ? n : 2); i++) assist_fake("what does this tablet draw?", DOC_SAMPLE);
         ui_app_open(&APP_ASSIST, NULL);
+    } else if (!strncmp(s_dev_cmd, "assist", 6) || !strncmp(s_dev_cmd, "memo", 4)) {
+        ui_assist_dev(s_dev_cmd); /* ask, new, dump; memory (ui_app_assist.c) */
     } else if (!strncmp(s_dev_cmd, "docwrite", 8)) {
         /* the assistant's own document tool, driven from the cable: writes the sample onto the card */
         const char *nm = s_dev_cmd[8] == ' ' ? s_dev_cmd + 9 : "render sample";

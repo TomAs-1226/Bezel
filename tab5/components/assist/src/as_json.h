@@ -84,5 +84,9 @@ char *aj_dump(const aj_t *v);
 bool aj_validate(const aj_t *schema, const aj_t *v, char *err, size_t errn);
 
 char *as_strdup(const char *s);
+/* The typography a model writes that the tablet's faces don't carry, folded in place into what they do:
+ * curly quotes to straight ones, the en dash, figure and minus signs to '-', odd spaces to ' ', a bullet
+ * to '·'. The em dash, the ellipsis and '·' itself stay (the faces have them). Never lengthens `s`. */
+void as_fold_text(char *s);
 /* Percent-encodes a URL query value (RFC 3986 unreserved characters, and '/', pass through). */
 void as_urlencode(const char *in, char *out, size_t n);

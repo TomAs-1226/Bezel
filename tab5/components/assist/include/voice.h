@@ -1,8 +1,11 @@
 /* voice — the companion's own conversation, spoken and heard.
  *
  * Separate from the Assist app's technician conversation (assist.h): its own history, its own system
- * prompt (a friendly desk companion that is also a capable general assistant), its own worker. It still
- * reads the robot, the code and Claude Code's sessions through the assistant's read-only tools when asked.
+ * prompt (as_prompts.c: a warm young woman with a persona of her own, who is also a capable general
+ * assistant), its own long-term memory (docs/assistant.md), its own worker. It reads the robot, the code and
+ * Claude Code's sessions through the assistant's read-only tools, and does the tablet's own things (a timer,
+ * a note, the lights) through its device tools. Closing her face stops her listening and speaking, never a
+ * question she is answering: its tools and writes finish, and the answer goes to the island.
  *
  *   wake word ("Hi ESP", on the tablet) or a tap → record until a pause (energy VAD) → OpenAI transcription
  *   (multipart upload; gpt-4o-mini-transcribe, whisper-1 when refused) → Chat Completions with a JSON
@@ -65,7 +68,7 @@ typedef struct {
     char chat_model[48];   /* "" → the assistant's OpenAI model, else VO_CHAT_DEFAULT ("v_chat") */
     char stt_model[48];    /* "" → gpt-4o-mini-transcribe ("v_stt") */
     char tts_model[48];    /* "" → gpt-4o-mini-tts ("v_tts") */
-    char voice[24];        /* "" → coral ("v_voice") */
+    char voice[24];        /* "" → VO_VOICE_DEFAULT, marin ("v_voice") */
     char lang[8];          /* ISO 639-1 hint for transcription, "" → detect ("v_lang") */
 } voice_config_t;
 
@@ -78,7 +81,10 @@ typedef struct {
 #define VO_STT_FALLBACK "whisper-1"
 #define VO_TTS_DEFAULT "gpt-4o-mini-tts"
 #define VO_TTS_FALLBACK "tts-1"
-#define VO_VOICE_DEFAULT "coral"
+/* Her voice: a young woman's. marin is OpenAI's newest and most natural female voice on gpt-4o-mini-tts; a
+ * model or key that refuses it gets coral, and tts-1 (which has neither marin nor cedar) nova. Keep this
+ * the same as as_prompts.h's AS_TTS_VOICE_DEFAULT. */
+#define VO_VOICE_DEFAULT "marin"
 
 void voice_init(void);                         /* once, after assist_init: starts the worker */
 void voice_config(voice_config_t *out);

@@ -13,6 +13,7 @@
 #include "ui_internal.h"
 #include "ui_md.h"
 #include "ui_storage.h"
+#include "ui_sys.h"
 #include "src/misc/cache/instance/lv_image_cache.h" /* lv_image_cache_drop: no longer in lvgl.h since 9.4 */
 
 #include <ctype.h>
@@ -2065,3 +2066,126 @@ static void storage_refresh(void)
 
 const ui_app_t APP_STORAGE = { .name = "storage", .icon = BZ_I_SD_CARD, .build = storage_build, .open = storage_open,
                                .refresh = storage_refresh };
+
+/* ================================================================== the assistants' hooks (ui_sys.h) */
+
+bool ui_alarm_do(const char *act, int hhmm, int days, int index, char *out, size_t n)
+{
+    ui_os_boot(); /* the alarms loaded and their ring hook running, whoever asks first */
+    char d[32];
+    if (!strcmp(act, "list")) {
+        if (!CL.nal) {
+            snprintf(out, n, "no alarms are set");
+            return true;
+        }
+        size_t k = 0;
+        for (int i = 0; i < CL.nal && k < n; i++)
+            k += (size_t)snprintf(out + k, n - k, "%s%d. %02d:%02d %s, %s", i ? "\n" : "", i + 1, CL.al[i].hhmm / 100,
+                                  CL.al[i].hhmm % 100, days_text(CL.al[i].days, d, sizeof d), CL.al[i].on ? "on" : "off");
+        return true;
+    }
+    if (!strcmp(act, "add")) {
+        if (hhmm < 0 || hhmm >= 2400 || hhmm % 100 >= 60) {
+            snprintf(out, n, "give the time as HH:MM, 24-hour");
+            return false;
+        }
+        if (CL.nal >= NALARM) {
+            snprintf(out, n, "five alarms are already set, the most the clock keeps: remove one first");
+            return false;
+        }
+        CL.al[CL.nal++] = (alarm_t){ hhmm, true, (uint8_t)(days & 0x7f) };
+        al_save();
+        CL.list_dirty = true;
+        snprintf(out, n, "alarm %d set for %02d:%02d, %s", CL.nal, hhmm / 100, hhmm % 100, days_text((uint8_t)days, d, sizeof d));
+        return true;
+    }
+    int i = index - 1;
+    if (i < 0 || i >= CL.nal) {
+        snprintf(out, n, "there is no alarm %d (list numbers them)", index);
+        return false;
+    }
+    int t = CL.al[i].hhmm;
+    if (!strcmp(act, "on") || !strcmp(act, "off")) {
+        CL.al[i].on = !strcmp(act, "on");
+        snprintf(out, n, "alarm %d (%02d:%02d) turned %s", index, t / 100, t % 100, act);
+    } else if (!strcmp(act, "remove")) {
+        for (int k = i; k < CL.nal - 1; k++) CL.al[k] = CL.al[k + 1];
+        CL.nal--;
+        CL.sel = -1;
+        snprintf(out, n, "removed alarm %d (%02d:%02d)", index, t / 100, t % 100);
+    } else {
+        snprintf(out, n, "no alarm action \"%.20s\"", act);
+        return false;
+    }
+    al_save();
+    CL.list_dirty = true;
+    return true;
+}
+
+bool ui_calendar_add(int ymd, int hhmm, const char *text, char *out, size_t n)
+{
+    int y = ymd / 10000, m = ymd / 100 % 100, d = ymd % 100;
+    if (y < 2000 || m < 1 || m > 12 || d < 1 || d > dim_of(y, m) || hhmm < 0 || hhmm >= 2400 || hhmm % 100 >= 60) {
+        snprintf(out, n, "that isn't a date and time the calendar can take");
+        return false;
+    }
+    if (!hal_sd_root()) {
+        snprintf(out, n, "no microSD card: the calendar's events live on the card");
+        return false;
+    }
+    event_t e = { .ymd = ymd, .hhmm = hhmm };
+    snprintf(e.text, sizeof e.text, "%s", text && text[0] ? text : "event");
+    for (char *p = e.text; *p; p++) if (*p == '\n' || *p == '\r') *p = ' ';
+    if (CAL.loaded && CAL.ev && CAL.load != 1) {
+        /* the app holds the events: into its list, and saved from there, so its next save keeps this one */
+        if (CAL.nev >= EV_MAX) {
+            snprintf(out, n, "the calendar is full");
+            return false;
+        }
+        int at = CAL.nev;
+        while (at > 0 && ev_cmp(&CAL.ev[at - 1], &e) > 0) at--;
+        memmove(&CAL.ev[at + 1], &CAL.ev[at], (size_t)(CAL.nev - at) * sizeof e);
+        CAL.ev[at] = e;
+        CAL.nev++;
+        cal_save();
+        if (CAL.title) cal_show_month();
+    } else {
+        /* never read yet: a line on the end of the file (the app reads it whole when it opens) */
+        char path[96];
+        if (!cstore_path(CS_DATA, "EVENTS.TXT", path, sizeof path)) {
+            snprintf(out, n, "no microSD card");
+            return false;
+        }
+        size_t len = 0;
+        char *old = cstore_read(path, EV_FILE_MAX, &len, NULL);
+        struct stat st;
+        if (!old && stat(path, &st) == 0) {
+            /* there, but not readable right now: writing would put one event where all of them were */
+            snprintf(out, n, "the card didn't read the calendar: try again in a moment");
+            return false;
+        }
+        size_t cap = len + EV_TEXT + 32;
+        char *buf = malloc(cap);
+        if (!buf) {
+            free(old);
+            snprintf(out, n, "out of memory");
+            return false;
+        }
+        size_t k = 0;
+        if (old && len) {
+            memcpy(buf, old, len);
+            k = len;
+            if (buf[k - 1] != '\n') buf[k++] = '\n';
+        }
+        k += (size_t)snprintf(buf + k, cap - k, "%04d-%02d-%02d %02d:%02d %s\n", y, m, d, hhmm / 100, hhmm % 100, e.text);
+        bool ok = cstore_write(path, buf, k);
+        free(buf);
+        free(old);
+        if (!ok) {
+            snprintf(out, n, "couldn't write the calendar to the card");
+            return false;
+        }
+    }
+    snprintf(out, n, "added to the calendar: %04d-%02d-%02d %02d:%02d %s", y, m, d, hhmm / 100, hhmm % 100, e.text);
+    return true;
+}

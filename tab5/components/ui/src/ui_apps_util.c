@@ -4,6 +4,7 @@
 #include "ui_internal.h"
 #include "ui_boot.h" /* CATALYST_TAB_VERSION */
 #include "ui_storage.h"
+#include "ui_sys.h"
 
 #include <ctype.h>
 #include <dirent.h>
@@ -50,11 +51,50 @@ static struct {
     int last_beep;
     int nlaps;
     int col;                   /* the big numbers' colour as set (-1: not yet) */
+    /* started by an assistant (ui_timer_do): a live activity on the island while it runs, and a ring that
+     * reaches the owner wherever they are when it ends */
+    bool ai;
+    int act;                   /* its island activity (0 none) */
+    char label[28];
 } TM = { .count_s = 120, .auto_s = 20, .last_beep = -1, .col = -1 };
 
 #define TELEOP_S 140
 
 static double tm_elapsed(void) { return TM.acc + (TM.running ? hal_seconds() - TM.started : 0); }
+
+/* the ring an assistant's timer ends with: three pairs of notes, at least half volume (like the clock's
+ * alarms, it is meant to be heard), stepped from the 10 Hz hook whatever is on screen */
+static struct {
+    int left;
+    double next;
+} TR;
+
+static void tm_ring_tick(void)
+{
+    if (TR.left <= 0) return;
+    double now = hal_seconds();
+    if (now < TR.next) return;
+    hal_tone(TR.left % 2 ? 1175 : 880, 160, S.volume > 0.5f ? S.volume : 0.5f);
+    TR.left--;
+    TR.next = now + (TR.left % 2 ? 0.2 : 0.6);
+}
+
+/* an assistant's countdown or match clock reached its end */
+static void tm_finished(void)
+{
+    if (!TM.ai) return;
+    TM.ai = false;
+    char said[64];
+    snprintf(said, sizeof said, "timer done \xc2\xb7 %s",
+             TM.label[0] ? TM.label : TM.mode == TM_MATCH ? "the match clock" : "countdown");
+    if (TM.act) ui_activity_end(TM.act, said);
+    else ui_island_say(BZ_I_TIMER, said);
+    TM.act = 0;
+    TR.left = 6;
+    TR.next = 0;
+    bz_ui_wake();
+    printf("timer: %s, ringing (%s)\n", said, ui_app_any_open() ? "over an app" : "over the pages");
+}
 
 /* The field's cues and the ends, whether or not the app is on screen: a countdown closed behind another app
  * rang only when it was opened again. true when a countdown or a match just ended. */
@@ -72,12 +112,14 @@ static bool tm_tick(void)
         if (e >= total) {
             TM.acc = total;
             TM.running = false;
+            tm_finished();
             return true;
         }
     } else if (TM.mode == TM_COUNTDOWN && e >= TM.count_s) {
         TM.acc = TM.count_s;
         TM.running = false;
-        beep(660, 600);
+        if (!TM.ai) beep(660, 600); /* an assistant's rings louder, below */
+        tm_finished();
         return true;
     }
     return false;
@@ -140,6 +182,7 @@ static void tm_mode(lv_obj_t *o, void *u)
     (void)o;
     TM.mode = (int)(intptr_t)u;
     TM.running = false;
+    TM.ai = false; /* (its activity ends on the next tick) */
     TM.acc = 0;
     TM.nlaps = 0;
     TM.last_beep = -1;
@@ -173,6 +216,7 @@ static void tm_reset(lv_obj_t *o, void *u)
 {
     (void)o; (void)u;
     TM.running = false;
+    TM.ai = false;
     TM.acc = 0;
     TM.nlaps = 0;
     TM.last_beep = -1;
@@ -223,6 +267,16 @@ static void tm_auto(lv_obj_t *o, void *u)
 
 static void timer_bg(void *u);
 
+/* the background hook, once: the app registers it when built, and so does the assistants' timer
+ * (ui_timer_do) when it starts one in an app nobody has opened */
+static void tm_bg_ensure(void)
+{
+    static bool on;
+    if (on) return;
+    on = true;
+    ui_on_refresh(timer_bg, NULL);
+}
+
 static void timer_build(lv_obj_t *b)
 {
     int lw = 760, rw = W - 2 * PAD - lw - BZ_GAP;
@@ -270,7 +324,7 @@ static void timer_build(lv_obj_t *b)
     TM.laps = bz_col(r, 6);
     tm_auto(NULL, (void *)20);
     tm_mode(NULL, (void *)TM_MATCH);
-    ui_on_refresh(timer_bg, NULL);
+    tm_bg_ensure();
 }
 
 static void timer_frame(double now, double dt)
@@ -282,12 +336,29 @@ static void timer_frame(double now, double dt)
     }
 }
 
+/* An assistant's timer on the island: there while it runs, gone while paused or reset (back on resume). */
+static void tm_act_sync(void)
+{
+    if (TM.act && !ui_activity_live(TM.act)) TM.act = 0;
+    if (TM.act && !TM.running) {
+        ui_activity_end(TM.act, NULL);
+        TM.act = 0;
+    }
+    if (TM.ai && TM.running && !TM.act && TM.mode != TM_STOPWATCH) {
+        double left = (TM.mode == TM_COUNTDOWN ? TM.count_s : TM.auto_s + TELEOP_S) - tm_elapsed();
+        if (left > 0.5) TM.act = ui_activity_begin(BZ_I_TIMER, TM.label[0] ? TM.label : "timer", left);
+    }
+}
+
 /* 10 Hz, whatever is on screen: the timer keeps its cues and rings its end behind other apps */
 static void timer_bg(void *u)
 {
     (void)u;
+    tm_ring_tick();
+    tm_act_sync();
     if (!TM.running || ui_app_is_open(&APP_TIMER)) return;
-    if (tm_tick()) ui_island_say(BZ_I_TIMER, TM.mode == TM_COUNTDOWN ? "the countdown is done" : "the match timer is over");
+    bool ai = TM.ai;
+    if (tm_tick() && !ai) ui_island_say(BZ_I_TIMER, TM.mode == TM_COUNTDOWN ? "the countdown is done" : "the match timer is over");
 }
 
 const ui_app_t APP_TIMER = { .name = "timer", .icon = BZ_I_TIMER, .build = timer_build, .frame = timer_frame };
@@ -901,3 +972,247 @@ static void files_build(lv_obj_t *b)
 static void files_open(void) { files_load(); }
 
 const ui_app_t APP_FILES = { .name = "files", .icon = BZ_I_FOLDER, .build = files_build, .open = files_open };
+
+/* ================================================================== the assistants' hooks (ui_sys.h) */
+
+static void mmss(double s, char *out, size_t n)
+{
+    int k = (int)ceil(s < 0 ? 0 : s);
+    if (k >= 3600) snprintf(out, n, "%d:%02d:%02d", k / 3600, k / 60 % 60, k % 60);
+    else snprintf(out, n, "%d:%02d", k / 60, k % 60);
+}
+
+bool ui_timer_do(const char *act, double seconds, const char *label, char *out, size_t n)
+{
+    tm_bg_ensure();
+    bool built = TM.big != NULL;
+    static const char *const MODE[3] = { "match timer", "stopwatch", "countdown" };
+    double e = tm_elapsed();
+    char a[16], b[16];
+    if (!strcmp(act, "status")) {
+        if (!TM.running && e <= 0) {
+            snprintf(out, n, "the timer is idle (%s)", MODE[TM.mode]);
+        } else if (TM.mode == TM_COUNTDOWN) {
+            mmss(TM.count_s - e, a, sizeof a);
+            mmss(TM.count_s, b, sizeof b);
+            snprintf(out, n, "a %s countdown: %s left%s", b, a,
+                     TM.running ? "" : e >= TM.count_s ? " (done)" : " (paused)");
+        } else if (TM.mode == TM_MATCH) {
+            double total = TM.auto_s + TELEOP_S;
+            mmss(total - e, a, sizeof a);
+            snprintf(out, n, "the match clock: %s, %s left of the match%s",
+                     e < TM.auto_s ? "autonomous" : e < total - 30 ? "teleop" : e < total ? "endgame" : "over", a,
+                     TM.running ? "" : " (paused)");
+        } else {
+            mmss(e, a, sizeof a);
+            snprintf(out, n, "the stopwatch at %s%s, %d lap%s", a, TM.running ? "" : " (paused)", TM.nlaps,
+                     TM.nlaps == 1 ? "" : "s");
+        }
+        return true;
+    }
+    bool busy = TM.running;
+    int was = TM.mode;
+    int mode = !strcmp(act, "countdown") ? TM_COUNTDOWN : !strcmp(act, "match") ? TM_MATCH
+             : !strcmp(act, "stopwatch") ? TM_STOPWATCH : -1;
+    if (mode >= 0) {
+        if (mode == TM_COUNTDOWN && !(seconds >= 1 && seconds <= 86400)) {
+            snprintf(out, n, "a countdown needs its length in seconds (1 to 86400)");
+            return false;
+        }
+        if (built) tm_mode(NULL, (void *)(intptr_t)mode);
+        else {
+            TM.mode = mode;
+            TM.nlaps = 0;
+        }
+        if (mode == TM_COUNTDOWN) TM.count_s = seconds;
+        if (mode == TM_MATCH && (seconds == 15 || seconds == 20)) {
+            if (built) tm_auto(NULL, (void *)(intptr_t)seconds);
+            else TM.auto_s = (int)seconds;
+        }
+        TM.acc = 0;
+        TM.last_beep = -1;
+        TM.started = hal_seconds();
+        TM.running = true;
+        if (TM.act) ui_activity_end(TM.act, NULL); /* the one it replaces */
+        TM.act = 0;
+        TM.ai = mode != TM_STOPWATCH;
+        snprintf(TM.label, sizeof TM.label, "%s", label && label[0] ? label : "");
+        tm_act_sync(); /* on the island now, not at the next tick */
+        if (built) {
+            tm_presets_mark();
+            tm_show();
+        }
+        beep(1200, 20);
+        char what[48];
+        if (mode == TM_COUNTDOWN) {
+            mmss(seconds, a, sizeof a);
+            snprintf(what, sizeof what, "a %s countdown", a);
+        } else if (mode == TM_MATCH) snprintf(what, sizeof what, "the match clock (%d s autonomous)", TM.auto_s);
+        else snprintf(what, sizeof what, "the stopwatch");
+        snprintf(out, n, "started %s%s%s%s", what, busy ? "; it replaced the running " : "", busy ? MODE[was] : "",
+                 busy ? " (one timer at a time)" : "");
+        return true;
+    }
+    if (!strcmp(act, "pause")) {
+        if (!TM.running) {
+            snprintf(out, n, "nothing is running");
+            return false;
+        }
+        TM.acc = tm_elapsed();
+        TM.running = false;
+    } else if (!strcmp(act, "resume")) {
+        bool done = (TM.mode == TM_COUNTDOWN && e >= TM.count_s) || (TM.mode == TM_MATCH && e >= TM.auto_s + TELEOP_S);
+        if (TM.running || e <= 0 || done) {
+            snprintf(out, n, "%s", TM.running ? "it is already running" : done ? "it has finished: start a new one"
+                                                                               : "nothing to resume");
+            return false;
+        }
+        TM.started = hal_seconds();
+        TM.running = true;
+    } else if (!strcmp(act, "reset")) {
+        if (built) tm_reset(NULL, NULL);
+        else {
+            TM.running = false;
+            TM.acc = 0;
+            TM.nlaps = 0;
+            TM.last_beep = -1;
+        }
+    } else {
+        snprintf(out, n, "no timer action \"%.20s\"", act);
+        return false;
+    }
+    if (built) tm_show();
+    snprintf(out, n, "%s the %s", !strcmp(act, "pause") ? "paused" : !strcmp(act, "resume") ? "resumed" : "reset",
+             MODE[TM.mode]);
+    return true;
+}
+
+/* the notebook as the app keeps it (kv "notes", and a copy on the card while "copy to card" is on), whether
+ * or not the app has been opened */
+static void notes_store(void)
+{
+    if (NT.meta) {
+        notes_save();
+        lv_label_set_text(NT.text, NT.buf[0] ? NT.buf : "Nothing written yet. Tap edit.");
+        return;
+    }
+    hal_kv_set("notes", NT.buf);
+    char v[4], path[96];
+    bool card = !hal_kv_get("notes_sd", v, sizeof v) || v[0] == '1';
+    if (card && cstore_path(CS_DOCS, "NOTES.TXT", path, sizeof path)) cstore_write(path, NT.buf, strlen(NT.buf));
+}
+
+bool ui_notes_do(const char *act, const char *text, char *out, size_t n)
+{
+    if (!NT.meta && !hal_kv_get("notes", NT.buf, sizeof NT.buf)) NT.buf[0] = 0; /* not built: kv is the truth */
+    if (!strcmp(act, "read")) {
+        snprintf(out, n, "%s", NT.buf[0] ? NT.buf : "(the notebook is empty)");
+        return true;
+    }
+    if (!strcmp(act, "clear")) { /* the dev console's only: the tool's schema doesn't offer it to a model */
+        NT.buf[0] = 0;
+        notes_store();
+        snprintf(out, n, "the notebook is empty");
+        return true;
+    }
+    if (!text || !text[0]) {
+        snprintf(out, n, "nothing to write: give the text");
+        return false;
+    }
+    if (!strcmp(act, "replace")) {
+        snprintf(NT.buf, sizeof NT.buf, "%s", text);
+        notes_store();
+        snprintf(out, n, "rewrote the notebook (%u characters)", (unsigned)strlen(NT.buf));
+        return true;
+    }
+    if (strcmp(act, "append") != 0) {
+        snprintf(out, n, "no notes action \"%.20s\"", act);
+        return false;
+    }
+    char stamp[24] = "";
+    struct tm tm;
+    if (hal_rtc_get(&tm) && tm.tm_year > 120) strftime(stamp, sizeof stamp, "%a %H:%M  ", &tm);
+    size_t l = strlen(NT.buf);
+    if (l + strlen(stamp) + strlen(text) + 2 >= sizeof NT.buf) {
+        snprintf(out, n, "the notebook is full (%d characters): read it and replace it with a shorter one", NOTES_MAX);
+        return false;
+    }
+    snprintf(NT.buf + l, sizeof NT.buf - l, "%s%s%s", l && NT.buf[l - 1] != '\n' ? "\n" : "", stamp, text);
+    notes_store();
+    snprintf(out, n, "added to the notes: %s%s", stamp, text);
+    return true;
+}
+
+/* `word` (lower case) appears in `text`, ignoring case */
+static bool ci_has(const char *text, const char *word)
+{
+    size_t lw = strlen(word);
+    for (const char *p = text; *p; p++) {
+        size_t i = 0;
+        while (i < lw && p[i] && tolower((unsigned char)p[i]) == word[i]) i++;
+        if (i == lw) return true;
+    }
+    return false;
+}
+
+bool ui_check_do(const char *act, const char *item, char *out, size_t n)
+{
+    char v[16];
+    if (!CK.meter) CK.bits = hal_kv_get("checklist", v, sizeof v) ? (uint32_t)strtoul(v, NULL, 10) : 0;
+    if (!strcmp(act, "status")) {
+        int done = 0;
+        size_t k = 0;
+        for (int i = 0; i < NCHECK; i++) done += CK.bits >> i & 1;
+        k += (size_t)snprintf(out, n, "%d of %d checked (the battery to use is picked in the app itself)", done, NCHECK);
+        for (int i = 0; i < NCHECK && k < n; i++)
+            k += (size_t)snprintf(out + k, n - k, "\n%d. [%s] %s", i + 1, CK.bits >> i & 1 ? "x" : " ", CHECK[i]);
+        return true;
+    }
+    if (!strcmp(act, "reset")) {
+        CK.bits = 0;
+        snprintf(out, n, "cleared the checklist for the next match");
+    } else if (!strcmp(act, "check") || !strcmp(act, "uncheck")) {
+        int which = -1;
+        if (item && isdigit((unsigned char)item[0])) {
+            which = atoi(item) - 1;
+        } else if (item) {
+            /* the item sharing the most words of four letters or more with what was asked */
+            int best = 0;
+            for (int i = 0; i < NCHECK; i++) {
+                int score = 0;
+                const char *p = item;
+                while (*p) {
+                    char w[32];
+                    int k = 0;
+                    while (*p && !isalnum((unsigned char)*p)) p++;
+                    while (*p && isalnum((unsigned char)*p)) {
+                        if (k < 31) w[k++] = (char)tolower((unsigned char)*p);
+                        p++;
+                    }
+                    w[k] = 0;
+                    if (k >= 4 && ci_has(CHECK[i], w)) score++;
+                }
+                if (score > best) {
+                    best = score;
+                    which = i;
+                }
+            }
+        }
+        if (which < 0 || which >= NCHECK) {
+            snprintf(out, n, "no checklist item matches \"%.40s\": status lists them", item ? item : "");
+            return false;
+        }
+        if (!strcmp(act, "check")) CK.bits |= 1u << which;
+        else CK.bits &= ~(1u << which);
+        snprintf(out, n, "%s item %d: %s", !strcmp(act, "check") ? "checked" : "unchecked", which + 1, CHECK[which]);
+    } else {
+        snprintf(out, n, "no checklist action \"%.20s\"", act);
+        return false;
+    }
+    if (CK.meter) ck_show(); /* (which saves it) */
+    else {
+        snprintf(v, sizeof v, "%lu", (unsigned long)CK.bits);
+        hal_kv_set("checklist", v);
+    }
+    return true;
+}

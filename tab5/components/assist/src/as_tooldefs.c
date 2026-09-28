@@ -4,22 +4,45 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "as_mem.h"
+
 #define NOARGS "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
+
+#define KINDS "[\"fact\",\"preference\",\"decision\",\"fix\",\"fault\",\"procedure\",\"event\",\"person\",\"plan\"]"
 
 const as_tooldef_t AS_TOOLS[] = {
     /* ---- the robot, read ---- */
-    { "robot_overview",
-      "The whole robot at a glance: identity and versions, mode, battery and brownout, loop time, CAN load, "
-      "device roster, alert counts, Systemcore, the NetworkTables link and the Catalyst Link to the PC. "
-      "Start here.",
+    { "triage",
+      "The robot's health in one call, worst first: every anomaly the tablet can see, across the link and the "
+      "robot program, power (battery, brownouts), CAN (a bus down, devices not answering, utilisation, "
+      "Systemcore's shared controllers), the loop, the robot's own preflight and checks, alerts and health checks, "
+      "mechanisms (temperature, stalls), the drivetrain (modules against their commands, while it drives), vision "
+      "and Systemcore. Each finding has a severity (fault, warn, info), what it is with its numbers, and the next "
+      "check. Start a diagnosis here, then narrow with the specific tools.",
       NOARGS, AS_T_READ },
+    { "robot_overview",
+      "The whole robot at a glance, as facts rather than findings: identity and versions, mode, battery and "
+      "brownout, loop time, CAN load, device roster, alert counts, Systemcore, the NetworkTables link and the "
+      "Catalyst Link to the PC. triage says what is wrong; this says what it is.",
+      NOARGS, AS_T_READ },
+    { "swerve_check",
+      "Whether each swerve module follows its command: commanded against actual speed and steering angle, per "
+      "module, judged over many samples, with a verdict. One module that doesn't follow while the others do is "
+      "hardware (a jammed drive, a loose wheel or pulley, that motor); all of them under-following alike is global "
+      "(battery sag, current limits, feedforward, wheel radius). Live by default: samples the robot for `seconds` "
+      "(4 if not given) and needs it driving. Or give `recording`, a name from list_recordings made with the "
+      "recorder's drivetrain preset. The first check on any bad drivetrain run.",
+      "{\"type\":\"object\",\"properties\":{\"recording\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":48},"
+      "\"seconds\":{\"type\":\"number\",\"minimum\":1,\"maximum\":10}},\"additionalProperties\":false}",
+      AS_T_READ },
     { "get_alerts",
       "Every active alert (AlertManager, WPILib alert groups, firing HealthMonitor checks), worst first, "
       "plus the robot's own preflight findings.",
       NOARGS, AS_T_READ },
     { "get_mechanisms",
       "Each mechanism Catalyst publishes (/Catalyst/<name>/…): state, position against goal, velocity, "
-      "current, temperature, at-goal; and the swerve modules, actual against commanded.",
+      "current, temperature, at-goal; and the swerve modules, actual against commanded, at this one instant "
+      "(swerve_check judges them over time).",
       NOARGS, AS_T_READ },
     { "get_power",
       "Battery voltage, brownout floor and prediction, total current, and the power distribution channels "
@@ -110,24 +133,123 @@ const as_tooldef_t AS_TOOLS[] = {
       AS_T_READ },
     /* ---- the tablet and the house: changes, but never to the robot ---- */
     { "open_app",
-      "Brings one of the tablet's apps on screen, by the name on its icon: weather, music, photos, "
-      "clock, timer, notes, documents, lens, field, power, alerts, tune, logs, settings and the rest. "
-      "Say which one you opened.",
-      "{\"type\":\"object\",\"properties\":{\"app\":{\"type\":\"string\",\"minLength\":1,"
-      "\"maxLength\":32}},\"required\":[\"app\"],\"additionalProperties\":false}",
+      "Brings one of the tablet's apps on screen, by the name on its icon: e.g. weather, music, photos, clock, "
+      "timer, calendar, notes, documents, checklist, flashlight, batteries, blue alliance, recorder, logs, alerts, "
+      "tune, systemcore, assist, companion, memory (what the two AIs remember), settings. For settings, `section` "
+      "opens one of its sections. Say which one you opened.",
+      "{\"type\":\"object\",\"properties\":{\"app\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":32},"
+      "\"section\":{\"type\":\"string\",\"enum\":[\"display\",\"look\",\"sound\",\"robot\",\"network\",\"pc link\","
+      "\"assistant\",\"home\",\"date and time\",\"storage\",\"power\",\"about\"]}},"
+      "\"required\":[\"app\"],\"additionalProperties\":false}",
       AS_T_DEVICE },
     { "set_tablet",
-      "Sets the screen brightness and the speaker volume, each 0 to 100. Give only the one asked for.",
+      "Changes the tablet's own settings; give only what was asked for. brightness and volume 0-100; tone dark or "
+      "light; accent, the highlight colour; calm true for less motion; flashlight true for a full-white screen, "
+      "false to put it away; screen \"sleep\" turns the screen off now (a tap wakes it), \"lock\" shows the lock "
+      "screen; home_mode true brings up the desk surface (clock, weather, music, the companion), false goes back "
+      "to the robot pages.",
       "{\"type\":\"object\",\"properties\":{"
       "\"brightness\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":100},"
-      "\"volume\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":100}},"
+      "\"volume\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":100},"
+      "\"tone\":{\"type\":\"string\",\"enum\":[\"dark\",\"light\"]},"
+      "\"accent\":{\"type\":\"string\",\"enum\":[\"ice\",\"orange\",\"leaf\",\"violet\",\"rose\",\"amber\",\"teal\","
+      "\"white\"]},"
+      "\"calm\":{\"type\":\"boolean\"},\"flashlight\":{\"type\":\"boolean\"},"
+      "\"screen\":{\"type\":\"string\",\"enum\":[\"sleep\",\"lock\"]},\"home_mode\":{\"type\":\"boolean\"}},"
       "\"additionalProperties\":false}",
       AS_T_DEVICE },
+    { "tablet_status",
+      "The tablet itself right now: battery and charging, the Wi-Fi network and signal, the date and time, how "
+      "long it has been up, free memory, brightness, volume, tone and accent, whether home mode is on, what is "
+      "open, unread notifications, a running timer, the next alarm and pending reminders.",
+      NOARGS, AS_T_DEVICE },
+    { "timer",
+      "The tablet's timer, which keeps running and rings when done whatever is on screen. countdown starts a "
+      "countdown of `seconds` (1 s to 24 h); match starts the FRC match clock (autonomous, then teleop; `seconds` "
+      "15 or 20 sets autonomous's length); stopwatch starts the stopwatch; pause, resume, reset; status says what "
+      "it is doing and the time left. There is one timer: starting one replaces whatever was running (say so). "
+      "A countdown shows on the island and rings wherever the owner is; `label` names it there (\"tea\", "
+      "\"battery charge\"). For a reminder with words at a time, use reminder.",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"countdown\",\"match\","
+      "\"stopwatch\",\"pause\",\"resume\",\"reset\",\"status\"]},"
+      "\"seconds\":{\"type\":\"number\",\"minimum\":1,\"maximum\":86400},"
+      "\"label\":{\"type\":\"string\",\"maxLength\":24}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "alarm",
+      "The clock app's alarms (at most 5), which ring at a time of day even with the app closed. list shows them "
+      "numbered; add sets one at `time` (\"HH:MM\", 24-hour) on `days`: once, daily, weekdays, weekends, or days "
+      "like \"mo,we,fr\" (once if not given); on, off and remove act on alarm number `index` from list.",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"add\",\"on\","
+      "\"off\",\"remove\"]},\"time\":{\"type\":\"string\",\"minLength\":3,\"maxLength\":5},"
+      "\"days\":{\"type\":\"string\",\"maxLength\":27},\"index\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "reminder",
+      "A reminder with words: when it is due the tablet chimes, wakes the screen and shows the text (it is kept "
+      "in the notifications). add needs `text` and either `minutes` from now (0.5 to 1440) or `at` \"HH:MM\" "
+      "(today, or tomorrow if that time has passed); list shows the pending ones with their ids; cancel takes an "
+      "`id`. At most 8; they survive a restart.",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"add\",\"list\",\"cancel\"]},"
+      "\"text\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":90},"
+      "\"minutes\":{\"type\":\"number\",\"minimum\":0.5,\"maximum\":1440},"
+      "\"at\":{\"type\":\"string\",\"minLength\":3,\"maxLength\":5},"
+      "\"id\":{\"type\":\"integer\",\"minimum\":1}},\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "notes",
+      "The notes app's pit notebook: one running text on the tablet (copied to the card as CATOS/DOCS/NOTES.TXT). "
+      "read returns it; append adds `text` as a new line with the time in front; replace overwrites the whole "
+      "notebook with `text` (only when asked to rewrite it).",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"read\",\"append\","
+      "\"replace\"]},\"text\":{\"type\":\"string\",\"maxLength\":3000}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "documents",
+      "The documents on the tablet's card (CATOS/DOCS, .md and .txt), which the documents app shows and renders. "
+      "list names them, newest first; read returns one by `name`; write saves `markdown` as `name` (.MD is added; "
+      "an existing document of that name is replaced). For anything longer than a note: a procedure, a match "
+      "report, a checklist of your own.",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"read\",\"write\"]},"
+      "\"name\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":40},"
+      "\"markdown\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":12000}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "checklist",
+      "The pre-match checklist app. status lists its items, numbered, each checked or not; check and uncheck "
+      "act on one `item` (its number, or words from its text); reset clears them all for the next match.",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"status\",\"check\","
+      "\"uncheck\",\"reset\"]},\"item\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":60}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "calendar",
+      "The calendar app's events, on the card. list returns the events from `date` for `days` days (today and 1 "
+      "day if not given; at most 31); add puts an event on `date` at `time` (\"HH:MM\") with `text`. date is "
+      "\"YYYY-MM-DD\", \"today\" or \"tomorrow\".",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"list\",\"add\"]},"
+      "\"date\":{\"type\":\"string\",\"minLength\":5,\"maxLength\":10},"
+      "\"days\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":31},"
+      "\"time\":{\"type\":\"string\",\"minLength\":3,\"maxLength\":5},"
+      "\"text\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":70}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
+    { "weather",
+      "The weather where the tablet is set to (home mode's place): now, today's high and low, the next hours and "
+      "the week, with the chance of rain. Says so when no place is set.",
+      NOARGS, AS_T_DEVICE },
+    { "notifications",
+      "The tablet's notifications: every message the island showed, newest first. read returns the newest "
+      "`limit` (10 if not given); clear empties the list.",
+      "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":[\"read\",\"clear\"]},"
+      "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":30}},"
+      "\"required\":[\"action\"],\"additionalProperties\":false}",
+      AS_T_DEVICE },
     { "music",
-      "The tablet's music player, over the tracks on its card: play, pause, next, previous, stop, or "
+      "The music player: the tablet's own, over the tracks on its card, or with `where` \"pc\" the PC's media "
+      "through Catalyst Link (there play and pause both toggle). play, pause, next, previous, stop, or status: "
       "what is playing now.",
       "{\"type\":\"object\",\"properties\":{\"action\":{\"type\":\"string\",\"enum\":"
-      "[\"play\",\"pause\",\"next\",\"previous\",\"stop\",\"status\"]}},"
+      "[\"play\",\"pause\",\"next\",\"previous\",\"stop\",\"status\"]},"
+      "\"where\":{\"type\":\"string\",\"enum\":[\"tablet\",\"pc\"]}},"
       "\"required\":[\"action\"],\"additionalProperties\":false}",
       AS_T_DEVICE },
     { "smart_home",
@@ -150,6 +272,56 @@ const as_tooldef_t AS_TOOLS[] = {
       "The robot's motor history (FrcCatalyst MotorHistory via catalyst-agent): the most worn motors by "
       "running time, heat and faults. Systemcore only.",
       NOARGS, AS_T_READ },
+
+    /* ---- memory: the calling conversation's own pool, never the other's ---- */
+    { "remember",
+      "Saves one durable fact to YOUR long-term memory, which lasts across conversations and restarts and is "
+      "yours alone (the other AI on this tablet can't read it). One fact per call, as a self-contained sentence "
+      "that will make sense months from now without this conversation: who, what, when; for a fault the symptom, "
+      "the cause and the fix. importance: 3 would cost something if forgotten, 2 useful, 1 minor. To correct a "
+      "memory, give its id in `replaces`. A memory that says nearly what one already says updates that one. "
+      "Passwords, keys and tokens are refused. Returns the memory's id.",
+      "{\"type\":\"object\",\"properties\":{\"text\":{\"type\":\"string\",\"minLength\":4,\"maxLength\":280},"
+      "\"kind\":{\"type\":\"string\",\"enum\":" KINDS "},"
+      "\"importance\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":3},"
+      "\"replaces\":{\"type\":\"integer\",\"minimum\":1}},"
+      "\"required\":[\"text\",\"kind\",\"importance\"],\"additionalProperties\":false}",
+      AS_T_MEMORY },
+    { "forget",
+      "Deletes one memory from YOUR long-term memory by its id (from recall, or the ids shown at the start of "
+      "the conversation). Use it when asked to forget something, or for a memory that is wrong and can't be "
+      "corrected.",
+      "{\"type\":\"object\",\"properties\":{\"id\":{\"type\":\"integer\",\"minimum\":1}},"
+      "\"required\":[\"id\"],\"additionalProperties\":false}",
+      AS_T_MEMORY },
+    { "recall",
+      "Searches YOUR long-term memory: by `query` words (memories sharing them, most relevant first), by "
+      "`kind`, or with neither for the most important. Returns each memory's id, kind, importance, date and "
+      "text. The start of each conversation already shows the most important; use this for the rest, and to find "
+      "one before correcting or forgetting it.",
+      "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"maxLength\":120},"
+      "\"kind\":{\"type\":\"string\",\"enum\":" KINDS "},"
+      "\"limit\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":30}},\"additionalProperties\":false}",
+      AS_T_MEMORY },
+    { "update_notebook",
+      "Rewrites one section of your season notebook, the picture of this team you carry into every conversation: "
+      "robot (what it is, its quirks and history), team (procedures, preferences, who does what), season (events, "
+      "matches and results: the campaign so far), watchlist (recurring faults and open problems you are keeping "
+      "an eye on). The text REPLACES the section: merge what it already says with what changed, and keep it dense. "
+      "\"\" empties it.",
+      "{\"type\":\"object\",\"properties\":{\"section\":{\"type\":\"string\",\"enum\":[\"robot\",\"team\","
+      "\"season\",\"watchlist\"]},\"text\":{\"type\":\"string\",\"maxLength\":600}},"
+      "\"required\":[\"section\",\"text\"],\"additionalProperties\":false}",
+      AS_T_SELF_TECH },
+    { "update_persona",
+      "Rewrites one field of your persona, the self you carry into every conversation: name (what the owner calls "
+      "you, once they give you a name), personality (your traits and how you talk), relationship (how you and the "
+      "owner get on, your history together in brief), running_jokes (inside jokes, nicknames, recurring bits). "
+      "The text REPLACES the field: merge what it already says with what changed. \"\" empties it.",
+      "{\"type\":\"object\",\"properties\":{\"field\":{\"type\":\"string\",\"enum\":[\"name\",\"personality\","
+      "\"relationship\",\"running_jokes\"]},\"text\":{\"type\":\"string\",\"maxLength\":400}},"
+      "\"required\":[\"field\",\"text\"],\"additionalProperties\":false}",
+      AS_T_SELF_COMP },
 
     /* ---- the code, through Catalyst Link on the PC (read-only) ---- */
     { "code_tree",
@@ -240,11 +412,83 @@ const as_tooldef_t *as_tool_find(const char *name)
     return NULL;
 }
 
+const char *as_tool_label(const char *name)
+{
+    static const struct {
+        const char *name, *label;
+    } L[] = {
+        { "triage", "checking the robot" }, { "robot_overview", "looking at the robot" },
+        { "swerve_check", "checking the swerve modules" }, { "get_alerts", "reading the alerts" },
+        { "get_mechanisms", "reading the mechanisms" }, { "get_power", "reading the power" },
+        { "get_can", "reading the CAN bus" }, { "get_vision", "checking vision" },
+        { "run_preflight", "running preflight" }, { "list_topics", "reading NetworkTables" },
+        { "read_topics", "reading NetworkTables" }, { "list_tunables", "reading the tunables" },
+        { "list_autos", "reading the autos" }, { "get_matches", "checking the schedule" },
+        { "get_batteries", "checking the batteries" }, { "list_snapshots", "reading the snapshots" },
+        { "list_logs", "reading the logs" }, { "summarize_log", "reading a log" },
+        { "tba_query", "asking The Blue Alliance" }, { "list_recordings", "reading the recordings" },
+        { "analyze_recording", "analysing a recording" }, { "get_states", "reading the state timelines" },
+        { "systemcore_health", "asking Systemcore" }, { "motor_history", "reading motor history" },
+        { "open_app", "opening an app" }, { "set_tablet", "changing the tablet" }, { "tablet_status", "checking the tablet" },
+        { "timer", "setting the timer" }, { "alarm", "setting an alarm" }, { "reminder", "setting a reminder" },
+        { "notes", "the notes" }, { "documents", "the documents" }, { "checklist", "the checklist" },
+        { "calendar", "the calendar" }, { "weather", "checking the weather" }, { "notifications", "the notifications" },
+        { "music", "the music" }, { "smart_home", "the house" }, { "remember", "remembering" }, { "forget", "forgetting" },
+        { "recall", "remembering" }, { "update_notebook", "updating its notebook" }, { "update_persona", "thinking about herself" },
+        { "code_tree", "reading the code" }, { "code_read", "reading the code" }, { "code_search", "searching the code" },
+        { "list_patches", "checking the patches" }, { "list_work_orders", "checking the work orders" },
+        { "claude_sessions", "checking Claude Code" }, { "set_tunable", "waiting for your ok" },
+        { "select_auto", "waiting for your ok" }, { "revert_snapshot", "waiting for your ok" },
+        { "propose_patch", "writing a patch" }, { "create_work_order", "writing a work order" },
+    };
+    for (size_t i = 0; name && i < sizeof L / sizeof L[0]; i++)
+        if (!strcmp(L[i].name, name)) return L[i].label;
+    return "working";
+}
+
+const char *as_tool_work(const char *name, const aj_t *in)
+{
+    if (!name) return NULL;
+    const char *act = aj_gets(in, "action");
+    if (!strcmp(name, "documents")) return act && !strcmp(act, "write") ? "edit" : NULL;
+    if (!strcmp(name, "notes")) return act && (!strcmp(act, "append") || !strcmp(act, "replace")) ? "edit" : NULL;
+    if (!strcmp(name, "propose_patch")) return "patch";
+    if (!strcmp(name, "create_work_order")) return "send";
+    return NULL;
+}
+
+void as_tool_work_text(const char *name, const aj_t *in, char *out, size_t n)
+{
+    const char *nm = aj_gets(in, "name"), *title = aj_gets(in, "title");
+    if (name && !strcmp(name, "documents")) snprintf(out, n, "editing %.48s", nm && nm[0] ? nm : "a document");
+    else if (name && !strcmp(name, "notes")) snprintf(out, n, "editing the notes");
+    else if (name && !strcmp(name, "propose_patch")) snprintf(out, n, "patch%s%.52s", title ? ": " : "", title ? title : "");
+    else if (name && !strcmp(name, "create_work_order"))
+        snprintf(out, n, "work order%s%.48s", title ? ": " : "", title ? title : "");
+    else snprintf(out, n, "%s", as_tool_label(name));
+}
+
+bool as_tool_for(const as_tooldef_t *t, int pool)
+{
+    if (!t) return false;
+    bool tech = pool == AS_MEM_ASSIST;
+    switch (t->kind) {
+    case AS_T_CHANGE:
+    case AS_T_SEND:      /* they need a card on the Assist screen */
+    case AS_T_SELF_TECH: return tech;
+    case AS_T_SELF_COMP: return !tech;
+    default: return true;
+    }
+}
+
 void as_tools_json(ab_t *out)
 {
     ab_puts(out, "[");
+    bool first = true;
     for (int i = 0; i < AS_NTOOLS; i++) {
-        if (i) ab_puts(out, ",");
+        if (!as_tool_for(&AS_TOOLS[i], AS_MEM_ASSIST)) continue;
+        if (!first) ab_puts(out, ",");
+        first = false;
         ab_puts(out, "{\"name\":");
         ab_str(out, AS_TOOLS[i].name);
         ab_puts(out, ",\"description\":");
