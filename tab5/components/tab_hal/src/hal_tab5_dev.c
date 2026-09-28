@@ -11,10 +11,12 @@
  *
  * Every reply ends in "OK\n" or "ERR ...\n". Logging is silenced while a picture goes out so no log line
  * lands in the middle of it. */
+#include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <time.h>
 
@@ -270,6 +272,35 @@ static void run(char *line)
         say(buf);
         say("\n");
         say("OK\n");
+    } else if ((!strncmp(line, "ls ", 3) || !strncmp(line, "rm ", 3)) && line[3]) {
+        /* "ls <dir>" lists a folder on the card, "rm <file>" deletes one file there: what a test left behind
+         * is cleaned up without taking the card out. Only paths on the card, never up out of it, never a
+         * folder. */
+        const char *sd = hal_sd_root(), *p = line + 3;
+        size_t sl = sd ? strlen(sd) : 0;
+        if (!sd || strncmp(p, sd, sl) || (p[sl] && p[sl] != '/') || strstr(p, "..")) {
+            say("ERR only paths on the card\n");
+            return;
+        }
+        if (line[0] == 'l') {
+            DIR *d = opendir(p);
+            if (!d) {
+                say("ERR can't open\n");
+                return;
+            }
+            struct dirent *e;
+            while ((e = readdir(d))) {
+                char m[300];
+                snprintf(m, sizeof m, "MEM %s%s\n", e->d_name, e->d_type == DT_DIR ? "/" : "");
+                say(m);
+            }
+            closedir(d);
+            say("OK\n");
+        } else {
+            struct stat st;
+            if (stat(p, &st) != 0 || S_ISDIR(st.st_mode)) say("ERR no such file\n");
+            else say(remove(p) == 0 ? "OK\n" : "ERR can't delete\n");
+        }
     } else if (!strncmp(line, "putbegin ", 9)) {
         /* a file from the PC onto the card: putbegin <path> <size>, puthex <hex>..., putend <crc32 hex> */
         if (s_put) fclose(s_put);
