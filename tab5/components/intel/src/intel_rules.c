@@ -316,6 +316,16 @@ static void event_rules(const intel_in_t *in, intel_insight_t *out, int *n, int 
             snprintf(x->why, sizeof x->why, "an announcement on nexus");
         }
     }
+    /* another team needs a part: good to know, the pit may have one */
+    if (in->part[0] && in->part_team != in->team && in->now && (!in->part_at || in->now - in->part_at < 30 * 60)) {
+        snprintf(key, sizeof key, "part:%u", hash(in->part));
+        x = add(out, n, max, IC_EVENT, 1, key);
+        if (x) {
+            if (in->part_team > 0) snprintf(x->text, sizeof x->text, "team %d needs %.80s", in->part_team, in->part);
+            else snprintf(x->text, sizeof x->text, "a team needs %.80s", in->part);
+            snprintf(x->why, sizeof x->why, "a parts request on nexus");
+        }
+    }
     if (in->have_epa && !isnan(in->epa)) {
         x = add(out, n, max, IC_EVENT, 1, "epa");
         if (x) {

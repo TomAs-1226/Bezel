@@ -283,6 +283,9 @@ typedef struct {
     int behind_min;            /* the field vs TBA's schedule, from Nexus (+ late); 0 unknown or on time */
     char ann[160];             /* the newest announcement, "" none */
     time_t ann_at;
+    char part[96];             /* the newest parts request from another team, "" none */
+    int part_team;
+    time_t part_at;
     /* Statbotics */
     bool have_epa;
     double epa, percentile;

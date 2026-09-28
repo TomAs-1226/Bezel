@@ -235,6 +235,11 @@ static void fill(intel_in_t *in, double now)
                 snprintf(in->ann, sizeof in->ann, "%s", nx->ann[0].text);
                 in->ann_at = nx->ann[0].at;
             }
+            if (nx->nparts) {
+                snprintf(in->part, sizeof in->part, "%s", nx->parts[0].text);
+                in->part_team = nx->parts[0].team;
+                in->part_at = nx->parts[0].at;
+            }
         }
         free(nx);
     }

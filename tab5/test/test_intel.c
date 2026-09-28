@@ -335,6 +335,17 @@ static void rules(void)
     in.ann_at = T - 3600; /* an hour old: no longer news */
     n = intel_rules(&in, out, INTEL_MAX);
     CHECK(!find_key(out, n, "ann:"));
+    /* another team's parts request: listed; our own isn't news to us */
+    snprintf(in.part, sizeof in.part, "a 1/2 in hex bearing");
+    in.part_team = 1234;
+    in.part_at = T - 60;
+    n = intel_rules(&in, out, INTEL_MAX);
+    CHECK(find_key(out, n, "part:") && find_key(out, n, "part:")->prio == 1 &&
+          !strcmp(find_key(out, n, "part:")->text, "team 1234 needs a 1/2 in hex bearing"));
+    in.part_team = 5805;
+    n = intel_rules(&in, out, INTEL_MAX);
+    CHECK(!find_key(out, n, "part:"));
+    in.part[0] = 0;
     /* the tablet low on an event day */
     in.tablet_pct = 30;
     n = intel_rules(&in, out, INTEL_MAX);

@@ -1260,7 +1260,8 @@ int ui_match_upcoming(intel_up_t *out, int max, int *behind_min)
         u->start = t->when;
         u->src = t->t.src;
         u->queue_at = t->t.queue_at;
-        snprintf(u->status, sizeof u->status, "%s", t->t.stage || t->status[0] ? t->status : "");
+        /* Nexus's word for it only while its answer is fresh: an old "now queuing" isn't now */
+        snprintf(u->status, sizeof u->status, "%s", nx_age_s() <= NX_FRESH_S ? t->status : "");
         u->ours = t->m.ours;
         const int *us = t->m.ours == 2 ? t->m.blue : t->m.red, *them = t->m.ours == 2 ? t->m.red : t->m.blue;
         int p = 0;
