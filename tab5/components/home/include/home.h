@@ -55,6 +55,9 @@ typedef struct {
 } home_pc_t;
 void home_pc_enable(bool on);                  /* settings: the Link media remote on/off */
 void home_pc_get(home_pc_t *out);
+/* The dev console's made-up song, shown as the PC's (playing, no art of its own) until cleared (title NULL):
+ * how the generated covers and the tint are looked at with the PC away. */
+void home_pc_fake(const char *artist, const char *album, const char *title);
 /* Copies the current art (HOME_ART² RGB565) into `px`; false when there is none. `gen` (may be NULL) gets the
  * art_gen of what was copied: a worker copying it while a new song's arrives knows which one it has. */
 bool home_pc_art(uint16_t *px, unsigned *gen);

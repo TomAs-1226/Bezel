@@ -36,6 +36,7 @@ const char *const HM_FACE_NAME[HM_NFACES + 1] = { "dial", "horizon", "dots", "wo
 #define SYNODIC 29.530588853
 
 /* the dial */
+#define SEC_SEGS 6 /* the second hand in pieces: each moves its own small box, not one box the size of the dial */
 #define DCX 640
 #define DCY 372
 #define DR 292
@@ -95,9 +96,9 @@ static struct {
     /* dial */
     struct {
         lv_obj_t *disc, *datebox, *date, *top_l, *top_r;
-        line_t tick[60], hand[3], shadow[2];
+        line_t tick[60], hand[2], shadow[2], sec[SEC_SEGS];
         lv_obj_t *cap, *scap;
-        bz_motion_t sec;
+        bz_motion_t secm;
         long long target;     /* the second hand's target in seconds, running on past 60 */
         int shown_sec;
         float drawn;          /* the angle last drawn, turns */
@@ -273,7 +274,7 @@ static void dial_build(void)
     line_make(&FC.D.hand[1], b, 9);
     FC.D.cap = disc(b, 26);
     lv_obj_set_pos(FC.D.cap, DCX - 13, DCY - 13);
-    line_make(&FC.D.hand[2], b, 3);
+    for (int i = 0; i < SEC_SEGS; i++) line_make(&FC.D.sec[i], b, 3);
     FC.D.scap = disc(b, 16);
     lv_obj_set_pos(FC.D.scap, DCX - 8, DCY - 8);
     FC.D.top_l = bz_label_line(b, "", BZ_F_LABEL, BZ_C_DIM, 300);
@@ -281,8 +282,8 @@ static void dial_build(void)
     FC.D.top_r = bz_label_line(b, "", BZ_F_LABEL, BZ_C_DIM, 300);
     lv_obj_set_style_text_align(FC.D.top_r, LV_TEXT_ALIGN_RIGHT, 0);
     lv_obj_set_pos(FC.D.top_r, W - PAD - ORB_CLEAR - 300, 42);
-    bz_motion_init(&FC.D.sec, 0, 0.002f);
-    FC.D.sec.keep = true;
+    bz_motion_init(&FC.D.secm, 0, 0.01f);
+    FC.D.secm.keep = true;
     FC.D.shown_sec = -1;
     FC.D.drawn = -1;
 }
@@ -296,7 +297,7 @@ static void dial_colors(bool dark)
     for (int i = 0; i < 2; i++) line_color(&FC.D.shadow[i], 0x000000, dark ? 90 : 38);
     line_color(&FC.D.hand[0], ink, 255);
     line_color(&FC.D.hand[1], ink, 255);
-    line_color(&FC.D.hand[2], bz_color(BZ_C_SIGNAL), 255);
+    for (int i = 0; i < SEC_SEGS; i++) line_color(&FC.D.sec[i], bz_color(BZ_C_SIGNAL), 255);
     fill_rgb(FC.D.cap, ink);
     fill_rgb(FC.D.scap, bz_color(BZ_C_SIGNAL));
     fill_rgb(FC.D.datebox, bz_color(BZ_C_SURFACE2));
@@ -320,7 +321,12 @@ static void dial_second(float turns)
     if (fabsf(turns - FC.D.drawn) < 0.0004f) return;
     FC.D.drawn = turns;
     float a = turns * TAU, s = sinf(a), c = -cosf(a);
-    line_to(&FC.D.hand[2], DCX - s * 60, DCY - c * 60, DCX + s * 268, DCY + c * 268);
+    /* from the tail (60 behind the centre) to the tip (268 out), in pieces whose round ends overlap: a long
+     * diagonal's box is mostly empty, and LVGL redraws whole boxes */
+    for (int i = 0; i < SEC_SEGS; i++) {
+        float r0 = -60 + (268.0f + 60) * i / SEC_SEGS, r1 = -60 + (268.0f + 60) * (i + 1) / SEC_SEGS;
+        line_to(&FC.D.sec[i], DCX + s * r0, DCY + c * r0, DCX + s * r1, DCY + c * r1);
+    }
 }
 
 static void dial_minute(const struct tm *tm)
@@ -333,7 +339,7 @@ static void dial_minute(const struct tm *tm)
     ui_text(FC.D.date, "%d", clock_set(tm) ? tm->tm_mday : 0);
     dial_hands((float)(tm->tm_hour % 12) + tm->tm_min / 60.0f, (float)tm->tm_min + tm->tm_sec / 60.0f);
     bool secs = hm_cfg()->dial_secs;
-    hm_show(FC.D.hand[2].o, secs);
+    for (int i = 0; i < SEC_SEGS; i++) hm_show(FC.D.sec[i].o, secs);
     hm_show(FC.D.scap, secs);
 }
 
@@ -347,18 +353,18 @@ static void dial_frame(void)
     long long now = (long long)tv.tv_sec;
     if (FC.D.shown_sec < 0 || llabs(now - FC.D.target) > 3) {
         FC.D.target = now;
-        bz_motion_set(&FC.D.sec, (float)(now % 60), 0);
+        bz_motion_set(&FC.D.secm, (float)(now % 60), 0);
         FC.D.shown_sec = (int)(now % 60);
     } else if (now != FC.D.target) {
         FC.D.target = now;
-        float v = FC.D.sec.value;
+        float v = FC.D.secm.value;
         float to = (float)(now % 60);
         if (to < v - 30) v -= 60; /* past the top: carry on round, not back */
-        bz_motion_set(&FC.D.sec, v, FC.D.sec.velocity);
-        bz_motion_to(&FC.D.sec, to, BZ_TICK);
+        bz_motion_set(&FC.D.secm, v, FC.D.secm.velocity);
+        bz_motion_to(&FC.D.secm, to, BZ_TICK);
     }
-    bool moving = bz_motion_tick(&FC.D.sec);
-    float t = FC.D.sec.value / 60.0f;
+    bool moving = bz_motion_tick(&FC.D.secm);
+    float t = FC.D.secm.value / 60.0f;
     dial_second(t - floorf(t));
     if (moving) bz_ui_keep_alive();
 }
@@ -1036,6 +1042,8 @@ void hm_faces_set(int f)
 }
 
 int hm_faces_face(void) { return FC.cur; }
+
+void hm_faces_look(void) { FC.last_min = -1; }
 
 bool hm_faces_night(void)
 {

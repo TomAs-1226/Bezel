@@ -267,6 +267,8 @@ lv_obj_t *ui_scroller(lv_obj_t *parent, int w, int h);
  * Returns false, and does nothing, while a finger holds it or when it's been scrolled away from the end
  * (the reader is looking back). */
 bool ui_scroller_follow(lv_obj_t *content);
+/* Back to its top, at once (a settings section opened again starts where it starts). */
+void ui_scroller_top(lv_obj_t *content);
 
 /* A keyboard sheet over the bottom of an app, for one entry at a time. */
 typedef struct ui_kb ui_kb_t;

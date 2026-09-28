@@ -146,6 +146,7 @@ void hm_faces_refresh(bool shown); /* 10 Hz */
 void hm_faces_frame(double now);   /* every frame while its page shows: the second hand */
 void hm_faces_set(int face);       /* shows this face (drawn now: call while it isn't on screen, or accept a redraw) */
 int hm_faces_face(void);
+void hm_faces_look(void);          /* its options changed: written again on the next refresh */
 void hm_faces_release(void);
 bool hm_faces_released(void);
 bool hm_faces_night(void);         /* night now (the night face is on and it's the hours for it) */

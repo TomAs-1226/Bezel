@@ -91,7 +91,7 @@ Two paths, chosen per motion:
 | match alerts | `ui_match.c`, `components/home/src/home_tba.c` | alarms before the team's matches from The Blue Alliance; schedule changes as notifications (below) |
 | log analysis | `components/assist/src/analyze.c`, `components/catalyst/src/cat_logs.c` | a log's digest read by a GPT pit engineer (below) |
 | battery fleet | `ui_batt.c`, `components/catalyst/src/cat_batt.c` | the team's batteries: which went in when, what the logs measured, which goes in next (below) |
-| home mode | `ui_home_mode.c`, `components/home` | the desk surface (time, weather, the PC's music, Home Assistant, the companion) and its launcher: music, smart home, weather, calendar, timer, alarms, photos (and a photos screensaver); comes up by hand, at boot, on the stand, or from an NFC tag on a Unit RFID 2 in Port A |
+| home mode | `ui_home_mode.c`, `ui_home_np.c`, `ui_home_faces.c`, `ui_home_art.c`, `components/home` | three pages paged with a swipe: clock faces (dial, horizon, dots, words, moon; a flick up or down for the next; a dim night face 22:00–7:00 when asked for), the desk (time, today's sky, the PC's music, Home Assistant, the companion, a launcher: music, smart home, weather, calendar, timer, alarms, photos; and a photos screensaver), and now playing (the cover big on a surface tinted from it). Songs without art get a cover generated from their artist and album (`home_art.c`); comes up by hand, at boot, on the stand, or from an NFC tag on a Unit RFID 2 in Port A |
 
 #### Match alerts
 
@@ -241,12 +241,24 @@ itself. Changing it (`bz_ui_set_accent`) rebuilds the palette, rewrites the shar
 object (`lv_obj_report_style_change`), then redraws the screen once (~40 ms); every screen, built or not, takes
 it, because nothing stores a raw accent colour. Home mode's face: which cards show (music, companion, smart home,
 weather, next match; the middle row closes up and the last card takes the rest of the width), the clock (big or
-the smaller display face, seconds beside it or not: one small label a second) and the ground (plain, or a solid
-tint of the accent). kv: `accent` (the accent's name), `hm_cards` (bits: music 1, companion 2, smart home 4,
-weather 8, next match 16), `hm_clock` (1 small), `hm_secs`, `hm_bg` (1 tinted).
+the smaller display face, seconds beside it or not: one small label a second), the ground (plain, or a solid
+tint of the accent), colour from the music (the desk and the now-playing page tinted from the cover while
+something plays), the page it opens on, the clock faces a flick goes through and the one shown, the dial's second
+hand, and the night face. kv: `accent` (the accent's name), `hm_cards` (bits: music 1, companion 2, smart home 4,
+weather 8, next match 16), `hm_clock` (1 small), `hm_secs`, `hm_bg` (1 tinted), `hm_art` (colour from the music,
+default 1), `hm_open` (0 clock faces, 1 desk, 2 now playing), `hm_faces` (bits: dial 1, horizon 2, dots 4, words 8,
+moon 16), `hm_face`, `hm_dsec` (the second hand, default 1), `hm_night`.
+
+**Home mode's pictures** cost memory only while home mode is up: three small covers (180 px, 63 KB each), the
+now-playing cover with its shadow (~390 KB), today's sky on the desk (118 KB) and the horizon's or the moon's
+picture when that face shows (~350 / ~210 KB), all painted on a one-shot worker at priority 2 on core 0 (its
+stack in PSRAM, its 518 KB working picture only while it paints) and freed when home mode is left. `hm art
+bench` times the covers on the tablet.
 
 Dev console (`tools/tab5_dev.py COM9 "..."`): `say <text>` sends a message through the island, `accent <name|n>`
-sets the accent, `settings <section>` opens settings on a section (`settings look`).
+sets the accent, `settings <section>` opens settings on a section (`settings look`). Home mode's own: `hm` (where
+it is), `hm page 0|1|2`, `hm face <name>`, `hm night 1|0|auto`, `hm song artist|album|title` (a made-up song as the
+PC's, `hm song off`), `hm art` (the covers), `hm art bench`, `hm art style <name>`.
 
 ### 5. Apps
 

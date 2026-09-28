@@ -331,6 +331,18 @@ bool ui_scroller_follow(lv_obj_t *content)
     return false;
 }
 
+void ui_scroller_top(lv_obj_t *content)
+{
+    for (int i = 0; i < MAX_SCROLLERS; i++) {
+        scroller_t *s = g_scrollers[i];
+        if (!s || s->content != content || s->dragging) continue;
+        bz_motion_set(&s->y, 0, 0);
+        s->away = false;
+        if (lv_obj_get_y(content) != 0) lv_obj_set_y(content, 0);
+        return;
+    }
+}
+
 /* The clip is being deleted, so its scroller must stop existing too.
  *
  * Without this the scroller stays in g_scrollers with pointers to freed objects, and the first

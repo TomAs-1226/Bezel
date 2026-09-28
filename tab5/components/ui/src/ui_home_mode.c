@@ -822,6 +822,10 @@ void hm_look_changed(void)
     desk_colors();
     HM.last_min = -1; /* the date and the match line again, where they now are */
     HM.sky.sig = 0;
+    /* the face chosen, and its options (the second hand), on the next refresh; never a picture while home
+     * mode is off (it would be painted for nobody and held) */
+    if (HM.active && !HM.night_on) hm_faces_set(hm_cfg()->face);
+    hm_faces_look();
 }
 
 /* ---- the page dots ---- */
@@ -2017,6 +2021,7 @@ void ui_home_mode_cc_add(void)
  *   hm page 0|1|2           a page (the clock faces, the desk, now playing), as a swipe would bring it
  *   hm face dial|horizon|dots|words|moon|night   that face, on the clock page
  *   hm night 1|0|auto       night forced on or off, or back to the clock's say
+ *   hm song a|b|t, hm song off   a made-up song as the PC's (artist|album|title), for its cover and tint
  *   hm art [bench|style X]  the covers: what's cached, their timing, every generated one in one style */
 void ui_home_mode_dev(const char *a)
 {
@@ -2047,6 +2052,28 @@ void ui_home_mode_dev(const char *a)
         while (*s == ' ') s++;
         HM.night_force = !strcmp(s, "1") ? 1 : !strcmp(s, "0") ? 0 : -1;
         printf("hm: night %s\n", HM.night_force < 0 ? "by the clock" : HM.night_force ? "on" : "off");
+    } else if (!strncmp(a, "song", 4)) {
+        /* "hm song artist|album|title", or "hm song off": a made-up song as the PC's, for its cover and tint */
+        const char *s = a + 4;
+        while (*s == ' ') s++;
+        if (!*s || !strcmp(s, "off")) {
+            home_pc_fake(NULL, NULL, NULL);
+            printf("hm: no made-up song\n");
+            return;
+        }
+        char buf[200], *f[3] = { NULL, NULL, NULL };
+        snprintf(buf, sizeof buf, "%s", s);
+        f[0] = buf;
+        for (int i = 1; i < 3 && f[i - 1]; i++) {
+            char *bar = strchr(f[i - 1], '|');
+            if (bar) {
+                *bar = 0;
+                f[i] = bar + 1;
+            }
+        }
+        if (f[2]) home_pc_fake(f[0], f[1], f[2]);
+        else home_pc_fake(f[0], NULL, f[1] ? f[1] : f[0]);
+        printf("hm: made-up song \"%s\"\n", f[2] ? f[2] : f[1] ? f[1] : f[0]);
     } else if (!strncmp(a, "art", 3)) {
         hm_art_dev(a + 3);
     } else {
