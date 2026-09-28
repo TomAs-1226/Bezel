@@ -329,6 +329,12 @@ void ui_ground_thumb(int ground, uint16_t *out, int w, int h)
         light_at(ground, v, &k1, &k2);
         k1 *= amt;
         k2 *= amt;
+        /* where the light is gone, the screen's own fill (as bake_strip) */
+        if (ground != UI_GROUND_GRAIN && k1 + k2 < 0.004f && (ground != UI_GROUND_CONTOUR || v >= 9.0f / 16)) {
+            uint16_t flat = lv_color_to_u16(bz_lv(BZ_C_GROUND));
+            for (int x = 0; x < w; x++) out[y * w + x] = flat;
+            continue;
+        }
         for (int x = 0; x < w; x++) {
             float r = bz_r(base), g = bz_g(base), b = bz_b(base);
             r += (bz_r(c1) - r) * k1 + (bz_r(c2) - r) * k2;
