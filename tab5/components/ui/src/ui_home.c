@@ -200,7 +200,7 @@ static void quick_build(void)
                 if (!strcmp(ui_app_entry(k)->label, lk->quick[i])) app = ui_app_entry(k)->app;
         }
         if (!app) continue;
-        lv_obj_t *c = ui_app_cell(HM.quick, app, lk->quick[i], NULL, l.quick_w, QUICK_ICON);
+        lv_obj_t *c = ui_app_cell(HM.quick, app, lk->quick[i], NULL, l.quick_w, QUICK_ICON, BZ_C_GROUND);
         lv_obj_set_style_pad_top(c, 8, 0);
         lv_obj_set_style_pad_bottom(c, 6, 0);
     }

@@ -135,14 +135,23 @@ const ui_app_entry_t *ui_app_entry(int i);
 const char *ui_app_label(const ui_app_t *app); /* the library's name for it, or NULL */
 void ui_app_launch(const ui_app_t *app, lv_obj_t *from); /* ui_app_open, or home mode for its tile */
 /* A launcher cell `w` wide: the app's icon (`icon` px) over its name, and the hint under it (NULL: none); a press
- * shows a platter; a tap launches it, the window growing out of the icon. */
-lv_obj_t *ui_app_cell(lv_obj_t *parent, const ui_app_t *app, const char *label, const char *hint, int w, int icon);
+ * shows a platter; a tap launches it, the window growing out of the icon. `bg`: the colour role the cell sits on
+ * (its icon is baked onto it, opaque and cheap to draw), or -1 when that is not known. */
+lv_obj_t *ui_app_cell(lv_obj_t *parent, const ui_app_t *app, const char *label, const char *hint, int w, int icon,
+                      int bg);
 
-/* App icons (ui_icon.c): each app a squircle of its own colour with its glyph, lit from the top left, baked once
- * per size into a small PSRAM picture that every place showing it shares. The style is settings > look > icons:
- * colour, tinted (the accent's tonal container, Material You's themed icons) or mono (surface and ink). */
+/* App icons (ui_icon.c): each app a squircle with its glyph, lit from the top left, baked once per size into a
+ * small PSRAM picture that every place showing it shares. The style is settings > look > icons: colour (a tonal
+ * tile and a luminous glyph in its group's hue family), tinted (the accent's container pair, Material You's
+ * themed icons) or mono (surface and ink). */
 enum { UI_ICON_COLOUR, UI_ICON_TINTED, UI_ICON_MONO, UI_ICON_NSTYLES };
-lv_obj_t *ui_app_icon(lv_obj_t *parent, const ui_app_t *app, int size); /* an lv_image, size x size */
+lv_obj_t *ui_app_icon(lv_obj_t *parent, const ui_app_t *app, int size); /* an lv_image, size x size, with alpha */
+/* The same, baked onto the colour role it always sits on (a surface, or the ground): opaque RGB565, a copy to
+ * draw rather than a blend, and 2 bytes a pixel. Only where nothing else can show through or be drawn under it. */
+lv_obj_t *ui_app_icon_on(lv_obj_t *parent, const ui_app_t *app, int size, int bg);
+/* A cell that shows the surface3 platter while pressed: its icon (from ui_app_icon_on) follows the platter. */
+void ui_icon_press_with(lv_obj_t *cell, lv_obj_t *icon);
+void ui_icon_ground_changed(void); /* ui_ground.c: what sits on the ground is baked with or without alpha */
 /* By library label or window name ("music", "home mode"); NULL when there is no such icon. */
 lv_obj_t *ui_icon_named(lv_obj_t *parent, const char *name, int size);
 /* One app's icon in a given style whatever the setting (settings' style chooser). */

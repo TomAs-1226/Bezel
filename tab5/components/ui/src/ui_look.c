@@ -346,8 +346,9 @@ void ui_look_settings(lv_obj_t *col, int w)
         bz_label(t, STYLE_L[s], BZ_F_CAPTION, BZ_C_INK);
         LS.style_tile[s] = t;
     }
-    caption(col, "Colour gives every app its own. Tinted draws them all in the accent, the way Material You themes "
-                 "icons; mono is the surface and the glyph.", w);
+    caption(col, "Colour lights each glyph in its group's family: ember for the robot, steel for diagnosing, jade for "
+                 "this tablet, rose for everyday. Tinted draws them all in the accent, as Material You themes icons; "
+                 "mono is the surface and its ink.", w);
 
     /* the ground: each as a small screen */
     bz_label(col, "ground", BZ_F_LABEL, BZ_C_DIM);
@@ -388,8 +389,9 @@ void ui_look_settings(lv_obj_t *col, int w)
         lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *holder = bz_box(c);
         lv_obj_set_size(holder, FAV_ICON + 12, FAV_ICON + 6);
-        lv_obj_t *ic = ui_app_icon(holder, e->app, FAV_ICON);
+        lv_obj_t *ic = ui_app_icon_on(holder, e->app, FAV_ICON, BZ_C_SURFACE1); /* on the pane: the library's */
         lv_obj_align(ic, LV_ALIGN_BOTTOM_MID, 0, 0);
+        ui_icon_press_with(c, ic);
         /* chosen: a badge on the icon's shoulder with its place in the row */
         lv_obj_t *b = bz_box(holder);
         lv_obj_set_size(b, 28, 28);

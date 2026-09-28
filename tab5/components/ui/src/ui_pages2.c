@@ -624,7 +624,8 @@ static void cell_tap(lv_obj_t *o, void *u)
 #define LIB_ICON 64
 #define LIB_CELL_MIN 150 /* seven across the landscape frame, four across phone mode's */
 
-lv_obj_t *ui_app_cell(lv_obj_t *parent, const ui_app_t *app, const char *label, const char *hint, int w, int icon)
+lv_obj_t *ui_app_cell(lv_obj_t *parent, const ui_app_t *app, const char *label, const char *hint, int w, int icon,
+                      int bg)
 {
     lv_obj_t *c = bz_col(parent, 0);
     lv_obj_set_width(c, w);
@@ -635,7 +636,7 @@ lv_obj_t *ui_app_cell(lv_obj_t *parent, const ui_app_t *app, const char *label, 
     /* the press: a platter under the whole cell (a transparent cell has nothing for the state layer to tint) */
     lv_obj_add_style(c, bz_style_fill(BZ_C_SURFACE3), LV_STATE_PRESSED);
     lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
-    ui_app_icon(c, app, icon);
+    ui_icon_press_with(c, ui_app_icon_on(c, app, icon, bg));
     lv_obj_t *l = bz_label_line(c, label, BZ_F_BODY_S, BZ_C_INK, w - 12);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_pad_top(l, 10, 0);
@@ -698,7 +699,8 @@ void ui_page_tools(lv_obj_t *page)
         lv_obj_set_style_pad_row(grid, 4, 0);
         lv_obj_set_width(grid, iw);
         for (int i = 0; i < NAPPS; i++)
-            if (APPS[i].group == g) ui_app_cell(grid, APPS[i].app, APPS[i].label, APPS[i].hint, cw, LIB_ICON);
+            if (APPS[i].group == g)
+                ui_app_cell(grid, APPS[i].app, APPS[i].label, APPS[i].hint, cw, LIB_ICON, BZ_C_SURFACE1); /* the drawer */
     }
     /* room to scroll the last row clear of the dock */
     lv_obj_t *sp = bz_box(LIB.list);
