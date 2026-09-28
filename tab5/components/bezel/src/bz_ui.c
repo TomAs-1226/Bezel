@@ -1574,7 +1574,7 @@ uint16_t *bz_ui_content_buf(void)
 /* Nothing between the list and the glass but the top layer's chrome (dock, orb, island), whose pieces
  * over it are listed in obs: a list moved by the platform carries those pixels along, so they're drawn
  * again where they were and where they landed. */
-#define SCROLL_OBS 6
+#define SCROLL_OBS 8
 /* Why the last call said no, for the dev console's "inv" trace: the conditions are indistinguishable
  * from the damage alone, and the whole cost of a scroll turns on which one it was. */
 static char s_unobs_why[96];
@@ -1582,9 +1582,81 @@ static char s_unobs_why[96];
  * "carry 0" puts it back the way it was, so both costs can be measured on one build, on one screen. */
 static bool s_carry = true;
 void bz_ui_scroll_carry(bool on) { s_carry = on; }
-static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *nobs)
+
+/* Chrome with an opaque middle (bz_ui_opaque_core). Pages run to the bottom edge, under the dock, so the dock
+ * sits inside every list's rectangle; carried, it was drawn again and turned onto the panel every frame of a
+ * scroll, where and where its copy landed -- 27.6 ms a frame and 30 fps, against 10 ms with the page cut
+ * short above it. Its baked surface hides everything under it, so those pixels need neither moving nor
+ * drawing: the list is shifted as the pieces around the core instead. */
+#define OPAQUE_MAX 4
+static struct {
+    lv_obj_t *o;
+    int ix, iy;
+} s_opaque[OPAQUE_MAX];
+static int s_nopaque;
+static bool s_cut = true; /* the dev console's "cut 0" carries the chrome through the list as before */
+void bz_ui_opaque_core(lv_obj_t *o, int ix, int iy)
+{
+    for (int i = 0; i < s_nopaque; i++)
+        if (s_opaque[i].o == o) {
+            s_opaque[i].ix = ix;
+            s_opaque[i].iy = iy;
+            return;
+        }
+    if (s_nopaque < OPAQUE_MAX) s_opaque[s_nopaque++] = (typeof(s_opaque[0])){ o, ix, iy };
+}
+void bz_ui_scroll_cut(bool on) { s_cut = on; }
+
+#if BZ_LEAN
+/* `a` less `hole` (which it must contain): the full-height columns either side of the hole, then what is above
+ * and below it between them. Columns first because a list moves vertically: a column's pixels come from the
+ * column, so only the middle pieces have an edge the hole cuts across. Returns how many (0..4). */
+static int area_sub(const lv_area_t *a, const lv_area_t *hole, lv_area_t out[4])
+{
+    int n = 0;
+    if (hole->x1 > a->x1) out[n++] = (lv_area_t){ a->x1, a->y1, hole->x1 - 1, a->y2 };
+    if (hole->x2 < a->x2) out[n++] = (lv_area_t){ hole->x2 + 1, a->y1, a->x2, a->y2 };
+    if (hole->y1 > a->y1) out[n++] = (lv_area_t){ hole->x1, a->y1, hole->x2, hole->y1 - 1 };
+    if (hole->y2 < a->y2) out[n++] = (lv_area_t){ hole->x1, hole->y2 + 1, hole->x2, a->y2 };
+    return n;
+}
+
+/* A top-layer object's opaque core over `a`, clipped to it; false when it has none (or it can't be trusted to
+ * hide what is under it this frame: faded, scaled, pressed). */
+static bool opaque_core(lv_obj_t *c, const lv_area_t *cc, const lv_area_t *a, lv_area_t *core)
+{
+    if (!s_cut) return false;
+    for (int i = 0; i < s_nopaque; i++) {
+        if (s_opaque[i].o != c) continue;
+        if (lv_obj_get_style_opa(c, 0) < LV_OPA_MAX || lv_obj_get_style_transform_scale_x(c, 0) != LV_SCALE_NONE ||
+            lv_obj_get_style_transform_scale_y(c, 0) != LV_SCALE_NONE)
+            return false;
+        /* A glass piece is opaque only at full strength: its baked surface carries the opacity it was baked
+         * at, and while it fades in or out (the dock tucking away) the list shows through it. Anything else
+         * must fill its background completely. */
+        bool glass = false, solid = false;
+        for (int g = 0; g < MAX_GLASS && !glass; g++)
+            if (U.glass[g].alive && U.glass[g].obj == c) {
+                glass = true;
+                solid = U.calm && U.glass[g].lite_opa == 255;
+            }
+        if (!glass) solid = lv_obj_get_style_bg_opa(c, 0) >= LV_OPA_MAX;
+        if (!solid) return false;
+        lv_area_t k = *cc;
+        k.x1 += s_opaque[i].ix;
+        k.x2 -= s_opaque[i].ix;
+        k.y1 += s_opaque[i].iy;
+        k.y2 -= s_opaque[i].iy;
+        return k.x1 <= k.x2 && k.y1 <= k.y2 && lv_area_intersect(core, &k, a);
+    }
+    return false;
+}
+#endif
+
+static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *nobs, lv_area_t *core, bool *has_core)
 {
     *nobs = 0;
+    *has_core = false;
     for (lv_obj_t *p = lv_obj_get_parent(o); p; o = p, p = lv_obj_get_parent(p)) {
         lv_area_t pc;
         lv_obj_get_coords(p, &pc);
@@ -1643,8 +1715,28 @@ static bool unobstructed(lv_obj_t *o, const lv_area_t *a, lv_area_t *obs, int *n
                          (int)cc.x1, (int)cc.y1, (int)cc.x2, (int)cc.y2, *nobs);
             return false;
         }
+        lv_area_t k;
+        if (!*has_core && opaque_core(c, &cc, a, &k)) {
+            /* only what the core leaves (rounded ends, a shadow) is carried; the list is cut around the rest */
+            int32_t ext = lv_obj_get_ext_draw_size(c);
+            lv_area_increase(&cc, ext, ext);
+            lv_area_t rest[4];
+            int nr = area_sub(&cc, &k, rest);
+            if (*nobs + nr <= SCROLL_OBS) {
+                *core = k;
+                *has_core = true;
+                for (int r = 0; r < nr; r++) obs[(*nobs)++] = rest[r];
+                if (s_trace_inv > 0)
+                    ESP_LOGW("bz_ui", "scroll cut around chrome %u: core %d,%d-%d,%d, %d ends carried", (unsigned)i,
+                             (int)k.x1, (int)k.y1, (int)k.x2, (int)k.y2, nr);
+                continue;
+            }
+        }
         int32_t ext = lv_obj_get_ext_draw_size(c);
         lv_area_increase(&cc, ext, ext);
+        if (s_trace_inv > 0)
+            ESP_LOGW("bz_ui", "scroll carried chrome %u of %u: %d,%d-%d,%d", (unsigned)i,
+                     (unsigned)lv_obj_get_child_count(top), (int)cc.x1, (int)cc.y1, (int)cc.x2, (int)cc.y2);
         obs[(*nobs)++] = cc; /* whole: only the copy it leaves behind belongs to the list */
 #else
         return false;
@@ -1701,8 +1793,9 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
     lv_obj_get_coords(content, &c1);
     int dy = (int)(c1.y1 - c0.y1), h = (int)lv_area_get_height(&a), w = (int)lv_area_get_width(&a);
     if (!dy) return true;
-    lv_area_t obs[SCROLL_OBS];
+    lv_area_t obs[SCROLL_OBS], core;
     int nobs = 0;
+    bool has_core = false;
     /* While a slide or a sheet holds the glass, LVGL's damage is taken off its list every frame (late,
      * sheet_dirty), where a later step of this scroll can't move it with the list: the strips revealed step by
      * step landed where they were revealed, not where the list had gone, and a fling during a page's settle
@@ -1713,7 +1806,7 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
     held = U.sliding || U.sheeting;
 #endif
     if (held || U.frozen || U.offscreen || U.thaw >= 0 || abs(dy) >= h || lv_obj_get_style_radius(clip, 0) ||
-        !unobstructed(clip, &a, obs, &nobs)) {
+        !unobstructed(clip, &a, obs, &nobs, &core, &has_core)) {
 #ifdef ESP_PLATFORM
         /* The fallback redraws the whole visible list, which is the dearest frame the interface has. While
          * the dev console's "inv" trace is on, say which of the conditions took it: they are not otherwise
@@ -1721,7 +1814,7 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
         if (s_trace_inv > 0)
             ESP_LOGW("bz_ui", "scroll fell back: held %d frozen %d offscreen %d thaw %d dy %d h %d radius %d obstructed %d",
                      held, U.frozen, U.offscreen, U.thaw, dy, h, (int)lv_obj_get_style_radius(clip, 0),
-                     !unobstructed(clip, &a, obs, &nobs));
+                     !unobstructed(clip, &a, obs, &nobs, &core, &has_core));
         if (s_trace_inv > 0 && s_unobs_why[0]) ESP_LOGW("bz_ui", "  because: %s", s_unobs_why);
 #endif
         lv_obj_invalidate(clip); /* what a plain move would have: both positions, clipped to the list */
@@ -1737,24 +1830,40 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
         m.y2 += dy;
         if (lv_area_intersect(&m, &m, &a)) lv_inv_area(d, &m);
     }
-    U.shift_px += (uint32_t)(w * (h - abs(dy)));
-    bz_area_t b = { (int16_t)a.x1, (int16_t)a.y1, (int16_t)a.x2, (int16_t)a.y2 };
+    /* The list moves as one rectangle, or as the pieces around an opaque core (bz_ui_opaque_core): the columns
+     * either side of it and what is above and below it. Each piece is shifted from itself alone, so the core's
+     * pixels are never carried and the core is never drawn again; the rows each piece can't fill from itself
+     * (its trailing edge) are drawn below, and for the pieces above and below the core those are exactly the
+     * rows coming out from under it. */
+    lv_area_t piece[4];
+    int np = 1;
+    piece[0] = a;
 #if BZ_LEAN
-    if (U.cfg.slide && U.cfg.slide->scroll) {
-        /* the platform moves the pixels on the panel itself (DMA2D, from the glass): LVGL's buffer isn't
-         * shifted, since a present only ever reads what LVGL has just drawn */
-        U.cfg.slide->scroll(&b, dy);
-    } else
+    if (has_core) np = area_sub(&a, &core, piece);
 #endif
-    {
-        uint16_t *px = U.cfg.content + a.x1;
-        size_t W = (size_t)U.cfg.w, row = (size_t)w * 2;
+    for (int k = 0; k < np; k++) {
+        const lv_area_t *p = &piece[k];
+        int ph = (int)lv_area_get_height(p), pw = (int)lv_area_get_width(p);
+        if (ph <= abs(dy)) continue; /* nothing in it stays in view: all of it is drawn below */
+        U.shift_px += (uint32_t)(pw * (ph - abs(dy)));
+        bz_area_t b = { (int16_t)p->x1, (int16_t)p->y1, (int16_t)p->x2, (int16_t)p->y2 };
+#if BZ_LEAN
+        if (U.cfg.slide && U.cfg.slide->scroll) {
+            /* the platform moves the pixels on the panel itself (DMA2D, from the glass): LVGL's buffer isn't
+             * shifted, since a present only ever reads what LVGL has just drawn */
+            U.cfg.slide->scroll(&b, dy);
+            continue;
+        }
+#endif
+        uint16_t *px = U.cfg.content + p->x1;
+        size_t W = (size_t)U.cfg.w, row = (size_t)pw * 2;
         if (dy < 0)
-            for (int r = a.y1; r <= a.y2 + dy; r++) memcpy(px + r * W, px + (r - dy) * W, row);
+            for (int r = p->y1; r <= p->y2 + dy; r++) memcpy(px + r * W, px + (r - dy) * W, row);
         else
-            for (int r = a.y2; r >= a.y1 + dy; r--) memcpy(px + r * W, px + (r - dy) * W, row);
+            for (int r = p->y2; r >= p->y1 + dy; r--) memcpy(px + r * W, px + (r - dy) * W, row);
         damage_content(&b);
     }
+    (void)w;
     /* Chrome over the list moved with it: drawn again where it is, and where its copy landed.
      *
      * Where it IS means the whole of it, not the part inside the list. The dock is 92 tall and the
@@ -1774,15 +1883,17 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
         m.y2 += dy;
         if (lv_area_intersect(&m, &m, &a)) lv_inv_area(d, &m);
     }
-    /* LVGL draws only the strip that scrolled into view, at least 16 rows of it: a thinner one is turned
-     * by the CPU, whose cache has to be swept over every row of the panel it crosses (most of a frame) */
-    lv_area_t band = a;
+    /* LVGL draws only the strip that scrolled into view (per piece), at least 16 rows of it: a thinner one is
+     * turned by the CPU, whose cache has to be swept over every row of the panel it crosses (most of a frame) */
     int rows = abs(dy) < 16 ? 16 : abs(dy);
-    if (dy < 0) band.y1 = a.y2 - rows + 1;
-    else band.y2 = a.y1 + rows - 1;
-    if (band.y1 < a.y1) band.y1 = a.y1;
-    if (band.y2 > a.y2) band.y2 = a.y2;
-    lv_inv_area(d, &band);
+    for (int k = 0; k < np; k++) {
+        lv_area_t band = piece[k];
+        if (dy < 0) band.y1 = piece[k].y2 - rows + 1;
+        else band.y2 = piece[k].y1 + rows - 1;
+        if (band.y1 < piece[k].y1) band.y1 = piece[k].y1;
+        if (band.y2 > piece[k].y2) band.y2 = piece[k].y2;
+        lv_inv_area(d, &band);
+    }
     return true;
 }
 

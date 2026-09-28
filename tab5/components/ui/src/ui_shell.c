@@ -685,6 +685,9 @@ static void build_dock(void)
     lv_obj_remove_flag(U.dock, LV_OBJ_FLAG_SCROLLABLE);
     U.dock_glass = bz_glass_attach(U.dock, 0, BZ_R_DOCK);
     bz_glass_set_press_scale(U.dock_glass, BZ_GLASS_DOCK_PRESS_SCALE);
+    /* its baked surface hides the page under it: lists scrolling under it are cut around its middle rather
+     * than carrying it along and drawing it again every frame (the rounded ends are still carried) */
+    bz_ui_opaque_core(U.dock, BZ_R_DOCK, 0);
 
     /* the platter under the current item: 7.5 % ink at rest (Bezel's droplet, landed) */
     U.platter = lv_obj_create(U.dock);
@@ -837,7 +840,8 @@ static bool dev_handler(const char *line)
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) && strncmp(line, "phone", 5) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) &&
-        strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5))
+        strncmp(line, "docwrite", 8) && strncmp(line, "assist fake", 11) && strncmp(line, "carry", 5) &&
+        strncmp(line, "cut", 3))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -971,6 +975,12 @@ static void dev_run(void)
         bool on = s_dev_cmd[5] != ' ' || s_dev_cmd[6] != '0';
         bz_ui_scroll_carry(on);
         printf("carry: %s\n", on ? "on" : "off");
+    } else if (!strncmp(s_dev_cmd, "cut", 3)) {
+        /* "cut 0": a list scrolling under the dock carries it and draws it again every frame, as it did.
+         * "cut 1": the list is shifted in the pieces around the dock's opaque middle. */
+        bool on = s_dev_cmd[3] != ' ' || s_dev_cmd[4] != '0';
+        bz_ui_scroll_cut(on);
+        printf("cut: %s\n", on ? "on" : "off");
     } else if (!strncmp(s_dev_cmd, "assist fake", 11)) {
         /* "assist fake N": N turns of the sample document into the transcript, no model and no network.
          * Scrolling a long answer is the app's dearest frame, and measuring it twice the same way needs
