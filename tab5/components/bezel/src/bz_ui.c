@@ -83,6 +83,11 @@ static struct {
     int sheet_h, sheet_shown, sheet_lo, sheet_hi, sheet_sh;
     void (*sheet_prep)(bool before, void *u);
     void *sheet_u;
+    /* a push (bz_ui_push_begin): the sheet moves the page along instead of covering it, and the top layer's
+     * pieces (U.chrome) stay put over both; the caller's own prepare, run inside the chrome's */
+    bool sheet_push;
+    void (*push_prep)(bool before, void *u);
+    void *push_u;
     /* what LVGL redrew while the sheet moved (not sent then): sent when it comes to rest, or the glass
      * would keep the picture's stale pixels wherever something animated meanwhile */
     bz_area_t sheet_dirty[8];
@@ -1029,7 +1034,8 @@ bool bz_ui_frame(double now_s)
                 U.cfg.slide->patch(&p, true);
             }
             U.sheet_shown = U.sheet_h;
-            U.cfg.slide->sheet(h, sh, !U.sheet_open, U.sheet_bottom);
+            if (U.sheet_push) U.cfg.slide->push(h, U.sheet_bottom, U.chrome, U.nchrome);
+            else U.cfg.slide->sheet(h, sh, !U.sheet_open, U.sheet_bottom);
         }
     } else if (U.sliding && U.cfg.slide) {
         for (int i = 0; i < U.nlean; i++) late_add(&U.lean[i].a);
@@ -1123,6 +1129,41 @@ static void chrome_hide(bool before, void *u)
         }
     }
 }
+
+/* The top layer's visible pieces into U.chrome, clipped to the screen: what a slide or a push holds still.
+ * Returns how many children the top layer has. */
+static uint32_t chrome_gather(void)
+{
+    U.nchrome = 0;
+    lv_obj_t *top = lv_display_get_layer_top(U.disp_content);
+    uint32_t nc = lv_obj_get_child_count(top);
+    for (uint32_t i = 0; i < nc && U.nchrome < BZ_SLIDE_CHROME; i++) {
+        lv_obj_t *c = lv_obj_get_child(top, (int32_t)i);
+        if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
+        lv_area_t a;
+        lv_obj_get_coords(c, &a);
+        if (a.x1 < 0) a.x1 = 0;
+        if (a.y1 < 0) a.y1 = 0;
+        if (a.x2 > U.cfg.w - 1) a.x2 = U.cfg.w - 1;
+        if (a.y2 > U.cfg.h - 1) a.y2 = U.cfg.h - 1;
+        if (a.x2 < a.x1 || a.y2 < a.y1) continue;
+        U.chrome[U.nchrome++] = (bz_area_t){ (int16_t)a.x1, (int16_t)a.y1, (int16_t)a.x2, (int16_t)a.y2 };
+    }
+    return nc;
+}
+
+/* a push's bands: the chrome hidden (it is held still, not in the picture), then the caller's own prepare */
+static void push_prep(bool before, void *u)
+{
+    (void)u;
+    if (before) {
+        chrome_hide(true, NULL);
+        if (U.push_prep) U.push_prep(true, U.push_u);
+    } else {
+        if (U.push_prep) U.push_prep(false, U.push_u);
+        chrome_hide(false, NULL);
+    }
+}
 #endif
 
 void bz_ui_slide_begin(void)
@@ -1174,21 +1215,7 @@ void bz_ui_slide_begin(void)
     double tc = wall();
     U.slide_dx = U.slide_shown = 0;
     U.nb_side = 0;
-    U.nchrome = 0;
-    lv_obj_t *top = lv_display_get_layer_top(U.disp_content);
-    uint32_t nc = lv_obj_get_child_count(top);
-    for (uint32_t i = 0; i < nc && U.nchrome < BZ_SLIDE_CHROME; i++) {
-        lv_obj_t *c = lv_obj_get_child(top, (int32_t)i);
-        if (lv_obj_has_flag(c, LV_OBJ_FLAG_HIDDEN)) continue;
-        lv_area_t a;
-        lv_obj_get_coords(c, &a);
-        if (a.x1 < 0) a.x1 = 0;
-        if (a.y1 < 0) a.y1 = 0;
-        if (a.x2 > U.cfg.w - 1) a.x2 = U.cfg.w - 1;
-        if (a.y2 > U.cfg.h - 1) a.y2 = U.cfg.h - 1;
-        if (a.x2 < a.x1 || a.y2 < a.y1) continue;
-        U.chrome[U.nchrome++] = (bz_area_t){ (int16_t)a.x1, (int16_t)a.y1, (int16_t)a.x2, (int16_t)a.y2 };
-    }
+    uint32_t nc = chrome_gather();
 #ifdef ESP_PLATFORM
     static uint32_t said_nc;
     if (nc != said_nc) {
@@ -1368,6 +1395,7 @@ bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool 
     ESP_LOGI("bz_ui", "sheet %s %s, %d rows", opening ? "opening" : "closing", bottom ? "from the bottom" : "from the top", height);
 #endif
     U.sheeting = true;
+    U.sheet_push = false;
     U.nlate = 0;
     U.nsheet_dirty = 0;
     U.sheet_open = opening;
@@ -1382,6 +1410,72 @@ bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool 
     return true;
 #else
     (void)opening; (void)height; (void)bottom; (void)prep; (void)u;
+    return false;
+#endif
+}
+
+bool bz_ui_push_begin(bool from_bottom, void (*prep)(bool before, void *u), void *u)
+{
+#if BZ_LEAN
+    if (!U.cfg.slide || !U.cfg.slide->push || U.sliding || U.sheeting) return false;
+    if (!bz_ui_slide_nb_buf()) return false;
+    bz_ui_offscreen_end();
+    /* what's pending goes on the glass first: begin captures the glass, chrome and all */
+    lv_refr_now(U.disp_content);
+    for (int i = 0; i < U.nlean; i++) {
+        bz_area_t *a = &U.lean[i].a;
+        U.lean[i].src = U.cfg.content + (size_t)a->y1 * U.cfg.w + a->x1;
+        U.lean[i].stride = U.cfg.w;
+    }
+    if (U.nlean && U.cfg.present) U.cfg.present(U.lean, U.nlean, U.cfg.user);
+    U.nlean = 0;
+    chrome_gather();
+    if (!U.cfg.slide->begin(bz_color(BZ_C_GROUND), U.chrome, U.nchrome)) return false;
+    /* the page alone under each piece of chrome, drawn into the neighbour's buffer (nothing of it is drawn yet)
+     * and turned into the platform's picture of the page: the page moves out from under the chrome clean, and
+     * the platform tells the chrome's own pixels from the page's by the difference */
+    if (U.nchrome) {
+        bz_ui_offscreen_begin(chrome_hide, NULL);
+        for (int i = 0; i < U.nchrome; i++) {
+            bz_area_t c = U.chrome[i];
+            lv_area_t a = { c.x1, c.y1, c.x2, c.y2 };
+            uint16_t *at = U.nb + (size_t)c.y1 * U.cfg.w + c.x1;
+            bz_ui_offscreen_band(at, U.cfg.w, &a);
+            bz_present_t p = { c, at, U.cfg.w };
+            U.cfg.slide->patch(&p, false);
+        }
+        bz_ui_offscreen_end();
+    }
+#ifdef ESP_PLATFORM
+    ESP_LOGI("bz_ui", "push %s, %d pieces held", from_bottom ? "up from the bottom" : "down from the top", U.nchrome);
+#endif
+    U.sheeting = true;
+    U.sheet_push = true;
+    U.push_prep = prep;
+    U.push_u = u;
+    U.nlate = 0;
+    U.nsheet_dirty = 0;
+    U.sheet_open = true;
+    U.sheet_prep = push_prep;
+    U.sheet_u = NULL;
+    U.sheet_bottom = from_bottom;
+    U.sheet_sh = U.cfg.h;
+    U.sheet_lo = U.sheet_sh;
+    U.sheet_hi = 0;
+    U.sheet_h = 0;
+    U.sheet_shown = -1;
+    return true;
+#else
+    (void)from_bottom; (void)prep; (void)u;
+    return false;
+#endif
+}
+
+bool bz_ui_can_push(void)
+{
+#if BZ_LEAN
+    return U.cfg.slide && U.cfg.slide->push;
+#else
     return false;
 #endif
 }
@@ -1434,6 +1528,11 @@ void bz_ui_sheet_end(void)
     U.nlate = 0;
     for (int i = 0; i < U.nsheet_dirty; i++) late_add(&U.sheet_dirty[i]);
     U.nsheet_dirty = 0;
+    /* a push held its chrome as the pixels it had over the page it started on (their soft edges, a pip that
+     * changed meanwhile): drawn again over the page it came to rest on, as a slide's are */
+    if (U.sheet_push)
+        for (int i = 0; i < U.nchrome; i++) late_add(&U.chrome[i]);
+    U.sheet_push = false;
     late_redraw();
 #endif
 }

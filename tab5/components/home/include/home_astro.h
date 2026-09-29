@@ -38,6 +38,11 @@ typedef struct {
 void astro_moon(double t, astro_moon_t *out);
 /* The next time after t the moon reaches `phase` (0 new, 0.5 full), to about an hour. */
 double astro_moon_next(double t, double phase);
+/* The moon's altitude and azimuth from (lat, lon) at t (geocentric: up to a degree low near the horizon). */
+void astro_moon_altaz(double t, double lat, double lon, double *alt, double *az);
+/* Moonrise and moonset in the local day t falls in (zone tz_s): either can be missing on a given day (the moon
+ * rises ~50 minutes later each day), then 0. */
+void astro_moon_day(double t, double lat, double lon, double tz_s, double *rise, double *set);
 
 /* Heliocentric ecliptic longitude (degrees) and distance (au) of planet i: 0 mercury, 1 venus, 2 earth, 3 mars,
  * 4 jupiter, 5 saturn, 6 uranus, 7 neptune. */

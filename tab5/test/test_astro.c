@@ -34,6 +34,12 @@ static void moon_phases(void)
     double full = astro_moon_next(1704974220.0 + 86400, 0.5);
     NEAR(full, 1706205240.0, 3 * 3600);
     CHECK(m.dist_km > 356000 && m.dist_km < 407000);
+    /* a full moon rises as the sun sets: London, 2024-01-25 */
+    double mr, ms, sr, ss, noon;
+    astro_moon_day(1706205240.0, 51.5074, -0.1278, 0, &mr, &ms);
+    CHECK(astro_sun_day(1706205240.0, 51.5074, -0.1278, 0, &sr, &ss, &noon));
+    CHECK(mr > 0);
+    NEAR(mr, ss, 5400);
 }
 
 static void sun_year(void)

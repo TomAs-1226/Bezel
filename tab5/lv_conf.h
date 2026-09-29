@@ -68,6 +68,8 @@
 #define LV_FONT_MONTSERRAT_20 1
 #define LV_FONT_DEFAULT &lv_font_montserrat_14
 #define LV_USE_FONT_PLACEHOLDER 0
+/* glyphs past 255 px: home mode's poster clock (tools/make_face_fonts.py); every glyph's descriptor grows 8 bytes */
+#define LV_FONT_FMT_TXT_LARGE 1
 
 #define LV_USE_THEME_DEFAULT 0
 #define LV_USE_THEME_SIMPLE 0

@@ -150,6 +150,51 @@ double astro_moon_next(double t, double phase)
     return t;
 }
 
+void astro_moon_altaz(double t, double lat, double lon, double *alt, double *az)
+{
+    astro_moon_t m;
+    astro_moon(t, &m);
+    double d = astro_jd(t) - 2451545.0;
+    double e = (23.439 - 0.00000036 * d) * RAD, L = m.lon_ecl * RAD, B = m.lat_ecl * RAD;
+    /* ecliptic to equatorial */
+    double ra = atan2(sin(L) * cos(e) - tan(B) * sin(e), cos(L)) * DEG;
+    double dec = asin(sin(B) * cos(e) + cos(B) * sin(e) * sin(L));
+    double gmst = norm360((18.697374558 + 24.06570982441908 * d) * 15.0);
+    double H = norm180(gmst + lon - ra) * RAD, la = lat * RAD;
+    double sa = sin(la) * sin(dec) + cos(la) * cos(dec) * cos(H);
+    *alt = asin(sa < -1 ? -1 : sa > 1 ? 1 : sa) * DEG;
+    *az = norm360(atan2(-sin(H), tan(dec) * cos(la) - sin(la) * cos(H)) * DEG);
+}
+
+void astro_moon_day(double t, double lat, double lon, double tz_s, double *rise, double *set)
+{
+    /* the upper limb on the horizon, allowing for the moon's parallax: +0.125 degrees, geocentrically */
+    const double H0 = 0.125;
+    double day0 = floor((t + tz_s) / 86400.0) * 86400.0 - tz_s;
+    *rise = *set = 0;
+    double a, z;
+    astro_moon_altaz(day0, lat, lon, &a, &z);
+    double prev = a - H0, prev_t = day0;
+    for (double s = day0 + 600; s <= day0 + 86400.0 + 1; s += 600) {
+        astro_moon_altaz(s, lat, lon, &a, &z);
+        double v = a - H0;
+        if ((prev < 0) != (v < 0)) {
+            /* bisect the crossing */
+            double lo = prev_t, hi = s, plo = prev;
+            for (int k = 0; k < 20; k++) {
+                double mid = (lo + hi) / 2, am, zm;
+                astro_moon_altaz(mid, lat, lon, &am, &zm);
+                if (((am - H0) < 0) == (plo < 0)) lo = mid;
+                else hi = mid;
+            }
+            if (prev < 0 && !*rise) *rise = (lo + hi) / 2;
+            else if (prev >= 0 && !*set) *set = (lo + hi) / 2;
+        }
+        prev = v;
+        prev_t = s;
+    }
+}
+
 /* ---------------------------------------------------------------- the planets */
 
 static const struct {

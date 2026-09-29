@@ -655,8 +655,12 @@ void ui_home_look_settings(lv_obj_t *col, int w)
     LK.dsec = row_chip(r, "the dial's second hand", LK_DSEC);
     LK.night = row_chip(r, "night face, 22:00 to 7:00", LK_NIGHT);
     caption(col, "Swipe home mode sideways for the clock faces and for what's playing; flick a face up or down for "
-                 "the next. The night face comes after a minute untouched and goes at a touch. Seconds and the dial's "
-                 "second hand redraw one small area a second; everything else stays still until it changes.", w);
+                 "the next. type: the time as a poster. flip: split-flap cards. dial, chrono: a Braun dial, and a "
+                 "chronograph whose small dials show the seconds, the tablet's battery and the minutes to the next "
+                 "match. sky: the sun on today's real path. moon: tonight's moon. orrery: the planets where they are "
+                 "today. tree: a tree that grows with the team's matches, lit by the real sun, bent by the wind. "
+                 "match: the next match from The Blue Alliance. The night face comes after a minute untouched and "
+                 "goes at a touch.", w);
     ui_button(col, BZ_I_HOME, "see home mode", enter_now, NULL);
     look_show();
 }

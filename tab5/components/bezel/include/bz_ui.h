@@ -155,6 +155,14 @@ void bz_ui_slide_nb_patch(const lv_area_t *a);
  * the resting height (0 or `height`) first. The sheet is `height` rows from the top; below, the page. With
  * `bottom` it is the whole screen coming up from the bottom edge (an app opening). */
 bool bz_ui_sheet_begin(bool opening, int height, bool bottom, void (*prep)(bool before, void *u), void *u);
+/* A push: a full-screen sheet that moves the page along with it instead of covering it (the vertical twin of a
+ * page slide: up from the bottom, the page leaves by the top; else down). The top layer's visible pieces stay
+ * where they are over both pictures, held as their own pixels as a slide holds its chrome, and are drawn again
+ * when it ends. The state switches right after it begins, as for a sheet; bz_ui_sheet(h) (0 .. screen height)
+ * moves it and bz_ui_sheet_end() ends it (show 0 or the height first). `prep` as for a sheet: it runs, inside
+ * the chrome being hidden, around each band of the incoming picture. false: no platform push. */
+bool bz_ui_push_begin(bool from_bottom, void (*prep)(bool before, void *u), void *u);
+bool bz_ui_can_push(void);
 void bz_ui_sheet(int h);
 int bz_ui_sheet_shown(void); /* the height on the panel now (-1: none yet) */
 bool bz_ui_sheeting(void);

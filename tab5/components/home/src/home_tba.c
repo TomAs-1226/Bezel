@@ -24,7 +24,7 @@
 #define NO_CLOCK_S 10.0
 #define BODY_MAX (768 * 1024)
 
-enum { EP_EVENTS, EP_MATCHES, EP_STATUS, EP_RANKS, EP_N };
+enum { EP_EVENTS, EP_MATCHES, EP_STATUS, EP_RANKS, EP_SEASON, EP_N };
 
 typedef struct {
     char url[192];
@@ -43,6 +43,7 @@ typedef struct {
     ep_t ep[EP_N];
     tba_state_t st;          /* published */
     tba_state_t work;        /* the worker's scratch */
+    tba_season_t season;     /* published */
 } tb_t;
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -112,6 +113,16 @@ bool tba_next_match(tba_match_t *out, time_t *when)
     }
     pthread_mutex_unlock(&g_lock);
     return found;
+}
+
+bool tba_season(tba_season_t *out)
+{
+    pthread_mutex_lock(&g_lock);
+    bool ok = T && T->season.gen;
+    if (ok) *out = T->season;
+    else memset(out, 0, sizeof *out);
+    pthread_mutex_unlock(&g_lock);
+    return ok;
 }
 
 tba_phase_t tba_upcoming(tba_match_t *out, int max, int *n, bool *live, bool *offline, char *event_key, size_t kn)
@@ -552,6 +563,47 @@ static void parse_ranks(const ep_t *e, tba_state_t *s)
     home_json_free(&j);
 }
 
+/* Every event's status this season, an object keyed by event (null where nothing is known yet): the records
+ * summed, the best rank kept. */
+static bool parse_season(const ep_t *e, tba_season_t *o)
+{
+    home_json_t j;
+    if (!parse(&j, e)) return false;
+    bool ok = j.d.t[0].type == JL_OBJ;
+    for (int m = 0, i = 1; ok && m < j.d.t[0].size; m++) {
+        int v = i + 1;
+        if (v < j.d.n && j.d.t[v].type == JL_OBJ) {
+            o->events++;
+            int q = jl_get(&j.d, v, "qual");
+            int rk = q >= 0 ? jl_get(&j.d, q, "ranking") : -1;
+            int rec = rk >= 0 ? jl_get(&j.d, rk, "record") : -1;
+            int w = num(&j, rec, "wins", 0), l = num(&j, rec, "losses", 0), t = num(&j, rec, "ties", 0);
+            int po = jl_get(&j.d, v, "playoff");
+            if (po >= 0 && j.d.t[po].type == JL_OBJ) {
+                int pr = jl_get(&j.d, po, "record");
+                w += num(&j, pr, "wins", 0);
+                l += num(&j, pr, "losses", 0);
+                t += num(&j, pr, "ties", 0);
+                char st[16];
+                home_json_str(&j, po, "status", st, sizeof st);
+                if (!strcmp(st, "won")) o->won++;
+            }
+            o->wins += w;
+            o->losses += l;
+            o->ties += t;
+            o->played += w + l + t;
+            int r = num(&j, rk, "rank", 0);
+            if (r > 0 && (!o->best_rank || r < o->best_rank)) {
+                o->best_rank = r;
+                o->best_of = num(&j, q, "num_teams", 0);
+            }
+        }
+        i = j.d.t[v].skip;
+    }
+    home_json_free(&j);
+    return ok;
+}
+
 /* ---- the poll ---- */
 
 static void say(tba_state_t *s, int status)
@@ -579,6 +631,8 @@ void home_tba_work(double now, bool want)
     pthread_mutex_unlock(&g_lock);
 
     tba_state_t *s = &t->work; /* the worker's own: only this thread touches it */
+    tba_season_t season = { 0 };
+    bool have_season = false;
     memset(s, 0, sizeof *s);
     s->team = team;
     time_t wall = time(NULL);
@@ -604,6 +658,16 @@ void home_tba_work(double now, bool want)
             else worst = st;
         }
         pick_event(ev, today, s);
+        /* the season's statuses with the events list (every ten minutes), and parsed whenever they're held */
+        ep_t *se = &t->ep[EP_SEASON];
+        snprintf(url, sizeof url, BASE "/team/frc%d/events/%d/statuses", team, s->year);
+        ep_aim(se, url);
+        if ((events_due || !se->body) && worst != 401) {
+            int st = ep_fetch(se, key);
+            if (st != 200 && st != 304 && st != 404) worst = st;
+        }
+        season.year = s->year;
+        have_season = se->body && parse_season(se, &season);
         if (s->have_event) {
             for (int i = 0; i < 3 && worst != 401; i++) {
                 ep_t *e = &t->ep[EP_MATCHES + i];
@@ -632,6 +696,10 @@ void home_tba_work(double now, bool want)
 
     pthread_mutex_lock(&g_lock);
     if (gen == t->cfg_gen) {
+        if (have_season) {
+            season.gen = t->season.gen + 1;
+            t->season = season;
+        }
         s->gen = t->st.gen + 1;
         t->st = *s;
         t->next_poll = now + next;
