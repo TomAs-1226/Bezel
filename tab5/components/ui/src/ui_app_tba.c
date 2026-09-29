@@ -91,12 +91,33 @@ static void clock_text(time_t t, char *out, size_t n)
     snprintf(out, n, "%s %02d:%02d", DAY[a.tm_wday], a.tm_hour, a.tm_min);
 }
 
-/* An alliance's line: a colour bar (amber red, ice blue: not status colours) and three team numbers. */
+/* The alliances' own colours: red and blue, as the field and every scoreboard draw them -- not the accent (ice is the
+ * owner's pick, violet today, which made the blue alliance violet) and not the status colours. A softer red than
+ * fault's and a clear blue, at one OKLCH lightness (0.68 dark, 0.57 light), in shared styles that follow the tone. */
+static lv_style_t st_alli[2];
+
+static void alli_theme(void)
+{
+    bool dark = bz_ui_dark();
+    lv_style_set_bg_color(&st_alli[0], bz_lv_rgb(dark ? 0xEF6661 : 0xD33B36));
+    lv_style_set_bg_color(&st_alli[1], bz_lv_rgb(dark ? 0x64A1EE : 0x3072D0));
+}
+
+/* An alliance's line: a colour bar and three team numbers. */
 static void side_build(lv_obj_t *parent, side_t *sd, int x, int y, bool blue)
 {
+    static bool init;
+    if (!init) {
+        init = true;
+        for (int i = 0; i < 2; i++) {
+            lv_style_init(&st_alli[i]);
+            lv_style_set_bg_opa(&st_alli[i], LV_OPA_COVER);
+        }
+        alli_theme();
+        bz_theme_on_change(alli_theme);
+    }
     sd->bar = bz_box(parent);
-    lv_obj_add_style(sd->bar, bz_style_fill(blue ? BZ_C_ICE : BZ_C_AMBER), 0);
-    lv_obj_set_style_bg_opa(sd->bar, LV_OPA_COVER, 0);
+    lv_obj_add_style(sd->bar, &st_alli[blue], 0);
     lv_obj_set_style_radius(sd->bar, 3, 0);
     lv_obj_set_size(sd->bar, 6, 24);
     lv_obj_set_pos(sd->bar, x, y + 2);
