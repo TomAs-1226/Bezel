@@ -261,6 +261,11 @@ static void bake(frost_t *f)
     }
 }
 
+/* Milliseconds since boot, for the starvation hold-off. LVGL's tick is the one clock both the tablet and
+ * the simulator already keep, and nothing here needs better than a tenth of a second. */
+static uint32_t now_ms(void) { return lv_tick_get(); }
+static uint32_t s_starved_until;
+
 const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa)
 {
     if (w <= 0 || h <= 0 || opa <= 0) return NULL;
@@ -287,6 +292,11 @@ const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa)
         if (f->refs <= 0 && (!oldest || f->age < oldest->age)) oldest = f;
     }
 
+    /* A surface already baked is free to hand out and was returned above; a new one costs an allocation
+     * and a bake, and while PSRAM is starved neither is worth attempting. */
+    if (s_starved_until && (int32_t)(now_ms() - s_starved_until) < 0) return NULL;
+    s_starved_until = 0;
+
     frost_t *f = free_slot;
     if (!f) {
         /* every slot taken: the unused one that has gone longest without being asked for goes */
@@ -299,7 +309,15 @@ const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa)
     f->px = BIG_ALLOC(n);
     if (!f->px) {
         memset(f, 0, sizeof *f);
-        return NULL; /* the caller keeps its flat fill, which is what it had before */
+        /* PSRAM is short. The caller keeps its flat fill, which is what it had before -- but it asks
+         * again on its next frame, and asking is not free: the slot it would have taken was handed back,
+         * so a surface that cannot fit is attempted sixty times a second, each attempt walking the heap.
+         * Worse, when the allocation *just* fits, it fits by evicting a surface that is itself wanted
+         * again a frame later, and each of those costs a bake -- tens of milliseconds. That trade is
+         * what the stalls were. So a failure is remembered: for the next second nothing is baked at all
+         * and every piece keeps its flat fill, which is honest, cheap and stable. */
+        s_starved_until = now_ms() + 1000;
+        return NULL;
     }
     f->rgb = (uint16_t *)f->px;
     f->alpha = f->px + (size_t)w * h * 2;
@@ -352,4 +370,27 @@ size_t bz_frost_bytes(void)
     for (int i = 0; i < FROST_MAX; i++)
         if (F[i].used) n += (size_t)F[i].w * F[i].h * 3;
     return n;
+}
+
+size_t bz_frost_trim(size_t want)
+{
+    /* Only surfaces nobody is showing: a piece still pointing at one would lose its background, which is
+     * the bug that made bz_frost count references in the first place. Biggest first -- the caller wants
+     * bytes back, and one 300 KB panel nobody is looking at is worth more than every pill on the screen.
+     * Dropping one is free; it is baked again if it is asked for, which is the trade being made. */
+    size_t got = 0;
+    while (got < want) {
+        frost_t *big = NULL;
+        for (int i = 0; i < FROST_MAX; i++) {
+            frost_t *f = &F[i];
+            if (!f->used || f->refs > 0) continue;
+            if (!big || (size_t)f->w * f->h > (size_t)big->w * big->h) big = f;
+        }
+        if (!big) break;
+        got += (size_t)big->w * big->h * 3;
+        BIG_FREE(big->px);
+        memset(big, 0, sizeof *big);
+    }
+    if (got) s_starved_until = 0; /* room again: bake when asked */
+    return got;
 }
