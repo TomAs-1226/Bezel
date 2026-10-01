@@ -1482,7 +1482,8 @@ static bool island_activities(double now)
         if (in_orb) lv_obj_add_flag(IS.mark, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_remove_flag(IS.mark, LV_OBJ_FLAG_HIDDEN);
     }
-    bool want_time = in_orb && small[0], want_icon = in_orb && !small[0];
+    /* while the words are out they carry the time: the orb shows the icon then, not the time a second time */
+    bool want_time = in_orb && small[0] && !(words && IS.until == 0), want_icon = in_orb && !want_time;
     if (want_time != !lv_obj_has_flag(IS.act_time, LV_OBJ_FLAG_HIDDEN)) {
         if (want_time) lv_obj_remove_flag(IS.act_time, LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(IS.act_time, LV_OBJ_FLAG_HIDDEN);
