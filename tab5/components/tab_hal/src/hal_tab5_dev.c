@@ -151,6 +151,23 @@ static unsigned long s_put_size;
 static size_t s_put_n;
 static uint32_t s_put_crc;
 
+/* The folders a file on the card goes in, made where missing: "put" to <sd>/CATOS/FONTS/THIN.BIN works on a card
+ * that has never had the folder. Only below the card's own root. */
+static void put_folders(const char *file)
+{
+    const char *sd = hal_sd_root();
+    size_t sl = sd ? strlen(sd) : 0;
+    if (!sd || strncmp(file, sd, sl) || file[sl] != '/' || strstr(file, "..")) return;
+    char d[sizeof s_put_path];
+    snprintf(d, sizeof d, "%s", file);
+    for (char *p = d + sl + 1; *p; p++)
+        if (*p == '/') {
+            *p = 0;
+            mkdir(d, 0755);
+            *p = '/';
+        }
+}
+
 static void c6_progress(size_t done, size_t total)
 {
     char m[64];
@@ -338,6 +355,7 @@ static void run(char *line)
             *sp = 0;
         }
         snprintf(s_put_path, sizeof s_put_path, "%s", line + 9);
+        put_folders(s_put_path);
         s_put = NULL;
         for (int t = 0; t < 20 && !s_put; t++) {
             if (t) vTaskDelay(pdMS_TO_TICKS(250));
