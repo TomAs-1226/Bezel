@@ -1,0 +1,11 @@
+# Internal RAM is the scarce memory: this component's statics are only touched by tasks, never from an
+# interrupt or by DMA, so they live in PSRAM (as ui's and catalyst's do).
+[scheme:intel_psram_bss]
+entries:
+    bss -> extern_ram
+    common -> extern_ram
+
+[mapping:intel_psram]
+archive: libintel.a
+entries:
+    * (intel_psram_bss)

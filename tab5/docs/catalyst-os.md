@@ -102,7 +102,8 @@ Two paths, chosen per motion:
 | assistant | `components/assist`, Catalyst Link | Claude via the PC or a key; GPT with a key. Each AI has its own long-term memory, the tablet's own tools, and shows its work on the island: docs/assistant.md |
 | audio | `hal_tab5_audio.c` | one speaker task mixing tones and streamed speech (48 kHz); microphones at 16 kHz, on only while the companion is on screen; ESP-SR WakeNet "Hi, ESP" from the `model` partition |
 | voice | `components/assist/src/voice.c` | the companion's own conversation: wake word or tap, energy VAD, OpenAI transcription, a JSON reply with a feeling, OpenAI speech streamed to the speaker |
-| match alerts | `ui_match.c`, `components/home/src/home_tba.c` | alarms before the team's matches from The Blue Alliance; schedule changes as notifications (below) |
+| match alerts | `ui_match.c`, `components/home/src/home_tba.c`, `components/intel` | alarms before the team's matches, timed by Nexus's live queue first and The Blue Alliance after it; schedule changes as notifications (below) |
+| intelligence | `components/intel`, `ui_intel.c` | Nexus, Statbotics and the robot's own network (aggregator, Limelights, Phoenix) on the home worker; insights from rules over everything the tablet knows, said on the island without nagging; the briefing; the ask bar (the insights app, the control center's tile, a long press on the orb): docs/intel.md |
 | log analysis | `components/assist/src/analyze.c`, `components/catalyst/src/cat_logs.c` | a log's digest read by a GPT pit engineer (below) |
 | battery fleet | `ui_batt.c`, `components/catalyst/src/cat_batt.c` | the team's batteries: which went in when, what the logs measured, which goes in next (below) |
 | home mode | `ui_home_mode.c`, `ui_home_np.c`, `ui_home_faces.c`, `ui_home_art.c`, `components/home` | three pages paged with a swipe: clock faces (dial, horizon, dots, words, moon; a flick up or down for the next; a dim night face 22:00–7:00 when asked for), the desk (time, today's sky, the PC's music, Home Assistant, the companion, a launcher: music, smart home, weather, calendar, timer, alarms, photos; and a photos screensaver), and now playing (the cover big on a surface tinted from it). Songs without art get a cover generated from their artist and album (`home_art.c`); comes up by hand, at boot, on the stand, or from an NFC tag on a Unit RFID 2 in Port A |
@@ -110,7 +111,9 @@ Two paths, chosen per motion:
 #### Match alerts
 
 An alarm before each of the team's matches at its current event (team from settings, key `TBA_API_KEY` in
-`CATOS/KEYS.ENV`), whatever is on screen.
+`CATOS/KEYS.ENV`), whatever is on screen. With `NEXUS_API_KEY` too, each match's times come from Nexus's live
+queue first (its estimated start and queue times, and "now queuing"), TBA's only where Nexus has nothing: see
+docs/intel.md, "The match alarms take Nexus's times first".
 
 - **Data.** `tba.h` on the home worker, as the blue alliance app uses it; `ui_match.c` only calls `tba_want()`
   once per background poll (every 2 min on an event day while a match of ours is to come, every 30 min otherwise,
