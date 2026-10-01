@@ -114,7 +114,14 @@ static void match_minute(const struct tm *tm, bool force)
     time_t when = 0;
     bool next = tba_next_match(&m, &when);
     int team = s ? s->team : 0;
+    hm_show(MT.time, next);
+    hm_show(MT.big_time, !next);
+    hm_show(MT.event, !next);
+    hm_show(MT.record, !next);
+    hm_show(MT.when, next);
+    hm_show(MT.at, next);
     if (next) {
+        lv_obj_set_pos(MT.head, MX, 196);
         hm_show(MT.hint, false);
         hm_show(MT.label, true);
         hm_show(MT.card, true);

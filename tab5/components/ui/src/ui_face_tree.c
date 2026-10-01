@@ -332,7 +332,7 @@ static void tree_minute(const struct tm *tm, bool force)
     hm_date(tm, d, sizeof d, false);
     ui_text(TR.date, "%s", d);
     if (season) {
-        ui_text(TR.what, "%s", "a branch for every match played, a fruit for every win");
+        ui_text(TR.what, "%s", "a branch for each match, a fruit for each win");
         if (se.best_rank)
             ui_text(TR.data, "%d \xc2\xb7 %d matches \xc2\xb7 %d won \xc2\xb7 best rank %d of %d", se.year, se.played,
                     se.wins, se.best_rank, se.best_of);

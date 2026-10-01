@@ -42,6 +42,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #define M 56                        /* the surface's side margin */
@@ -902,12 +903,16 @@ static void dots_build(void)
 static void dots_place(float p, bool recolor)
 {
     bool night = HM.night_on;
-    int tone = night ? 2 : bz_ui_dark() ? 0 : 1;
+    /* over a face that paints its own sky and land the faint dots would be lost: there they are a stronger grey */
+    int face = hm_faces_face();
+    bool scene = HM.page == HM_PG_CLOCK && (face == HM_FACE_SKY || face == HM_FACE_TREE);
+    int tone = night ? 2 : (bz_ui_dark() ? 0 : 1) + (scene ? 4 : 0);
     if (tone != DOTS.tone) {
         DOTS.tone = tone;
         recolor = true;
     }
     uint32_t ink = night ? 0x5A4C46 : bz_color(BZ_C_INK), faint = night ? 0x2A2320 : bz_color(BZ_C_FAINT);
+    if (scene && !night) faint = bz_mix(faint, ink, 0.4f);
     int x = 0;
     for (int i = 0; i < HM_NPAGES; i++) {
         float k = 1 - fabsf(p - (float)i);
@@ -2073,6 +2078,8 @@ static const char *const PROF_NAME[10] = { "stand+tag", "enter+slide", "faces", 
         if (d_ > s_prof_max[i]) s_prof_max[i] = d_;                                                                \
     } while (0)
 
+static int s_minute_late_ms = -1; /* how long after the minute turned the page on show was last brought up to it */
+
 static void hm_frame(double now, double dt, void *user)
 {
     (void)dt; (void)user;
@@ -2107,6 +2114,35 @@ static void hm_frame(double now, double dt, void *user)
         PROF(1, go_step(); slide_frame());
         if (HM.page == HM_PG_CLOCK && !SL.active && !ui_app_any_open() && !ui_asleep()) PROF(2, hm_faces_frame(now));
         PROF(3, night_tick(now));
+        /* The clock, from the wall clock, every frame: the second it turns over the page on show is brought up to
+         * it (the 10 Hz refresh alone was up to a tenth late, and did nothing under an app or a sheet, so a face
+         * came back showing the minute it was left in). Under an app it waits, and catches up the moment the app
+         * starts to close, before the surface is drawn again. */
+        {
+            static time_t last_s;
+            static long last_m = -1;
+            static bool stale;
+            time_t ts = time(NULL);
+            if (ts != last_s) {
+                last_s = ts;
+                long m = (long)(ts / 60);
+                bool covered = ui_app_any_open() || SL.active;
+                if (m != last_m) {
+                    last_m = m;
+                    stale = true;
+                } else if (!covered && hm_cfg()->seconds && HM.page == HM_PG_DESK) {
+                    refresh_clock();
+                }
+            }
+            if (stale && !ui_app_any_open() && !SL.active) {
+                stale = false;
+                hm_refresh_now();
+                bz_ui_keep_alive();
+                struct timeval tv;
+                gettimeofday(&tv, NULL);
+                s_minute_late_ms = (int)((tv.tv_sec % 60) * 1000 + tv.tv_usec / 1000);
+            }
+        }
     }
     PROF(4, cap_tick(now));
     PROF(5, home_presence_tick(now));
@@ -2209,6 +2245,7 @@ void ui_home_mode_dev(const char *a)
     } else if (!strncmp(a, "art", 3)) {
         hm_art_dev(a + 3);
     } else {
+        printf("hm: the last minute was shown %d ms after it turned\n", s_minute_late_ms);
         printf("hm: %s, page %d, face %s%s; sky %s, np %s, faces %s\n", HM.active ? "active" : "off", HM.page,
                HM_FACE_NAME[hm_faces_face() < 0 ? 0 : hm_faces_face()], HM.night_on ? " (night)" : "",
                HM.sky.px ? "held" : "free", hm_np_released() ? "free" : "held", hm_faces_released() ? "free" : "held");

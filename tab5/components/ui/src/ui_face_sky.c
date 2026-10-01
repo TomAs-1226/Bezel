@@ -194,7 +194,7 @@ static void sky_minute(const struct tm *tm, bool force)
         lv_obj_set_style_shadow_color(SK.sun, bz_lv_rgb(hpx_mix(warm, 0xFF8A30, 120)), 0);
         lv_obj_set_style_shadow_opa(SK.sun, dark ? 110 : 150, 0);
         hm_pos(SK.sun, (int)lroundf(sx) - 17, (int)lroundf(sy) - 17);
-        float by = SK_HOR + fminf(-(float)sun.elev * 3.0f, 110);
+        float by = SK_HOR + fminf(-(float)sun.elev * 3.0f, 70);
         lv_obj_set_style_border_color(SK.below, bz_lv_rgb(0xB4BCC7), 0);
         lv_obj_set_style_border_opa(SK.below, 110, 0);
         hm_pos(SK.below, (int)lroundf(sx) - 11, (int)lroundf(by) - 11);
