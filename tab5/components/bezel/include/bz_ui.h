@@ -175,7 +175,9 @@ void bz_ui_hooks_report(void);
  * where the shift put its copy) rather than making the whole list redraw. "carry 0" on the dev console
  * puts the old behaviour back, so both costs can be measured on one build. */
 void bz_ui_scroll_carry(bool on);
-void bz_ui_scroll_cut(bool on); /* "cut 0": lists carry opaque chrome through them as before (A/B timing) */
+void bz_ui_scroll_cut(bool on);
+/* One glass piece's surface baked ahead (idle time after start-up); true while there are more. */
+bool bz_ui_glass_prewarm_one(void); /* "cut 0": lists carry opaque chrome through them as before (A/B timing) */
 void bz_ui_trace_inv(int frames); /* log every invalidated area for this many frames */ /* logs each frame hook's time since the last call */
 /* Near-whole-screen invalidations since the last call, and the pixels they asked for: each one costs a
  * full LVGL redraw and a full-frame rotation (~90 ms together), so this is the number to watch. */

@@ -891,13 +891,48 @@ static void fb_copy_rect(int dst, int src, const bz_area_t *a)
     blk_copy(T.fb[dst], x, y, T.fb[src], x, y, w, h);
 }
 
+/* r less one writer: what is left of it, appended to out (at most four pieces); false if out would overflow */
+static bool area_less(const bz_area_t *r, const bz_area_t *w, bz_area_t *out, int *no, int max)
+{
+    if (w->x2 < r->x1 || w->x1 > r->x2 || w->y2 < r->y1 || w->y1 > r->y2) {
+        if (*no == max) return false;
+        out[(*no)++] = *r;
+        return true;
+    }
+    bz_area_t p[4];
+    int k = 0;
+    if (w->y1 > r->y1) p[k++] = (bz_area_t){ r->x1, r->y1, r->x2, (int16_t)(w->y1 - 1) };
+    if (w->y2 < r->y2) p[k++] = (bz_area_t){ r->x1, (int16_t)(w->y2 + 1), r->x2, r->y2 };
+    int16_t y1 = w->y1 > r->y1 ? w->y1 : r->y1, y2 = w->y2 < r->y2 ? w->y2 : r->y2;
+    if (w->x1 > r->x1) p[k++] = (bz_area_t){ r->x1, y1, (int16_t)(w->x1 - 1), y2 };
+    if (w->x2 < r->x2) p[k++] = (bz_area_t){ (int16_t)(w->x2 + 1), y1, r->x2, y2 };
+    if (*no + k > max) return false;
+    for (int i = 0; i < k; i++) out[(*no)++] = p[i];
+    return true;
+}
+
+/* Whether this frame writes all of r anyway: its areas and its scrolled rectangles, together. One of them
+ * whole was the old test, and a list scrolled in pieces (cut round the dock) failed it for every strip that
+ * crossed two pieces: each was caught up from the newest picture and then written over again, ~1.4 ms of a
+ * fling's frame. */
 static bool covered_by(const bz_area_t *r, const bz_present_t *areas, int n)
 {
     for (int j = 0; j < n; j++)
         if (covers(&areas[j].a, r)) return true;
     for (int j = 0; j < s_njscroll; j++)
         if (covers(&s_jscroll[j].a, r)) return true;
-    return false;
+    bz_area_t a[24], b[24];
+    int na = 1;
+    a[0] = *r;
+    for (int j = 0; j < n + s_njscroll && na; j++) {
+        const bz_area_t *w = j < n ? &areas[j].a : &s_jscroll[j - n].a;
+        int nb = 0;
+        for (int i = 0; i < na; i++)
+            if (!area_less(&a[i], w, b, &nb, 24)) return false; /* too fragmented to say: caught up */
+        memcpy(a, b, sizeof b[0] * (size_t)nb);
+        na = nb;
+    }
+    return na == 0;
 }
 
 /* buffer b made the newest picture, except where this frame writes anyway */
@@ -1409,9 +1444,18 @@ static void run_copy(uint16_t *fb, const uint16_t *src, int src_dy, int y0, int 
         nr = out;
         for (int i = 0; i < nr; i++) r[i] = q[i];
     }
-    for (int i = 0; i < nr; i++)
-        blk_copy_async(fb, r[i].x, r[i].y, src, r[i].x, r[i].y + src_dy, r[i].w, r[i].h);
+    for (int i = 0; i < nr; i++) {
+        /* a big block's rows split between both copiers, as a scroll's are ("dual 0" for one) */
+        if (s_scroll_dual && s_fbcpy2 && r[i].h >= 64 && r[i].w * r[i].h >= 65536) {
+            int h1 = r[i].h / 2;
+            blk_copy_async(fb, r[i].x, r[i].y, src, r[i].x, r[i].y + src_dy, r[i].w, h1);
+            blk_copy_async2(fb, r[i].x, r[i].y + h1, src, r[i].x, r[i].y + h1 + src_dy, r[i].w, r[i].h - h1);
+        } else {
+            blk_copy_async(fb, r[i].x, r[i].y, src, r[i].x, r[i].y + src_dy, r[i].w, r[i].h);
+        }
+    }
     fbcpy_wait();
+    fbcpy2_wait();
 }
 
 /* ---- the chrome held still through a slide, as its own pixels and nothing else ----
@@ -1441,6 +1485,8 @@ static struct {
     int npiece;
 } CM;
 
+static bool s_mask_on = true; /* dev console "mask 0": the chrome held as its rectangles, as before */
+void hal_slide_mask(bool on) { s_mask_on = on; }
 static void cm_reset(void) { CM.ready = false; }
 
 static void cm_sync(uint16_t *buf, int y0, int y1, int dir)
@@ -1456,7 +1502,7 @@ static void cm_build(const bz_area_t *chrome, int nchrome)
     CM.ready = true;
     CM.n = CM.ncore = CM.npiece = 0;
     if (!CM.span) CM.span = heap_caps_malloc(sizeof(cm_span_t) * CM_SPANS, MALLOC_CAP_SPIRAM);
-    CM.failed = !CM.span;
+    CM.failed = !CM.span || !s_mask_on;
     if (CM.failed) return;
     for (int i = 0; i < nchrome && i < BZ_SLIDE_CHROME; i++) {
         int x, y, w, h;

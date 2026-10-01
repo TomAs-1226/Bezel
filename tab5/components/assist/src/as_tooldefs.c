@@ -111,6 +111,31 @@ const as_tooldef_t AS_TOOLS[] = {
       "{\"type\":\"object\",\"properties\":{\"path\":{\"type\":\"string\",\"minLength\":2,"
       "\"maxLength\":120}},\"required\":[\"path\"],\"additionalProperties\":false}",
       AS_T_READ },
+    /* ---- the tablet's intelligence core and the event's live sources (intel.h, served through the ui) ---- */
+    { "insights",
+      "What the tablet's intelligence core has noticed right now, most important first (prio 3 act now, 2 worth a "
+      "look, 1 good to know), each with where it came from: the next match's prep (Nexus's queue time, the battery "
+      "to put in, a fault from the last run), the robot's last run (brownouts, a swerve module not following), CAN, "
+      "cameras, firmware, Nexus announcements, the day. Then today's briefing and which sources are connected. Start "
+      "here for \"what should I know\", \"anything wrong\", \"brief me\".",
+      "{\"type\":\"object\",\"properties\":{\"briefing\":{\"type\":\"boolean\"}},\"additionalProperties\":false}",
+      AS_T_READ },
+    { "event_live",
+      "The event live, beyond TBA's past: Nexus (the live queue: which match is queuing now, each of our matches' "
+      "status and estimated queue and start times, how many matches away, announcements, parts requests) and "
+      "Statbotics (our EPA, world and state rank this season, EPA and record at the event, each of our matches' "
+      "win probability and predicted score). Asks again when older than a minute or two; `refresh` true forces it. "
+      "TBA is the past, Nexus is the next ten minutes: use this for \"when do we queue\", \"are we next\", \"what "
+      "are our odds\".",
+      "{\"type\":\"object\",\"properties\":{\"refresh\":{\"type\":\"boolean\"}},\"additionalProperties\":false}",
+      AS_T_READ },
+    { "robot_network",
+      "The robot's own network, asked directly while it is connected: Systemcore's vision aggregator (every "
+      "Limelight, its address and whether it holds a NetworkTables session), each Limelight's REST status (fps, "
+      "temperature, cpu, pipeline) and CTRE's Phoenix diagnostics server (every device's model, id and firmware). "
+      "Absent services say so. Use it for camera trouble and firmware questions.",
+      "{\"type\":\"object\",\"properties\":{\"refresh\":{\"type\":\"boolean\"}},\"additionalProperties\":false}",
+      AS_T_READ },
     { "list_recordings",
       "The run recorder's own recordings on the tablet's card: name, size, length and channel count, "
       "newest first. These are 50 Hz CSVs the technician recorded, not robot logs -- list_logs is those.",
@@ -427,6 +452,8 @@ const char *as_tool_label(const char *name)
         { "get_batteries", "checking the batteries" }, { "list_snapshots", "reading the snapshots" },
         { "list_logs", "reading the logs" }, { "summarize_log", "reading a log" },
         { "tba_query", "asking The Blue Alliance" }, { "list_recordings", "reading the recordings" },
+        { "insights", "reading what the tablet noticed" }, { "event_live", "checking the live queue" },
+        { "robot_network", "asking the robot's network" },
         { "analyze_recording", "analysing a recording" }, { "get_states", "reading the state timelines" },
         { "systemcore_health", "asking Systemcore" }, { "motor_history", "reading motor history" },
         { "open_app", "opening an app" }, { "set_tablet", "changing the tablet" }, { "tablet_status", "checking the tablet" },

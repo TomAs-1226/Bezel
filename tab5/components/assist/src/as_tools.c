@@ -2353,6 +2353,10 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     else if (!strcmp(name, "analyze_recording")) r = t_analyze_recording(e, in, o, s, sn);
     else if (!strcmp(name, "get_states")) r = t_get_states(e, in, o, s, sn);
     else if (!strcmp(name, "tba_query")) r = t_tba_query(e, in, o, s, sn);
+    /* the intelligence core lives above assist (it needs home and the ui's data): its reads go through the
+     * handler the ui registered, which answers them on this worker (ui_actions.c) */
+    else if (!strcmp(name, "insights") || !strcmp(name, "event_live") || !strcmp(name, "robot_network"))
+        r = t_device(e, name, in, o, s, sn);
     else if (!strncmp(name, "code_", 5) || !strcmp(name, "list_patches") || !strcmp(name, "list_work_orders") ||
              !strcmp(name, "claude_sessions"))
         r = t_code(name, in, o, s, sn);

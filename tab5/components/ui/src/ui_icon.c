@@ -67,6 +67,7 @@ static const icon_def_t DEFS[] = {
     { "reference", BZ_I_MENU_BOOK, INDIGO, 0 },
     /* this tablet */
     { "assist", BZ_I_AUTO_AWESOME, VIOLET, MAGENTA },
+    { "insights", BZ_I_INSIGHTS, SKY, VIOLET },
     { "link", BZ_I_COMPUTER, INDIGO, 0 },
     { "pair pc", BZ_I_LINK, CYAN, 0 },
     { "companion", BZ_I_VISIBILITY, PINK, 0 },

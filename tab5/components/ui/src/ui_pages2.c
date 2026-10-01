@@ -1,5 +1,6 @@
 /* Devices, power, motion and the tools launcher. */
 #include "ui_internal.h"
+#include "ui_intel.h"
 #include "ui_home_mode.h"
 
 #include <math.h>
@@ -567,6 +568,7 @@ static const ui_app_entry_t APPS[] = {
     { &APP_RULER, "ruler", "mm, inches", 1 },
     { &APP_REF, "reference", "wiring, can", 1 },
     { &APP_ASSIST, "assist", "ai technician", 2 },
+    { &APP_INTEL, "insights", "ask, briefing", 2 },
     { &APP_LINK, "link", "pc, patches", 2 },
     { &APP_PAIR, "pair pc", "a code, once", 2 },
     { &APP_COMPANION, "companion", "desk mode", 2 },

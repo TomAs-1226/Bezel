@@ -10,6 +10,8 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
+#include <stdio.h>
 #define BIG_ALLOC(n) heap_caps_malloc((n), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)
 #define BIG_FREE(p) heap_caps_free(p)
 #else
@@ -101,7 +103,7 @@ static float profile(float x)
     if (x <= 0) return 0;
     if (x >= 1) return 1;
     float om = 1 - x, om4 = om * om * om * om;
-    return powf(1 - om4, 0.25f);
+    return sqrtf(sqrtf(1 - om4)); /* the fourth root: powf was a quarter of a bake */
 }
 
 static void bake(frost_t *f)
@@ -118,8 +120,40 @@ static void bake(frost_t *f)
     const uint32_t rimc = bz_pal->rim; /* the same rim light the compositor uses */
     const int rr = bz_r(rimc), rg = bz_g(rimc), rb = bz_b(rimc);
 
+    static const uint8_t BAYER[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
+    /* Deeper than the bevel every term but the top-lift is zero, and the lift depends on the row alone: those
+     * pixels are one colour a row (four, with the dither), filled rather than worked out. On a control-center
+     * panel that is most of it; the full distance-field work is only for the rim and the bevel. The first pull
+     * of the control center baked its panels this way at ~377 ms a frame, and the finger's drag was lost. */
+    int m = (int)ceilf(bw > r ? bw : r) + 1;
+    const uint8_t a_in = (uint8_t)(255 * f->opa / 255);
     for (int y = 0; y < h; y++) {
+        bool rows_in = y >= m && y < h - m && w > 2 * m;
+        uint16_t fill[4] = { 0, 0, 0, 0 };
+        if (rows_in) {
+            float k = 1.0f + 0.10f * (1 - (float)y / h);
+            int cr = (int)lrintf(br * k), cg = (int)lrintf(bg * k), cb = (int)lrintf(bb * k);
+            cr = cr > 255 ? 255 : cr;
+            cg = cg > 255 ? 255 : cg;
+            cb = cb > 255 ? 255 : cb;
+            for (int q = 0; q < 4; q++) {
+                int bay = BAYER[((y & 3) << 2) | q];
+                int r5 = (cr * 31 * 16 + bay * 255) / (255 * 16), g6 = (cg * 63 * 16 + bay * 255) / (255 * 16);
+                int b5 = (cb * 31 * 16 + bay * 255) / (255 * 16);
+                r5 = r5 > 31 ? 31 : r5;
+                g6 = g6 > 63 ? 63 : g6;
+                b5 = b5 > 31 ? 31 : b5;
+                fill[q] = (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+            }
+        }
         for (int x = 0; x < w; x++) {
+            if (rows_in && x == m) {
+                uint16_t *o = f->rgb + (size_t)y * w;
+                for (; x < w - m; x++) o[x] = fill[x & 3];
+                memset(f->alpha + (size_t)y * w + m, a_in, (size_t)(w - 2 * m));
+                x = w - m - 1;
+                continue;
+            }
             float d = sd_rrect(x + 0.5f, y + 0.5f, (float)w, (float)h, r);
             /* coverage: one pixel of antialiasing across the boundary, which the flat fill never had */
             float cov = 0.5f - d;
@@ -136,13 +170,20 @@ static void bake(frost_t *f)
             /* Which way this part of the edge faces, from the gradient of the distance field. Only the
              * vertical part is used: the light is above, as it is everywhere else in Bezel, so the top
              * edge catches it and the bottom edge falls away. */
-            float e = 0.75f;
-            float gy = sd_rrect(x + 0.5f, y + 0.5f + e, (float)w, (float)h, r) -
-                       sd_rrect(x + 0.5f, y + 0.5f - e, (float)w, (float)h, r);
-            float gx = sd_rrect(x + 0.5f + e, y + 0.5f, (float)w, (float)h, r) -
-                       sd_rrect(x + 0.5f - e, y + 0.5f, (float)w, (float)h, r);
-            float gl = sqrtf(gx * gx + gy * gy);
-            float ny = gl > 1e-6f ? gy / gl : 0;
+            /* (the field's gradient in closed form: radial in a corner, straight off an edge -- four more
+             * distance evaluations a pixel before) */
+            float ny;
+            {
+                float cx = x + 0.5f - w * 0.5f, cy = y + 0.5f - h * 0.5f;
+                float qx = fabsf(cx) - (w * 0.5f - r), qy = fabsf(cy) - (h * 0.5f - r);
+                float sy = cy < 0 ? -1.0f : 1.0f;
+                if (qx > 0 && qy > 0) {
+                    float ql = sqrtf(qx * qx + qy * qy);
+                    ny = ql > 1e-6f ? sy * qy / ql : 0;
+                } else {
+                    ny = qy >= qx ? sy : 0;
+                }
+            }
 
             /* a hairline rim right at the boundary, and a soft inner band behind it */
             float rt = (depth - 0.35f) / (1.5f - 0.35f);
@@ -206,7 +247,6 @@ static void bake(frost_t *f)
              * about the colour maths was wrong; the rounding was. A 4x4 ordered dither spreads each
              * channel's error over neighbouring pixels so the ramp survives, and since the output is
              * RGB565A8 rather than ARGB8888 it also costs three bytes a pixel instead of four. */
-            static const uint8_t BAYER[16] = { 0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5 };
             int bay = BAYER[((y & 3) << 2) | (x & 3)];
             int r5 = (cr * 31 * 16 + bay * 255) / (255 * 16);
             int g6 = (cg * 63 * 16 + bay * 255) / (255 * 16);
@@ -271,7 +311,14 @@ const lv_image_dsc_t *bz_frost(int w, int h, int radius, uint32_t base, int opa)
     f->opa = opa;
     f->age = frost_clock;
     f->refs = 1;
+#ifdef ESP_PLATFORM
+    int64_t t0 = esp_timer_get_time();
     bake(f);
+    int64_t us = esp_timer_get_time() - t0;
+    if (us > 10000) printf("frost: %dx%d r%d baked in %d ms\n", w, h, radius, (int)(us / 1000));
+#else
+    bake(f);
+#endif
 
     f->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
     f->dsc.header.cf = LV_COLOR_FORMAT_RGB565A8;

@@ -418,3 +418,68 @@ an_phase_t analyze_get(char **name, char **answer, char **digest, char *model, s
     pthread_mutex_unlock(&g_lock);
     return p;
 }
+
+/* ---- one plain answer, for other components' short jobs (the intelligence core's briefing summary) ---- */
+
+char *assist_complete(const char *system, const char *user, int timeout_ms, char *why, size_t wn)
+{
+    if (why && wn) why[0] = 0;
+    char url[192], hdr[400], model[48];
+    if (!assist_oai_endpoint(url, sizeof url, hdr, sizeof hdr, model, sizeof model)) {
+        memset(hdr, 0, sizeof hdr);
+        if (why) snprintf(why, wn, "no OpenAI key (OPENAI_API_KEY in KEYS.ENV, or settings > assistant)");
+        return NULL;
+    }
+    ab_t b;
+    ab_init(&b);
+    ab_puts(&b, "{\"model\":");
+    ab_str(&b, model);
+    ab_puts(&b, ",\"messages\":[{\"role\":\"system\",\"content\":");
+    ab_str(&b, system ? system : "");
+    ab_puts(&b, "},{\"role\":\"user\",\"content\":");
+    ab_str(&b, user ? user : "");
+    ab_puts(&b, "}]}");
+    char *body = b.oom ? NULL : ab_take(&b);
+    if (b.oom) ab_free(&b);
+    if (!body) {
+        memset(hdr, 0, sizeof hdr);
+        if (why) snprintf(why, wn, "out of memory");
+        return NULL;
+    }
+    hal_http_req_t rq = { .method = "POST", .url = url, .headers = hdr, .body = body, .body_len = strlen(body),
+                          .timeout_ms = timeout_ms > 0 ? timeout_ms : TIMEOUT_MS };
+    int status = -1;
+    char err[96] = "";
+    hal_http_t *h = hal_http_open(&rq, &status, err, sizeof err);
+    memset(hdr, 0, sizeof hdr); /* the key */
+    free(body);
+    if (!h) {
+        if (why) snprintf(why, wn, "couldn't reach OpenAI (%s)", err);
+        return NULL;
+    }
+    size_t len = 0;
+    char *resp = read_all(h, &len);
+    hal_http_close(h);
+    if (!resp) {
+        if (why) snprintf(why, wn, "out of memory");
+        return NULL;
+    }
+    if (status != 200) {
+        char em[160], code[48];
+        as_oai_error(resp, em, sizeof em, code, sizeof code);
+        if (why) {
+            if (status == 401) snprintf(why, wn, "OpenAI refused the key (401)");
+            else snprintf(why, wn, "OpenAI HTTP %d: %.90s", status, em);
+        }
+        free(resp);
+        return NULL;
+    }
+    aj_t *d = aj_parse(resp, len, NULL, 0);
+    free(resp);
+    const char *content = aj_gets(aj_get(aj_at(aj_get(d, "choices"), 0), "message"), "content");
+    char *answer = content && content[0] ? as_strdup(content) : NULL;
+    if (!answer && why) snprintf(why, wn, "the model's answer was empty");
+    aj_free(d);
+    if (answer) as_fold_text(answer);
+    return answer;
+}

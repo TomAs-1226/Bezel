@@ -613,8 +613,18 @@ static void say(tba_state_t *s, int status)
     else snprintf(s->err, sizeof s->err, "the blue alliance answered %d", status);
 }
 
+/* ---- the other live sources' turn (tba.h) ---- */
+
+static void (*volatile g_ext)(double now);
+
+void tba_ext_register(void (*fn)(double now)) { g_ext = fn; }
+
+void tba_ext_want(void) { home_kick(); }
+
 void home_tba_work(double now, bool want)
 {
+    void (*ext)(double) = g_ext;
+    if (ext) ext(now); /* whether or not TBA itself is wanted: they poll on their own clocks */
     pthread_mutex_lock(&g_lock);
     tb_t *t = tb();
     if (!t || !want || (!t->kick && now < t->next_poll)) {

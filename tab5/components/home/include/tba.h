@@ -116,6 +116,15 @@ bool tba_read(const char *path, char *out, size_t n);
 /* Whether tba_read would accept `path`. Pure: the tool's schema check and the tests use it. */
 bool tba_read_allowed(const char *path);
 
+/* Another service's turn on the home worker, for the event's other live sources (the intel component's
+ * Nexus, Statbotics and robot-network clients): no thread of their own. `fn` runs on every pass of the
+ * worker (~20 Hz) while it lives, and must do at most one blocking request per call so the PC's media and
+ * the rest keep their turns; `now` is hal_seconds(). tba_ext_want() starts the worker (or keeps it) for a
+ * few seconds more without polling The Blue Alliance: call it when a request is due, not continuously --
+ * the worker's stack is internal RAM while it lives. One registration; a second replaces the first. */
+void tba_ext_register(void (*fn)(double now));
+void tba_ext_want(void);
+
 #ifdef __cplusplus
 }
 #endif

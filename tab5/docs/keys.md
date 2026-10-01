@@ -44,7 +44,7 @@ LINK_TOKEN=...
 | `TBA_API_KEY` | `tba_key` | the blue alliance app | thebluealliance.com/account → Read API Keys (a read key, sent as `X-TBA-Auth-Key`) |
 | `HA_URL` | `ha_url` | home mode's Home Assistant tiles | your Home Assistant's address, e.g. `http://homeassistant.local:8123` (a trailing `/` is dropped) |
 | `HA_TOKEN` | `ha_token` | the same | Home Assistant → your profile → Security → Long-lived access tokens |
-| `NEXUS_API_KEY` | `nexus_key` | kept for later (header `Nexus-Api-Key`) | frc.nexus → your account → API |
+| `NEXUS_API_KEY` | `nexus_key` | the live queue (Nexus for FRC, header `Nexus-Api-Key`): the match alarms' times and "now queuing", the insights, the AIs' `event_live` (docs/intel.md) | frc.nexus → your account → API |
 | `FRC_EVENTS_USER` | `frc_ev_user` | kept for later | frc-events.firstinspires.org/services/API → register |
 | `FRC_EVENTS_TOKEN` | `frc_ev_token` | kept for later | the token FIRST emails after registering there |
 | `TEAM` | `team` | the team number everything looks for (robot address, the blue alliance) | your team number, 1–99999 |
