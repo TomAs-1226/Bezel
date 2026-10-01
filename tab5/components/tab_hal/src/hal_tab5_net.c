@@ -144,7 +144,7 @@ static struct {
     ws_set_t *set;
     SemaphoreHandle_t lock;
     bool loaded;
-    bool seeded;               /* something has been saved once: from then on only saved networks are joined */
+    char not_ssid[33];         /* kv wifi_not: a forgotten network the C6 may still hold; not joined, not adopted */
     volatile unsigned gen;
     char pend_ssid[33], pend_pass[65]; /* what hal_wifi_join was last given: saved if it gets an address */
     char want[33];             /* a saved network asked for by name (hal_wifi_join_saved), "" none */
@@ -156,6 +156,7 @@ static struct {
 } WS = { .join_slot = -1 };
 
 static void sta_tune(wifi_sta_config_t *s);
+static void net_refresh_soon(void);
 
 static volatile bool s_have_net; /* there is something to join: a saved network, or the C6's own (before any is saved) */
 
@@ -176,7 +177,7 @@ static bool ws_take(void)
             if (hal_kv_get(key, v, sizeof v)) ws_decode(v, &WS.set->n[i]);
         }
         memset(v, 0, sizeof v);
-        WS.seeded = hal_kv_get("wifi_seeded", v, sizeof v) && v[0] == '1';
+        if (!hal_kv_get("wifi_not", WS.not_ssid, sizeof WS.not_ssid)) WS.not_ssid[0] = 0;
         ESP_LOGI(TAG, "wi-fi: %d saved network%s", WS.set ? ws_count(WS.set) : 0, WS.set && ws_count(WS.set) == 1 ? "" : "s");
     }
     if (!WS.set) {
@@ -196,10 +197,6 @@ static void ws_store(int slot)
     ws_encode(&WS.set->n[slot], v, sizeof v);
     hal_kv_set(key, v);
     memset(v, 0, sizeof v);
-    if (!WS.seeded && WS.set->n[slot].ssid[0]) {
-        WS.seeded = true;
-        hal_kv_set("wifi_seeded", "1");
-    }
     WS.gen++;
 }
 
@@ -211,9 +208,8 @@ static bool ws_has(const char *ssid)
     return has;
 }
 
-/* The C6's own network may be joined as it stands: there is one, it isn't the factory's, and it is one the
- * tablet remembers (or nothing has been saved yet: the first start of this firmware, when the C6 holds the
- * owner's network and the set is empty). A forgotten network left in the C6 is not joined. */
+/* The C6's own network may be joined as it stands: there is one, it isn't the factory's, and it isn't one
+ * the owner has forgotten since (the C6 can't be made to forget it; kv wifi_not names it). */
 static bool c6_joinable(wifi_config_t *wc)
 {
     /* M5Stack's factory test leaves its line's network in the C6's NVS: that one doesn't count */
@@ -221,7 +217,7 @@ static bool c6_joinable(wifi_config_t *wc)
         !strcmp((const char *)wc->sta.ssid, "M5Stack-Production"))
         return false;
     if (!ws_take()) return true;
-    bool ok = !WS.seeded || ws_find(WS.set, (const char *)wc->sta.ssid) >= 0;
+    bool ok = strcmp(WS.not_ssid, (const char *)wc->sta.ssid) != 0;
     ws_give();
     return ok;
 }
@@ -229,6 +225,9 @@ static bool c6_joinable(wifi_config_t *wc)
 /* Whether there is anything to join. Kept as a flag: this is asked from the event loop's task, which must not
  * wait on the C6 (it used to ask the C6 for its config right there). Set by net_refresh(). */
 static bool wifi_has_network(void) { return s_have_net; }
+
+static volatile bool s_refresh_due; /* rssi_task works out s_have_net again (it asks the C6: not for the UI) */
+static void net_refresh_soon(void) { s_refresh_due = true; }
 
 static void net_refresh(void)
 {
@@ -720,6 +719,10 @@ static void rssi_task(void *arg)
             WS.save_due = false;
             save_joined();
         }
+        if (s_refresh_due) {
+            s_refresh_due = false;
+            net_refresh();
+        }
         if (WS.want[0] || WS.want_drop) {
             char ssid[33] = "", pass[65] = "";
             bool drop = WS.want_drop;
@@ -882,6 +885,10 @@ static void wifi_init(void)
             ESP_LOGW(TAG, "wi-fi: the C6 didn't give back the password for '%.32s': leaving its settings as they are",
                      (const char *)wc.sta.ssid);
         } else {
+            /* The network the C6 holds joins the ones the tablet remembers, password and all, before anything
+             * can replace it there: until this firmware, a second network cost the first one's password. (Not
+             * the factory's, and not one the owner forgot.) */
+            if (c6_joinable(&wc) && !ws_has((const char *)wc.sta.ssid)) hal_wifi_save((const char *)wc.sta.ssid, (const char *)wc.sta.password);
             sta_tune(&wc.sta);
             t = esp_wifi_set_config(WIFI_IF_STA, &wc);
         }
@@ -964,6 +971,11 @@ void hal_wifi_join(const char *ssid, const char *pass)
 {
     /* remembered once it gets an address (save_joined), not before: a wrong password is not worth keeping */
     if (ws_take()) {
+        if (!strcmp(WS.not_ssid, ssid)) { /* asked for again: no longer forgotten */
+            WS.not_ssid[0] = 0;
+            int probe = 0;
+            if (!esp_ptr_external_ram(&probe)) hal_kv_set("wifi_not", "");
+        }
         snprintf(WS.pend_ssid, sizeof WS.pend_ssid, "%s", ssid);
         memset(WS.pend_pass, 0, sizeof WS.pend_pass);
         snprintf(WS.pend_pass, sizeof WS.pend_pass, "%s", pass ? pass : "");
@@ -1062,9 +1074,13 @@ void hal_wifi_forget(const char *ssid)
     bool gone = ws_remove(WS.set, k);
     if (gone) {
         ws_store(k);
+        /* the C6 may hold it still: named, so it is neither joined from there nor taken back into the set */
+        snprintf(WS.not_ssid, sizeof WS.not_ssid, "%s", ssid);
+        hal_kv_set("wifi_not", WS.not_ssid);
         ESP_LOGW(TAG, "wi-fi: '%s' is forgotten (%d saved)", ssid, ws_count(WS.set));
     }
     ws_give();
+    net_refresh_soon();
     if (gone && !strcmp(N.ssid, ssid)) {
         WS.want_drop = true;
         if (N.rssi_task) xTaskNotifyGive(N.rssi_task);

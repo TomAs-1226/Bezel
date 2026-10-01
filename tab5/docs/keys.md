@@ -48,7 +48,7 @@ LINK_TOKEN=...
 | `FRC_EVENTS_USER` | `frc_ev_user` | kept for later | frc-events.firstinspires.org/services/API → register |
 | `FRC_EVENTS_TOKEN` | `frc_ev_token` | kept for later | the token FIRST emails after registering there |
 | `TEAM` | `team` | the team number everything looks for (robot address, the blue alliance) | your team number, 1–99999 |
-| `WIFI_SSID` | the Wi-Fi driver | joins that network and remembers it | your network's name |
+| `WIFI_SSID` | the saved networks (kv `wifi_s0`..`wifi_s15`) and the Wi-Fi driver | added to the networks the tablet remembers, beside the others, and joined when the name is new | your network's name |
 | `WIFI_PASS` | the Wi-Fi driver | its password; leave it out for an open network | |
 | `LINK_HOST` | `link_url` | Catalyst Link (`docs/link-api.md`): the pc's address, replacing the tablet's compiled-in default | Catalyst Link's console, or the pc's address on the pit LAN |
 | `LINK_TOKEN` | `link_token` | the same | pairing (`ui_app_pair.c`), or `catalyst-link token` on the pc |

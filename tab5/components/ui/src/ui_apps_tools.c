@@ -1404,6 +1404,7 @@ static void settings_refresh(void)
     st_saved_show(&n);
     if (n.up) ui_text(ST.wifi_state, "%s · %d dBm · %s", n.ssid, n.rssi, n.ip);
     else if (S.wifi_ssid[0]) ui_text(ST.wifi_state, "not connected · looking for %s", S.wifi_ssid);
+    else if (ST.nsaved) ui_text(ST.wifi_state, "not connected · no saved network in range yet");
     else ui_text(ST.wifi_state, "not connected · scan to pick a network");
     hal_tether_t t;
     hal_tether(&t);
