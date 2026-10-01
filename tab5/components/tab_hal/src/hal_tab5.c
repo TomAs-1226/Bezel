@@ -1747,6 +1747,57 @@ static void sheet_frame_do(int h, int sh, bool swapped, bool bottom)
 
 static void sheet_job(void) { sheet_frame_do(SJ.h, SJ.sh, SJ.swapped, SJ.bottom); }
 
+/* A push: both pictures move by h rows, the page begin took out and the neighbour in behind it (a landscape run
+ * of rows is one rectangle, so it is two DMA2D copies, as a sheet's frame), and the chrome held over them by its
+ * mask, as a slide's is: the page under each piece was drawn without it at the start. */
+static void push_frame_do(int h, bool from_bottom, const bz_area_t *chrome, int nchrome)
+{
+    const int H = HAL_H;
+    if (h < 8) h = 0; /* a sliver would be a DMA block a few pixels wide */
+    if (h > H - 8) h = H;
+    int b = fb_pick();
+    double tf0 = hal_seconds();
+    uint16_t *fb = T.fb[b];
+    fbcpy_wait();
+    if (from_bottom) {
+        lrows_copy(fb, 0, SLD.snap, h, H - h);
+        lrows_copy(fb, H - h, SLD.nb, 0, h);
+    } else {
+        lrows_copy(fb, 0, SLD.nb, H - h, h);
+        lrows_copy(fb, h, SLD.snap, 0, H - h);
+    }
+    fbcpy_wait();
+    double tc0 = hal_seconds();
+    if (nchrome) {
+        if (!CM.ready) cm_build(chrome, nchrome);
+        if (CM.failed) {
+            for (int i = 0; i < nchrome; i++) {
+                int x, y, w, hh;
+                portrait_rect(&chrome[i], &x, &y, &w, &hh);
+                rect_copy(fb, SLD.chrome, x, y, w, hh);
+            }
+        } else {
+            cm_draw(fb);
+        }
+    }
+    slide_note(tf0, hal_seconds() - tc0);
+    present_end(b);
+}
+
+static void push_job(void) { push_frame_do(SJ.h, SJ.bottom, SJ.chrome, SJ.n); }
+
+static void push_frame(int h, bool from_bottom, const bz_area_t *chrome, int nchrome)
+{
+    if (!SLD.active) return;
+    rot_wait(); /* the rows just patched are shown now, and the page under the chrome is the mask's other half */
+    present_sync();
+    SJ.h = h;
+    SJ.bottom = from_bottom;
+    SJ.n = nchrome < BZ_SLIDE_CHROME ? nchrome : BZ_SLIDE_CHROME;
+    for (int i = 0; i < SJ.n; i++) SJ.chrome[i] = chrome[i];
+    job_run(push_job);
+}
+
 static void sheet_frame(int h, int sh, bool swapped, bool bottom)
 {
     if (!SLD.active) return;
@@ -1810,7 +1861,8 @@ static void slide_settle(void)
 }
 
 static const bz_slide_ops_t SLIDE_OPS = { .begin = slide_begin, .patch = slide_patch, .frame = slide_frame, .end = slide_end,
-                                          .sheet = sheet_frame, .settle = slide_settle, .scroll = slide_scroll };
+                                          .sheet = sheet_frame, .push = push_frame, .settle = slide_settle,
+                                          .scroll = slide_scroll };
 #endif
 
 static void display_init(void)
@@ -1894,7 +1946,10 @@ bool hal_front_fb_copy(uint16_t *dst)
     if (J.task) xSemaphoreTake(J.idle, portMAX_DELAY);
     const uint16_t *src = T.fb[fb_latest()];
     size_t n = (size_t)PANEL_W * PANEL_H * 2;
-    esp_cache_msync((void *)src, n, ESP_CACHE_MSYNC_FLAG_DIR_M2C | ESP_CACHE_MSYNC_FLAG_UNALIGNED);
+    /* M2C refuses the UNALIGNED flag (the call fails and nothing is invalidated: the copy then read stale cache
+     * lines, and the shot came back as two or three frames sheared together). The frame buffer is the driver's,
+     * aligned, and n is whole cache lines. */
+    esp_cache_msync((void *)src, n, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
     /* In slices with a tick between them: one 1.8 MB CPU copy through the cache held PSRAM for ~50 ms on end,
      * and on the companion (wake word, microphones, the eyes' presents) a shot taken that way crashed the
      * tablet twice. A dev tool may be slow; it must not be the heaviest thing on the bus. */

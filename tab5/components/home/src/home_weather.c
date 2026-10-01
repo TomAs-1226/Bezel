@@ -52,6 +52,18 @@ void home_weather_config(const char *where, bool fahrenheit)
     pthread_mutex_unlock(&g_lock);
 }
 
+bool home_weather_where(double *lat, double *lon)
+{
+    pthread_mutex_lock(&g_lock);
+    bool ok = X && X->have_ll;
+    if (ok) {
+        *lat = X->lat;
+        *lon = X->lon;
+    }
+    pthread_mutex_unlock(&g_lock);
+    return ok;
+}
+
 void home_weather_get(home_weather_t *out)
 {
     pthread_mutex_lock(&g_lock);

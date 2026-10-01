@@ -32,6 +32,7 @@
 
 #include "home_px.h"
 #include "ui_companion.h"
+#include "ui_home_face.h"
 #include "ui_intel.h"
 #include "voice.h"
 
@@ -41,6 +42,7 @@
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/time.h>
 #include <time.h>
 
 #define M 56                        /* the surface's side margin */
@@ -125,10 +127,27 @@ hm_cfg_t *hm_cfg(void)
     CFG->seconds = kv_bool("hm_secs", false);
     CFG->tint = kv_bool("hm_bg", false);
     CFG->art_tint = kv_bool("hm_art", true);
-    CFG->faces = kv_int("hm_faces", HM_FACES_ALL) & HM_FACES_ALL;
+    /* the faces by name ("hm_fset" "type,flip,dial", "hm_fshow" "type"), so their order can change; the first
+     * round's numbered keys are read once for the face shown */
+    char fs[200];
+    CFG->faces = 0;
+    if (hal_kv_get("hm_fset", fs, sizeof fs) && fs[0]) {
+        char *save = NULL;
+        for (char *tok = strtok_r(fs, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            int f = hm_face_by_name(tok);
+            if (f >= 0 && f < HM_NFACES) CFG->faces |= 1 << f;
+        }
+    }
     if (!CFG->faces) CFG->faces = HM_FACES_ALL;
-    CFG->face = kv_int("hm_face", HM_FACE_DIAL);
-    if (CFG->face < 0 || CFG->face >= HM_NFACES) CFG->face = HM_FACE_DIAL;
+    CFG->face = -1;
+    if (hal_kv_get("hm_fshow", fs, sizeof fs)) CFG->face = hm_face_by_name(fs);
+    if (CFG->face < 0) {
+        static const char *const OLD[5] = { "dial", "horizon", "dots", "words", "moon" };
+        int o = kv_int("hm_face", -1);
+        CFG->face = o >= 0 && o < 5 ? hm_face_by_name(OLD[o]) : HM_FACE_TYPE;
+    }
+    if (CFG->face < 0 || CFG->face >= HM_NFACES) CFG->face = HM_FACE_TYPE;
+    if (!(CFG->faces >> CFG->face & 1)) CFG->faces |= 1 << CFG->face;
     CFG->open_page = kv_int("hm_open", HM_PG_DESK);
     if (CFG->open_page < 0 || CFG->open_page >= HM_NPAGES) CFG->open_page = HM_PG_DESK;
     CFG->night = kv_bool("hm_night", false);
@@ -174,8 +193,13 @@ void hm_cfg_save(void)
     hal_kv_set("hm_secs", c->seconds ? "1" : "0");
     hal_kv_set("hm_bg", c->tint ? "1" : "0");
     hal_kv_set("hm_art", c->art_tint ? "1" : "0");
-    kv_set_int("hm_faces", c->faces);
-    kv_set_int("hm_face", c->face);
+    char fs[200];
+    int k = 0;
+    fs[0] = 0;
+    for (int i = 0; i < HM_NFACES; i++)
+        if (c->faces >> i & 1) k += snprintf(fs + k, sizeof fs - (size_t)k, "%s%s", k ? "," : "", HM_FACE_NAME[i]);
+    hal_kv_set("hm_fset", fs);
+    hal_kv_set("hm_fshow", c->face >= 0 && c->face < HM_NFACES ? HM_FACE_NAME[c->face] : "type");
     kv_set_int("hm_open", c->open_page);
     hal_kv_set("hm_night", c->night ? "1" : "0");
     hal_kv_set("hm_dsec", c->dial_secs ? "1" : "0");
@@ -389,7 +413,7 @@ static const hm_app_t LAUNCH[] = {
 #define NLAUNCH ((int)(sizeof LAUNCH / sizeof LAUNCH[0]))
 
 static struct {
-    lv_obj_t *root, *pg[HM_NPAGES], *dots, *dot[HM_NPAGES];
+    lv_obj_t *root, *pg[HM_NPAGES];
     int page;                      /* the page on screen */
     lv_obj_t *desk, *greet, *clock_row, *clock, *secs, *date, *match;
     lv_obj_t *wx, *wx_img, *wx_temp, *wx_line, *wx_place;
@@ -838,18 +862,104 @@ void hm_look_changed(void)
     hm_faces_look();
 }
 
-/* ---- the page dots ---- */
+/* ---- the page dots ----
+ * Where you are among the pages, on screen for as long as home mode is: on the top layer, so a page slide holds
+ * them still over both pages (a slide keeps the top layer's pieces where they are, bz_ui_slide_begin) and a face's
+ * push does too, instead of their sliding away with the page they were drawn on. Small and quiet (8 px, the
+ * current one a 22 px pill in ink, the others faint) at the foot of the screen, below everything the pages put
+ * there. When the page changes the pill moves over on a spring, which redraws only the dots' own 54 x 8 px. */
+static struct {
+    lv_obj_t *row, *dot[HM_NPAGES];
+    bz_motion_t p;             /* where the pill is, in pages */
+    int w[HM_NPAGES], x[HM_NPAGES];
+    uint32_t col[HM_NPAGES];
+    bool shown;
+    int tone;                  /* the colours were set for: 0 dark, 1 light, 2 night (-1 none) */
+} DOTS = { .tone = -1 };
 
-static void dots_set(int page)
+static void dots_build(void)
 {
+    DOTS.row = bz_box(bz_ui_glass());
+    lv_obj_set_size(DOTS.row, 8 * HM_NPAGES + 14 + 8 * (HM_NPAGES - 1), 8);
+    lv_obj_set_pos(DOTS.row, (W - lv_obj_get_width(DOTS.row)) / 2, DOTS_Y);
+    lv_obj_remove_flag(DOTS.row, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(DOTS.row, LV_OBJ_FLAG_HIDDEN);
+    /* first among the top layer's children: the slides and pushes that hide the chrome for a band count only the
+     * first 32 of them */
+    lv_obj_move_to_index(DOTS.row, 0);
     for (int i = 0; i < HM_NPAGES; i++) {
-        bool on = i == page;
-        lv_obj_set_size(HM.dot[i], on ? 22 : 8, 8);
-        lv_obj_set_style_bg_color(HM.dot[i], bz_lv(on ? BZ_C_INK : BZ_C_FAINT), 0);
+        lv_obj_t *o = bz_box(DOTS.row);
+        lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+        lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+        lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
+        DOTS.dot[i] = o;
+        DOTS.w[i] = DOTS.x[i] = -1;
     }
-    lv_obj_update_layout(HM.dots);
-    lv_obj_align(HM.dots, LV_ALIGN_TOP_MID, 0, DOTS_Y);
-    hm_show(HM.dots, !HM.night_on);
+    bz_motion_init(&DOTS.p, (float)HM.page, 0.002f);
+    DOTS.p.keep = true;
+}
+
+/* the dots for the pill at p: each dot's width by how near the pill is, the widths always summing the same */
+static void dots_place(float p, bool recolor)
+{
+    bool night = HM.night_on;
+    /* over a face that paints its own sky and land the faint dots would be lost: there they are a stronger grey */
+    int face = hm_faces_face();
+    bool scene = HM.page == HM_PG_CLOCK && (face == HM_FACE_SKY || face == HM_FACE_TREE);
+    int tone = night ? 2 : (bz_ui_dark() ? 0 : 1) + (scene ? 4 : 0);
+    if (tone != DOTS.tone) {
+        DOTS.tone = tone;
+        recolor = true;
+    }
+    uint32_t ink = night ? 0x5A4C46 : bz_color(BZ_C_INK), faint = night ? 0x2A2320 : bz_color(BZ_C_FAINT);
+    if (scene && !night) faint = bz_mix(faint, ink, 0.4f);
+    int x = 0;
+    for (int i = 0; i < HM_NPAGES; i++) {
+        float k = 1 - fabsf(p - (float)i);
+        k = k < 0 ? 0 : k;
+        int w = 8 + (int)lroundf(14 * k);
+        if (w != DOTS.w[i] || x != DOTS.x[i]) {
+            lv_obj_set_size(DOTS.dot[i], w, 8);
+            lv_obj_set_pos(DOTS.dot[i], x, 0);
+            DOTS.w[i] = w;
+            DOTS.x[i] = x;
+        }
+        uint32_t c = hpx_mix(faint, ink, (int)(k * 256));
+        if (c != DOTS.col[i] || recolor) {
+            DOTS.col[i] = c;
+            lv_obj_set_style_bg_color(DOTS.dot[i], bz_lv_rgb(c), 0);
+        }
+        x += w + 8;
+    }
+}
+
+/* the page the dots point at: at once, or the pill moving over */
+static void dots_go(int page, bool animate)
+{
+    if (!DOTS.row) return;
+    if (animate) bz_motion_to(&DOTS.p, (float)page, BZ_RELEASE);
+    else {
+        bz_motion_set(&DOTS.p, (float)page, 0);
+        bz_motion_to(&DOTS.p, (float)page, BZ_RELEASE);
+        dots_place((float)page, true);
+    }
+}
+
+/* every frame: shown while home mode is what's on screen (not under an app or the photos, not in catalyst mode),
+ * and the pill's spring */
+static void dots_frame(void)
+{
+    if (!DOTS.row) return;
+    bool show = HM.active && !ui_app_any_open() && !HM.saver_on;
+    if (show != DOTS.shown) {
+        DOTS.shown = show;
+        hm_show(DOTS.row, show);
+        if (show) dots_place(DOTS.p.value, true);
+    }
+    if (!show || SL.active) return;
+    bool moving = bz_motion_tick(&DOTS.p);
+    dots_place(DOTS.p.value, false);
+    if (moving) bz_ui_keep_alive();
 }
 
 static void build(void)
@@ -893,15 +1003,8 @@ static void build(void)
     build_home(d);
     build_launcher(d);
 
-    /* where you are among the pages */
-    HM.dots = bz_row(r, 8);
-    for (int i = 0; i < HM_NPAGES; i++) {
-        lv_obj_t *o = bz_box(HM.dots);
-        lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
-        HM.dot[i] = o;
-    }
-    dots_set(HM.page);
+    /* where you are among the pages: on the top layer (dots_build) */
+    dots_build();
 
     HM.built = true;
     hm_layout();
@@ -1369,14 +1472,12 @@ static void slide_prep(bool before, void *u)
     if (before) {
         hm_show(HM.pg[HM.page], false);
         hm_show(HM.pg[p], true);
-        dots_set(p);
         SL.chrome = 0;
         chrome_hide(true);
     } else {
         chrome_restore();
         hm_show(HM.pg[p], false);
         hm_show(HM.pg[HM.page], true);
-        dots_set(HM.page);
     }
 }
 
@@ -1411,7 +1512,6 @@ static void page_quiet(void *u)
     hm_show(HM.pg[HM.page], false);
     hm_show(HM.pg[p], true);
     HM.page = p;
-    dots_set(p);
 }
 
 /* the page p on screen, now (a redraw of the whole screen: for when nothing is moving to hide it) */
@@ -1421,7 +1521,7 @@ static void page_set(int p)
     hm_show(HM.pg[HM.page], false);
     hm_show(HM.pg[p], true);
     HM.page = p;
-    dots_set(p);
+    dots_go(p, true);
     page_refresh(p, true);
 }
 
@@ -1561,6 +1661,7 @@ static void slide_frame(void)
     int aim = SL.aim;
     if (aim != HM.page) bz_ui_quiet(page_quiet, (void *)(intptr_t)aim);
     bz_ui_slide_end();
+    dots_go(HM.page, true);
     page_refresh(HM.page, true);
 }
 
@@ -1601,8 +1702,8 @@ static void open_page(void)
         hm_show(HM.pg[HM.page], false);
         hm_show(HM.pg[p], true);
         HM.page = p;
-        dots_set(p);
     }
+    dots_go(HM.page, false);
 }
 
 static void go(bool enter)
@@ -1827,7 +1928,7 @@ static void night_tick(double now)
         left = now;
         hm_faces_set(HM.night_face >= 0 && HM.night_face < HM_NFACES ? HM.night_face : hm_cfg()->face);
         page_set(HM.night_page);
-        dots_set(HM.page);
+        dots_go(HM.page, false);
         return;
     }
     if (now < next) return;
@@ -1842,7 +1943,7 @@ static void night_tick(double now)
     HM.night_face = hm_faces_face();
     hm_faces_set(HM_FACE_NIGHT);
     page_set(HM_PG_CLOCK);
-    dots_set(HM.page);
+    dots_go(HM.page, false);
 }
 
 /* The eyes: blinks on a spring (now and then a double), a gaze that wanders and settles, and on power a
@@ -1977,6 +2078,8 @@ static const char *const PROF_NAME[10] = { "stand+tag", "enter+slide", "faces", 
         if (d_ > s_prof_max[i]) s_prof_max[i] = d_;                                                                \
     } while (0)
 
+static int s_minute_late_ms = -1; /* how long after the minute turned the page on show was last brought up to it */
+
 static void hm_frame(double now, double dt, void *user)
 {
     (void)dt; (void)user;
@@ -2011,13 +2114,42 @@ static void hm_frame(double now, double dt, void *user)
         PROF(1, go_step(); slide_frame());
         if (HM.page == HM_PG_CLOCK && !SL.active && !ui_app_any_open() && !ui_asleep()) PROF(2, hm_faces_frame(now));
         PROF(3, night_tick(now));
+        /* The clock, from the wall clock, every frame: the second it turns over the page on show is brought up to
+         * it (the 10 Hz refresh alone was up to a tenth late, and did nothing under an app or a sheet, so a face
+         * came back showing the minute it was left in). Under an app it waits, and catches up the moment the app
+         * starts to close, before the surface is drawn again. */
+        {
+            static time_t last_s;
+            static long last_m = -1;
+            static bool stale;
+            time_t ts = time(NULL);
+            if (ts != last_s) {
+                last_s = ts;
+                long m = (long)(ts / 60);
+                bool covered = ui_app_any_open() || SL.active;
+                if (m != last_m) {
+                    last_m = m;
+                    stale = true;
+                } else if (!covered && hm_cfg()->seconds && HM.page == HM_PG_DESK) {
+                    refresh_clock();
+                }
+            }
+            if (stale && !ui_app_any_open() && !SL.active) {
+                stale = false;
+                hm_refresh_now();
+                bz_ui_keep_alive();
+                struct timeval tv;
+                gettimeofday(&tv, NULL);
+                s_minute_late_ms = (int)((tv.tv_sec % 60) * 1000 + tv.tv_usec / 1000);
+            }
+        }
     }
     PROF(4, cap_tick(now));
     PROF(5, home_presence_tick(now));
     PROF(6, saver_tick());
     PROF(8, eyes_tick(now));
     PROF(9, voice_tick(now));
-    PROF(7, if (HM.page == HM_PG_DESK) roll_tick(); press_tick());
+    PROF(7, if (HM.page == HM_PG_DESK) roll_tick(); press_tick(); dots_frame());
 }
 
 /* Home mode, on the control center. The header has always said a toggle belonged there ("home" /
@@ -2042,7 +2174,11 @@ void ui_home_mode_cc_add(void)
 /* ---- the dev console: "hm ..." ----
  *   hm                      where it is: the page, the face, night, the pictures' memory
  *   hm page 0|1|2           a page (the clock faces, the desk, now playing), as a swipe would bring it
- *   hm face dial|horizon|dots|words|moon|night   that face, on the clock page
+ *   hm face <name>          that face, on the clock page (type flip dial chrono sky moon orrery tree match words
+ *                           night)
+ *   hm step up|down         the next or the previous face, as a flick up or down brings it
+ *   hm faces                where the faces are: the one shown, a step under way, pictures still held
+ *   hm tree                 what the tree shows: its growth, fruit, month, wind and weather
  *   hm night 1|0|auto       night forced on or off, or back to the clock's say
  *   hm song a|b|t, hm song off   a made-up song as the PC's (artist|album|title), for its cover and tint
  *   hm art [bench|style X]  the covers: what's cached, their timing, every generated one in one style
@@ -2054,12 +2190,10 @@ void ui_home_mode_dev(const char *a)
         if (!HM.active) ui_home_mode_enter();
         hm_go(atoi(a + 4));
         printf("hm: page %d\n", atoi(a + 4));
-    } else if (!strncmp(a, "face", 4)) {
+    } else if (!strncmp(a, "face", 4) && strncmp(a, "faces", 5)) {
         const char *s = a + 4;
         while (*s == ' ') s++;
-        int f = *s >= '0' && *s <= '9' ? atoi(s) : -1;
-        for (int i = 0; i <= HM_NFACES && f < 0; i++)
-            if (!strcmp(s, HM_FACE_NAME[i])) f = i;
+        int f = *s >= '0' && *s <= '9' ? atoi(s) : hm_face_by_name(s);
         if (f < 0 || f > HM_FACE_NIGHT) {
             printf("hm: no face \"%s\"\n", s);
             return;
@@ -2067,10 +2201,15 @@ void ui_home_mode_dev(const char *a)
         hm_faces_set(f);
         if (f < HM_NFACES) {
             hm_cfg()->face = f;
+            hm_cfg()->faces |= 1 << f;
             hm_cfg_save();
         }
         if (HM.active && HM.page != HM_PG_CLOCK) hm_go(HM_PG_CLOCK);
         printf("hm: face %s\n", HM_FACE_NAME[f]);
+    } else if (!strncmp(a, "step", 4) || !strncmp(a, "faces", 5)) {
+        hm_faces_dev(a);
+    } else if (!strncmp(a, "tree", 4)) {
+        hm_tree_dev();
     } else if (!strncmp(a, "night", 5)) {
         const char *s = a + 5;
         while (*s == ' ') s++;
@@ -2106,6 +2245,7 @@ void ui_home_mode_dev(const char *a)
     } else if (!strncmp(a, "art", 3)) {
         hm_art_dev(a + 3);
     } else {
+        printf("hm: the last minute was shown %d ms after it turned\n", s_minute_late_ms);
         printf("hm: %s, page %d, face %s%s; sky %s, np %s, faces %s\n", HM.active ? "active" : "off", HM.page,
                HM_FACE_NAME[hm_faces_face() < 0 ? 0 : hm_faces_face()], HM.night_on ? " (night)" : "",
                HM.sky.px ? "held" : "free", hm_np_released() ? "free" : "held", hm_faces_released() ? "free" : "held");

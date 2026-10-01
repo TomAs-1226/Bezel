@@ -122,7 +122,8 @@ static void bench(uint32_t *work)
 static void *worker(void *arg)
 {
     (void)arg;
-    uint32_t *work = malloc(sizeof(uint32_t) * HOME_ART_L * HOME_ART_L);
+    /* the covers' working picture (518 KB) only once a cover is to be painted: a clock face's job needs none */
+    uint32_t *work = NULL;
     for (;;) {
         pthread_mutex_lock(&A.lock);
         hm_art_t *e = NULL;
@@ -145,6 +146,12 @@ static void *worker(void *arg)
             continue;
         }
         bool ben = !e && !hero && A.bench_want == 1;
+        if ((e || hero || ben) && !work) {
+            pthread_mutex_unlock(&A.lock);
+            work = malloc(sizeof(uint32_t) * HOME_ART_L * HOME_ART_L);
+            if (work) continue; /* and look again, with it: the queue may have moved meanwhile */
+            pthread_mutex_lock(&A.lock);
+        }
         if (!work || (!e && !hero && !ben)) {
             /* nothing left (or no memory for the working picture: the jobs are dropped, and asked for again) */
             for (int i = 0; i < NART; i++)

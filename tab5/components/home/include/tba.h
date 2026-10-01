@@ -94,6 +94,17 @@ bool tba_next_match(tba_match_t *out, time_t *when);
  * *offline as in tba_state_t, event_key ("" none) may be NULL. */
 tba_phase_t tba_upcoming(tba_match_t *out, int max, int *n, bool *live, bool *offline, char *event_key, size_t kn);
 
+/* The team's whole season so far, from every event's status (/team/frcN/events/YYYY/statuses, fetched with the
+ * events list, every ten minutes while anything polls): home mode's tree grows with it. False: nothing yet. */
+typedef struct {
+    int year, events;          /* events with a status: attended, or under way */
+    int played, wins, losses, ties; /* qualification and playoff matches together */
+    int best_rank, best_of;    /* the best qualification rank, and of how many teams; 0 none yet */
+    int won;                   /* events won */
+    unsigned gen;
+} tba_season_t;
+bool tba_season(tba_season_t *out);
+
 /* A read of one whitelisted endpoint, for the assistant (assist.h's tba reader). `path` is a path
  * under /api/v3 beginning with '/', and only the shapes tba_read_allowed() lists are fetched -- the
  * key must never become a general-purpose proxy for whatever text a language model produces. The

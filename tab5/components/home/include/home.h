@@ -147,6 +147,8 @@ void home_weather_get(home_weather_t *out);
 void home_weather_forecast(home_forecast_t *out);
 void home_weather_refresh(void);                    /* read it again now (the weather app's "refresh") */
 const char *home_weather_text(int code);            /* "clear", "rain", ... */
+/* where the weather is for, once the place has been resolved (false until then): the clock faces' sun and sky */
+bool home_weather_where(double *lat, double *lon);
 
 /* ---- the music player: MP3 and WAV from <sd>/CATOS/AUDIO, out through hal_play.h ---- */
 #define HOME_TRACKS 64

@@ -59,6 +59,10 @@ typedef struct bz_slide_ops {
      * show it by its first h rows. `swapped` (closing a sheet that was on the glass): the sheet is the
      * snapshot begin took, and the page's rows it uncovers are the neighbour. */
     void (*sheet)(int h, int sh, bool swapped, bool bottom);
+    /* A push, a sheet's vertical twin of a slide (optional): the whole screen moves, the picture begin took by
+     * h rows (up with from_bottom, else down) and the neighbour following it in by the same h, with the
+     * chrome begin was given held still over both. */
+    void (*push)(int h, bool from_bottom, const bz_area_t *chrome, int nchrome);
     /* Both of the panel's buffers made what is on the glass now, so drawing can carry on in areas. */
     void (*settle)(void);
     /* A list scrolled: the landscape rect's pixels move by dy rows in the next present, copied in the
