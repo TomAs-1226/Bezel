@@ -36,6 +36,10 @@
 #define BAR_H 76                        /* the prompt bar under the transcript */
 #define TLIST_H (APP_H - BAR_H - BZ_GAP)
 #define VIEW_MAX 60                     /* transcript rows kept as objects; older ones leave */
+/* ...and what those rows may hold between them. One ordinary answer is a few KB, so this is dozens of
+ * turns of normal conversation; it only bites on answers carrying charts, tables and drawings, which are
+ * exactly the ones that used to empty the heap. */
+#define VIEW_BYTES (1024u * 1024u)
 #define CORE_H 330
 #define MEM_BTN 64                      /* the memory button in the prompt bar: an icon */
 #define CHIPS_W (TW - 20 - 2 * 128 - 16 - MEM_BTN - 8) /* the suggestions' share of the prompt bar */
@@ -143,6 +147,7 @@ typedef struct {
     lv_obj_t *row, *text, *mark;
     lv_obj_t *rich;      /* the rendered answer, once it has stopped arriving */
     uint32_t rich_rev;   /* what was rendered, so a settled answer is drawn once and not per frame */
+    size_t bytes;        /* what this row's widgets cost in LVGL's heap, measured either side of filling it */
 } view_t;
 
 static struct {
@@ -179,6 +184,14 @@ static void view_clear(void)
 {
     for (int i = 0; i < AS.nv; i++) lv_obj_delete(AS.v[i].row);
     AS.nv = 0;
+}
+
+/* What the rows on show are holding, for the memory cap in sync_transcript. */
+static size_t view_bytes(void)
+{
+    size_t n = 0;
+    for (int i = 0; i < AS.nv; i++) n += AS.v[i].bytes;
+    return n;
 }
 
 static void view_drop_front(void)
@@ -299,7 +312,7 @@ static void view_rich(view_t *v, const as_entry_t *e)
  * once the conversation has stopped writing. It may have nothing to do — the caller hands it every row,
  * not only the ones whose text changed, because a settled answer waiting for the renderer looks exactly
  * like a row that has not moved. */
-static void view_fill(view_t *v, const as_entry_t *e, as_phase_t ph)
+static void view_fill_inner(view_t *v, const as_entry_t *e, as_phase_t ph)
 {
     bool fresh = v->rev != e->rev;
     if (!fresh && (v->kind != AS_E_TEXT || v->rich_rev == e->rev)) return;
@@ -349,6 +362,23 @@ static void view_fill(view_t *v, const as_entry_t *e, as_phase_t ph)
     if (v->mark) bz_mark_set(v->mark, tool_status(e->tool_state));
 }
 
+/* What a row costs, measured rather than counted, around the one function that builds its widgets.
+ *
+ * A rendered answer is not one label: it is a paragraph per block, a span group per bold run, a table's
+ * cells, a chart, and a drawing's canvas. One turn of the sample document measured 360 KB, so sixty of
+ * them would be 21 MB -- against the ~6.5 MB of PSRAM the whole UI has to spend. VIEW_MAX caps rows,
+ * which is simply the wrong unit; sync_transcript caps the transcript by this instead. The figure is
+ * cumulative over every fill of the same row, which is what is wanted: a growing answer keeps adding to
+ * its own cost, and a settled one that is re-rendered as rich text adds the renderer's widgets too. */
+static void view_fill(view_t *v, const as_entry_t *e, as_phase_t ph)
+{
+    size_t before = 0, after = 0;
+    bz_lv_mem_stat(&before, NULL, NULL, NULL);
+    view_fill_inner(v, e, ph);
+    bz_lv_mem_stat(&after, NULL, NULL, NULL);
+    if (after > before) v->bytes += after - before;
+}
+
 /* Brings the transcript's objects up to the conversation: new entries get rows, growing ones their
  * new text, and the oldest leave once there are more than the view keeps. */
 static void sync_transcript(void)
@@ -383,6 +413,15 @@ static void sync_transcript(void)
         int made = AS.nv;
         lv_display_enable_invalidation(d, false);
         for (int id = next; id < first + n; id++) {
+            /* The row cap and the memory cap, in that order. VIEW_MAX stops the list growing without
+             * bound; VIEW_BYTES stops a handful of heavy answers doing the same thing in bytes, which is
+             * what actually ran the tablet out of PSRAM -- eight answers carrying a chart and a drawing
+             * each took 2.9 MB of the ~6.5 MB the UI has. Two rows always stay, whatever they cost:
+             * a transcript that drops the question you just asked would be worse than a short one. */
+            while (AS.nv > 2 && view_bytes() > VIEW_BYTES) {
+                view_drop_front();
+                made = 0;
+            }
             if (AS.nv == VIEW_MAX) {
                 view_drop_front();
                 made = 0; /* everything moved up */

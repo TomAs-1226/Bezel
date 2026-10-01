@@ -30,7 +30,17 @@
 #define MAX_DEPTH 16          /* <g> nesting the transform/style stack tracks before bailing out */
 #define MAX_PRIMS 4000         /* shapes actually drawn, across the whole document */
 #define MAX_POLY_PTS 256       /* points kept for one polygon/polyline/path subpath */
-#define MAX_CANVAS_BYTES (1536u * 1024u) /* ~1.5 MB: the hard cap on one canvas's pixel buffer */
+/* The hard cap on one canvas's pixel buffer. It was 1.5 MB, which is most of a transcript: the UI has
+ * about 6.5 MB of PSRAM to spend once the renderer and the panel have taken theirs, and a chat holds up
+ * to 60 rows, so one drawing being allowed a quarter of everything is not a cap at all -- eight answers
+ * with a chart and a drawing each took 2.3 MB and left the tablet with 1.1 MB free, which is where the
+ * glass cache starts failing and the stalls begin. 384 KB is 800 x 245 at 16 bpp, which is larger than
+ * any drawing the 800 px-wide transcript actually shows; anything bigger is scaled down to fit it. */
+#define MAX_CANVAS_BYTES (384u * 1024u)
+/* And a floor under the whole thing, because the cap alone does not help when memory has already gone:
+ * below this much free PSRAM a drawing is not allocated at all and the reader is told why, which is far
+ * better than taking the last of the heap for a picture and stalling everything that comes after. */
+#define CANVAS_PSRAM_FLOOR (1280u * 1024u)
 
 /* What the subset can't honour, tracked as it's met so `why` never has to guess afterwards. */
 enum {
@@ -1067,6 +1077,14 @@ lv_obj_t *ui_md_svg(lv_obj_t *parent, const char *svg, int max_w, int max_h, cha
     clamp_canvas(&cw, &ch);
 
     size_t bufsize = LV_CANVAS_BUF_SIZE(cw, ch, 16, LV_DRAW_BUF_STRIDE_ALIGN);
+    /* Not "is there room for this?" but "is there room left afterwards?". lv_malloc would succeed with
+     * 400 KB free and leave the glass cache, the next window and the slide's own buffers with nothing. */
+    size_t m[4];
+    hal_mem_psram(m);
+    if (m[1] < bufsize + CANVAS_PSRAM_FLOOR) {
+        if (why) snprintf(why, nwhy, "no room to draw it (%u KB free)", (unsigned)(m[1] / 1024));
+        return NULL;
+    }
     void *buf = lv_malloc(bufsize);
     if (!buf) {
         if (why) snprintf(why, nwhy, "out of memory");
