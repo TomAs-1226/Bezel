@@ -342,12 +342,29 @@ static void build(void)
     bz_ui_on_frame(kb_frame, NULL);
 }
 
+/* The field's own handle goes when the app body it belongs to goes. Nothing used to free these, which
+ * cost nothing while an app window was built once and kept forever -- but a window may now be taken down
+ * and built again when PSRAM runs short (app_evict), and a handle left behind each time is a leak with a
+ * stale `body` in it. If the keyboard happened to be up for that field, it is put away first: its owner
+ * is about to stop existing. */
+static void kb_owner_gone(lv_event_t *e)
+{
+    ui_kb_t *k = lv_event_get_user_data(e);
+    if (!k) return;
+    if (K.owner == k) put_away();
+    if (K.owner == k) K.owner = NULL; /* put_away clears it; belt and braces if it ever stops doing so */
+    lv_free(k);
+}
+
 ui_kb_t *ui_kb_create(lv_obj_t *body, int h)
 {
     (void)h; /* one sheet, one height: the callers' old guesses are no longer theirs to make */
     build();
     ui_kb_t *k = lv_malloc_zeroed(sizeof *k);
-    if (k) k->body = body;
+    if (k) {
+        k->body = body;
+        if (body) lv_obj_add_event_cb(body, kb_owner_gone, LV_EVENT_DELETE, k);
+    }
     return k;
 }
 
@@ -395,3 +412,7 @@ void ui_kb_hide(ui_kb_t *k)
 
 /* The shell, when something takes the screen out from under whoever was typing. */
 void ui_kb_dismiss(void) { put_away(); }
+
+/* Is anyone typing? For the shell, which must not take a window down while the keyboard is lifting its
+ * body (mem_pressure). */
+bool ui_kb_up(void) { return K.owner != NULL; }

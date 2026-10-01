@@ -121,6 +121,12 @@ typedef struct {
     void (*close)(void);             /* each time it closes */
     void (*refresh)(void);           /* 10 Hz while open */
     void (*frame)(double now, double dt); /* every frame while open */
+    /* Its window may be taken down when PSRAM runs short and built again on the next open (app_evict).
+     * Only for an app whose widgets are reached through `build`, `open`, `close`, `refresh` and `frame`
+     * and nowhere else: a background ticker or another screen holding one of its widget pointers would be
+     * left pointing at a deleted object. The default is to keep the window, because that is the safe
+     * answer for an app nobody has checked -- see docs/memory.md for what checking one means. */
+    bool shed;
 } ui_app_t;
 void ui_app_open(const ui_app_t *app, lv_obj_t *from);
 void ui_app_close(void);
@@ -372,3 +378,4 @@ void ui_kb_show(ui_kb_t *k, const char *title, const char *text, bool secret, bo
 bool ui_kb_open(const ui_kb_t *k);
 void ui_kb_hide(ui_kb_t *k);
 void ui_kb_dismiss(void); /* whoever is typing, put the keyboard away (the screen changed under them) */
+bool ui_kb_up(void);    /* someone is typing: the screen under the keyboard must not be rebuilt */

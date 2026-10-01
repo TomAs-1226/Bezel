@@ -1985,5 +1985,10 @@ void ui_settings_show(const char *section)
     ui_app_open(&APP_SETTINGS, NULL);
 }
 
+/* `shed`: the biggest window on the tablet by a wide margin -- 342 KB of the 788 KB all 39 of them hold
+ * together, because it builds every section's controls up front -- and the one most safely taken down.
+ * Nothing outside this file reads ST or SX; ui_settings_show only touches the widgets when the app is
+ * already open, and otherwise remembers the section and opens the app, which rebuilds it. settings_build
+ * registers no background ticker, so there is nothing left holding a pointer into the tree. */
 const ui_app_t APP_SETTINGS = { .name = "settings", .icon = BZ_I_SETTINGS, .build = settings_build, .open = settings_open,
-                                .refresh = settings_refresh };
+                                .refresh = settings_refresh, .shed = true };

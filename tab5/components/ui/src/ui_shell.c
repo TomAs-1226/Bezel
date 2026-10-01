@@ -12,6 +12,7 @@
 #include "link.h"
 #include "voice.h"
 #include "ui_home_mode.h"
+#include "bz_frost.h"
 
 #include <math.h>
 #include <pthread.h>
@@ -61,7 +62,9 @@ static struct {
     bz_glass_t *pill_glass;
     lv_area_t from;
     bz_motion_t k;
-    struct { const ui_app_t *app; lv_obj_t *inner; } built[MAX_APPS];
+    /* `bytes` is what the build cost in LVGL's heap, `used` when it was last opened: between them they
+     * say which window is worth taking down when PSRAM runs short (app_evict). */
+    struct { const ui_app_t *app; lv_obj_t *inner; size_t bytes; double used; } built[MAX_APPS];
     int nbuilt;
     float drag_k0;
     bool win_dragging;
@@ -906,13 +909,65 @@ static volatile bool s_dev_pending;
 static double s_band[4];
 static int s_bandn;
 
+/* "psram": who holds the 32 MB, not merely how much is left.
+ *
+ * The free figure on its own has never been enough to act on. Almost all of the PSRAM is spoken for
+ * before the first screen is built -- the program itself runs from it (XIP), the panel scans three frame
+ * buffers out of it, and the renderer and the slide each keep whole screens of it -- and the part the UI
+ * can actually spend is what is left after that. This prints the fixed blocks first, so the figure at
+ * the bottom is read against them, and then the three pools that grow while the tablet is used: LVGL's
+ * objects, the baked glass, and the app windows that are built once and never taken down.
+ *
+ * `internal` is the one to watch. When PSRAM runs out, bz_lv_mem hands LVGL internal RAM instead of
+ * failing, and internal RAM is the scarce kind that the DMA reserve, the Wi-Fi link and every task stack
+ * come out of. A non-zero count there means the UI is quietly eating the memory the system needs. */
+static bool s_mem_force; /* dev "psram shed": one pass of the pressure path whatever is free */
+
+static void mem_line(const char *s) { fputs(s, stdout); }
+
+static void mem_report(void)
+{
+    size_t m[4];
+    hal_mem_psram(m);
+    printf("MEM PSRAM: %u KB free, largest block %u KB\n", (unsigned)(m[1] / 1024), (unsigned)(m[2] / 1024));
+    /* Not a memory figure at all, but the one that explains a cyan flash, and this is where anyone
+     * looking at a stall will read it: the panel missing its deadline is a bandwidth fault, and the cure
+     * is less PSRAM traffic, not more free bytes. */
+    printf("MEM panel underruns (cyan frames): %u since boot\n", (unsigned)hal_underruns());
+    printf("MEM fixed, taken at boot and never given back: %u KB\n", (unsigned)(m[0] / 1024));
+    hal_mem_psram_lines(mem_line);
+    bz_ui_mem_lines(mem_line);
+
+    size_t held = 0, peak = 0;
+    int blocks = 0, internal = 0;
+    bz_lv_mem_stat(&held, &peak, &blocks, &internal);
+    printf("MEM growing with use:\n");
+    printf("MEM   LVGL objects            %4u KB  (peak %u KB, %d blocks%s)\n", (unsigned)(held / 1024),
+           (unsigned)(peak / 1024), blocks, internal ? ", SOME IN INTERNAL RAM" : "");
+    if (internal)
+        printf("MEM   !! %d LVGL blocks fell back to internal RAM: PSRAM ran out while the UI was building\n",
+               internal);
+    printf("MEM   baked glass             %4u KB\n", (unsigned)(bz_frost_bytes() / 1024));
+    printf("MEM   app icons               %4u KB\n", (unsigned)(ui_icon_bytes() / 1024));
+    printf("MEM   ground                  %4u KB\n", (unsigned)(ui_ground_bytes() / 1024));
+    size_t win = 0;
+    for (int i = 0; i < U.nbuilt; i++) win += U.built[i].bytes;
+    printf("MEM   app windows built       %4d of %d, %u KB of the LVGL figure above\n", U.nbuilt, MAX_APPS,
+           (unsigned)(win / 1024));
+    for (int i = 0; i < U.nbuilt; i++)
+        printf("MEM     %-14s %5u KB  last opened %.0f s ago%s\n",
+               U.built[i].app && U.built[i].app->name ? U.built[i].app->name : "?",
+               (unsigned)(U.built[i].bytes / 1024), ui_now() - U.built[i].used,
+               U.built[i].app && U.built[i].app->shed ? "  (may be shed)" : "");
+}
+
 static bool dev_handler(const char *line)
 {
     if (strncmp(line, "open ", 5) && strncmp(line, "page ", 5) && strcmp(line, "close") && strcmp(line, "perf") && strncmp(line, "inv", 3) && strcmp(line, "redraw") && strcmp(line, "home") && strncmp(line, "ask ", 4) && strncmp(line, "phone", 5) &&
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) && strncmp(line, "act", 3) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) && strncmp(line, "look ", 5) &&
         strncmp(line, "docwrite", 8) && strncmp(line, "assist", 6) && strncmp(line, "memo", 4) && strncmp(line, "carry", 5) &&
-        strncmp(line, "cut", 3) && strncmp(line, "hm", 2))
+        strncmp(line, "cut", 3) && strncmp(line, "hm", 2) && strncmp(line, "psram", 5))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -1048,6 +1103,11 @@ static void dev_run(void)
     } else if (!strncmp(s_dev_cmd, "bms", 3)) {
         /* the battery fleet: "bms" ranks it; scan, pick <label>, demo, reset, gpt, json */
         ui_batt_dev(s_dev_cmd + 3);
+    } else if (!strncmp(s_dev_cmd, "psram", 5)) {
+        /* "psram shed" asks for one pass of the pressure path whatever the free figure is: it is the
+         * only way to see a window taken down and built again without first filling the heap. */
+        if (!strcmp(s_dev_cmd + 5, " shed")) s_mem_force = true;
+        else mem_report();
     } else if (!strncmp(s_dev_cmd, "inv", 3)) {
         /* "inv" or "inv N": log every area LVGL invalidates for the next N frames (20 by default). A
          * gesture is worth 200: the point is to catch what asks for the whole screen. */
@@ -1698,17 +1758,129 @@ static void island_refresh(void)
 
 static lv_obj_t *app_inner(const ui_app_t *app)
 {
-    for (int i = 0; i < U.nbuilt; i++) if (U.built[i].app == app) return U.built[i].inner;
+    for (int i = 0; i < U.nbuilt; i++)
+        if (U.built[i].app == app) {
+            U.built[i].used = ui_now();
+            return U.built[i].inner;
+        }
+    /* What this one window costs, measured rather than guessed: LVGL's own counter either side of the
+     * build. It is what "psram" prints per app and what eviction ranks by -- a window is worth taking
+     * down for its bytes, and before this there was no way to know which ones had them. */
+    size_t before = 0;
+    bz_lv_mem_stat(&before, NULL, NULL, NULL);
     lv_obj_t *inner = bz_box(U.win);
     lv_obj_set_size(inner, W, H);
     lv_obj_add_flag(inner, LV_OBJ_FLAG_IGNORE_LAYOUT);
     app->build(inner);
+    size_t after = 0;
+    bz_lv_mem_stat(&after, NULL, NULL, NULL);
     if (U.nbuilt < MAX_APPS) {
         U.built[U.nbuilt].app = app;
         U.built[U.nbuilt].inner = inner;
+        U.built[U.nbuilt].bytes = after > before ? after - before : 0;
+        U.built[U.nbuilt].used = ui_now();
         U.nbuilt++;
     }
     return inner;
+}
+
+/* ---- giving PSRAM back ----
+ *
+ * An app window is built once and then kept, which is what makes the second open instant. The cost is
+ * that it is never given back: open all 39 apps and their widgets hold some 3.7 MB, out of the ~6.5 MB
+ * the UI has to spend once the renderer and the panel have taken theirs. At the bottom of that the glass
+ * cache cannot hold the dock's surfaces any more, so they are baked again and again -- tens of
+ * milliseconds each, at no particular moment, which is what a random stall actually was.
+ *
+ * So below a floor the shell starts handing memory back, cheapest first: unreferenced baked glass, then
+ * the windows of apps that said they can be rebuilt (`shed`), oldest-opened first. It only ever runs
+ * while nothing is moving, because deleting a few thousand widgets is itself a frame or two.
+ *
+ * The floor is 1.5 MB, not "whatever is left": a single baked panel is a few hundred KB and a window
+ * being built asks for a thousand small blocks, so the UI needs room to work in, not just room to exist. */
+#define MEM_FLOOR (1536u * 1024u)
+#define MEM_TARGET (2560u * 1024u) /* shed until this much is free, so it is not back at the floor next frame */
+
+static void app_evict(const ui_app_t *app)
+{
+    for (int i = 0; i < U.nbuilt; i++) {
+        if (U.built[i].app != app) continue;
+        lv_obj_delete(U.built[i].inner);
+        U.built[i] = U.built[--U.nbuilt];
+        return;
+    }
+}
+
+static double s_mem_quiet_until; /* nothing could be given back: don't scan again until then */
+
+static void mem_pressure(void)
+{
+    /* The request is not consumed until the pass actually runs. It used to be cleared on entry, and the
+     * gates below then threw it away on the first frame -- the dev command's own touch of the UI loop
+     * counts as activity, so the very next frame is never a quiet one. */
+    bool force = s_mem_force;
+    if (!force && ui_now() < s_mem_quiet_until) return;
+    size_t m[4];
+    hal_mem_psram(m);
+    /* The floor is what the tablet should normally never reach, which makes the shedding path the one
+     * least likely to be exercised by accident -- so it can be asked for, and is, by the test that
+     * proves a shed window builds again correctly. */
+    if (!force && m[1] >= MEM_FLOOR) return;
+    /* not mid-gesture, mid-slide or mid-animation: this deletes widgets, which costs a frame. And not
+     * while anyone is typing: the keyboard lifts the body of whichever app owns the field, and deleting
+     * a window out from under it would take the field away mid-word. */
+    if (U.app || MC.pages || MC.window || bz_ui_thawing() || U.win_dragging || bz_ui_idle_s() < 1) {
+        if (force) printf("mem: asked to shed, but the screen is busy (app %d pages %d win %d thaw %d "
+                          "drag %d idle %.1f s)\n", U.app != NULL, MC.pages, MC.window, bz_ui_thawing(),
+                          U.win_dragging, bz_ui_idle_s());
+        return;
+    }
+    if (ui_kb_up() || ui_overlay_up() || ui_alarm_up() || ui_home_mode_active()) {
+        if (force) printf("mem: asked to shed, but something is up (kb %d overlay %d alarm %d home %d)\n",
+                          ui_kb_up(), ui_overlay_up(), ui_alarm_up(), ui_home_mode_active());
+        return;
+    }
+    s_mem_force = false; /* past the gates: the pass is happening, so the request is spent */
+
+    size_t glass = bz_frost_trim(MEM_TARGET - m[1]); /* only surfaces nothing is showing go */
+    hal_mem_psram(m);
+    int shed = 0;
+    size_t freed = 0;
+    /* Forced, it sheds exactly one window: enough to prove the path and to see that app build itself
+     * again, without emptying the list of everything that may go. */
+    while (force ? shed < 1 : m[1] < MEM_TARGET) {
+        int pick = -1;
+        for (int i = 0; i < U.nbuilt; i++) {
+            if (!U.built[i].app || !U.built[i].app->shed) continue;
+            if (U.built[i].app == U.app) continue;
+            if (pick < 0 || U.built[i].used < U.built[pick].used) pick = i;
+        }
+        if (pick < 0) break;
+        freed += U.built[pick].bytes;
+        printf("mem: shedding %s (%u KB, last opened %.0f s ago)\n", U.built[pick].app->name,
+               (unsigned)(U.built[pick].bytes / 1024), ui_now() - U.built[pick].used);
+        app_evict(U.built[pick].app);
+        shed++;
+        hal_mem_psram(m);
+    }
+    if (!glass && !shed) {
+        /* Nothing left that may be given back: below the floor with every surface in use and every
+         * window either open or one nobody has cleared for shedding. Saying so once is useful; saying
+         * it every quiet frame -- which is what the first version did, thirty times a second -- is not,
+         * and the printing itself was costing more than the scan. So it waits a minute before looking
+         * again, and the UI simply runs short until something is closed. */
+        static double said;
+        if (ui_now() - said > 60) {
+            said = ui_now();
+            printf("mem: %u KB free and nothing to give back (%u KB of glass all in use, %d windows, "
+                   "none shed-able)\n", (unsigned)(m[1] / 1024), (unsigned)(bz_frost_bytes() / 1024), U.nbuilt);
+        }
+        s_mem_quiet_until = ui_now() + 60;
+        return;
+    }
+    printf("mem: %u KB free after giving back %u KB of glass and %d app window%s (%u KB)\n",
+           (unsigned)(m[1] / 1024), (unsigned)(glass / 1024), shed, shed == 1 ? "" : "s",
+           (unsigned)(freed / 1024));
 }
 
 /* The apps that are slow to build, built ahead while the tablet sits idle, one per idle spell, so that their
@@ -1726,6 +1898,13 @@ static void warm_apps(double now)
     if (!quiet || now < 20) {
         idle_since = now;
         return;
+    }
+    /* building ahead is a luxury: with PSRAM this short it would be shed again before anyone opened it,
+     * and the build itself needs the room it is about to take */
+    {
+        size_t m[4];
+        hal_mem_psram(m);
+        if (m[1] < MEM_TARGET) return;
     }
     if (now - idle_since < 1) return; /* quiet for a moment first: not the frame a finger lands */
     if (next >= sizeof WARM / sizeof WARM[0]) {
@@ -2578,6 +2757,7 @@ static void shell_frame(double now, double dt, void *user)
     if (MC.pages && !paging && !bz_drag_active() && fabsf(U.offset.value + U.page * W) < 0.5f) pages_end();
     if (!bz_ui_thawing()) thaw_layers_drop();
     caches_idle();
+    mem_pressure(); /* before warm_apps: do not build another window into a heap that is already short */
     warm_apps(now);
     PROF_MARK(1);
     dock_frame();
