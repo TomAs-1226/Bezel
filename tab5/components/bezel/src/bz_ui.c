@@ -1990,6 +1990,13 @@ bool bz_ui_scroll(lv_obj_t *clip, lv_obj_t *content, int32_t y)
      * left a ghost, and only it needs erasing. */
     for (int i = 0; i < nobs; i++) {
         lv_area_t m = obs[i];
+#if BZ_LEAN
+        /* On the tablet the glass is a baked picture: it samples nothing behind it, so only the part of the
+         * piece over the list has anything new under it. Drawn whole, a piece that reaches past the list (the
+         * assistant's orb over the drawer's edge) made a rectangle no scrolled piece covers, and the present
+         * caught it up from the newest picture twice a frame: ~2 ms of every frame of a fling. */
+        if (U.calm && !lv_area_intersect(&m, &obs[i], &a)) continue;
+#endif
         lv_inv_area(d, &m);
         if (!lv_area_intersect(&m, &obs[i], &a)) continue;
         m.y1 += dy;

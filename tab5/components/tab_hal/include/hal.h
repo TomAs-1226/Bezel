@@ -57,6 +57,8 @@ void hal_set_brightness(float v01);
 void hal_set_flip(bool flip);
 void hal_loop_note(double work_s, bool busy); /* perf: one UI loop's bz_ui_frame time */
 void hal_scroll_dual(bool on); /* the tablet: a scroll's shift split between two DMA2D copiers (dev "dual") */
+void hal_catchup_trace(int n); /* dev "cudbg N" */
+void hal_cpu_rot_px(int n);     /* dev "cpurot N" */
 void hal_slide_mask(bool on); /* the tablet: a slide holds chrome by its pixels (1) or its rectangles (dev "mask") */
 void hal_loop_prof(double out[4]); /* perf: busy loops, their mean and max work (s), loops idle */
 void hal_loop_hist(int out[5]);    /* perf: busy loops under 5, 10, 16.7, 25 ms, more */

@@ -527,6 +527,14 @@ static void run(char *line)
         /* "dual 0": a scroll's shift runs on one DMA2D copier, as it did; "dual 1": split between two */
         hal_scroll_dual(!(line[4] == ' ' && line[5] == '0'));
         say("OK\n");
+    } else if (!strncmp(line, "cpurot ", 7)) {
+        /* "cpurot N": areas up to N pixels are turned by the CPU instead of the PPA (4096 by default) */
+        hal_cpu_rot_px(atoi(line + 7));
+        say("OK\n");
+    } else if (!strncmp(line, "cudbg", 5)) {
+        /* "cudbg N": log the next N rectangles the present's catch-up copies (40 by default) */
+        hal_catchup_trace(line[5] == ' ' ? atoi(line + 6) : 40);
+        say("OK\n");
     } else if (!strncmp(line, "mask", 4) && (line[4] == 0 || line[4] == ' ')) {
         /* "mask 0": a slide holds each piece of chrome as its whole rectangle, as it did; "mask 1": its pixels */
         hal_slide_mask(!(line[4] == ' ' && line[5] == '0'));

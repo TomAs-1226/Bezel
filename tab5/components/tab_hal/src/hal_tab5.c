@@ -619,6 +619,8 @@ static void panel_rows(const bz_area_t *a, int *r0, int *r1)
     }
 }
 
+static int s_cpu_rot_px = 4096; /* areas up to this many pixels are turned by the CPU (dev "cpurot N") */
+void hal_cpu_rot_px(int n) { s_cpu_rot_px = n; }
 static void rotate_cpu(const bz_present_t *p, uint16_t *fb)
 {
     const bz_area_t *a = &p->a;
@@ -711,7 +713,7 @@ static bool rotate_area(const bz_present_t *p, void *fb, bool async)
     /* A sliver never goes to the PPA: a 354×6 rotation hung it on nearly every start (its 2D-DMA doesn't
      * finish a turned block a few pixels across), and for a few thousand pixels the CPU is quicker than
      * the PPA's setup anyway. */
-    if (w < 16 || h < 16 || w * h <= 4096) {
+    if (w < 16 || h < 16 || w * h <= s_cpu_rot_px) {
         rotate_cpu(p, fb);
         return false;
     }
@@ -936,6 +938,8 @@ static bool covered_by(const bz_area_t *r, const bz_present_t *areas, int n)
 }
 
 /* buffer b made the newest picture, except where this frame writes anyway */
+static int s_cu_trace; /* dev console "cudbg N": log the next N rectangles the catch-up copies */
+void hal_catchup_trace(int n) { s_cu_trace = n; }
 static void fb_catch_up(int b, const bz_present_t *areas, int n, bool cover_full)
 {
     uint32_t from = s_buf_frame[b];
@@ -944,6 +948,10 @@ static void fb_catch_up(int b, const bz_present_t *areas, int n, bool cover_full
     bool full = s_frame - from >= HIST;
     for (uint32_t f = from + 1; f <= s_frame && !full; f++) full = s_hist[f % HIST].full;
     if (full) {
+        if (s_cu_trace > 0) {
+            s_cu_trace--;
+            ESP_LOGI(TAG, "catch-up: the whole screen (%u frames behind)", (unsigned)(s_frame - from));
+        }
         blk_copy(T.fb[b], 0, 0, T.fb[latest], 0, 0, PANEL_W, PANEL_H);
         return;
     }
@@ -953,6 +961,11 @@ static void fb_catch_up(int b, const bz_present_t *areas, int n, bool cover_full
             const bz_present_t *e = &h->a[i];
             if (covered_by(&e->a, areas, n)) continue;
             int w = e->a.x2 - e->a.x1 + 1, hh = e->a.y2 - e->a.y1 + 1;
+            if (s_cu_trace > 0) {
+                s_cu_trace--;
+                ESP_LOGI(TAG, "catch-up: %d,%d-%d,%d (%d px) from frame -%u, %d areas %d scrolls now", e->a.x1, e->a.y1,
+                         e->a.x2, e->a.y2, w * hh, (unsigned)(s_frame - f), n, s_njscroll);
+            }
             /* a sliver the DMA would move as a block a few pixels wide: turned again from LVGL's buffer */
             if (e->src && (w < 16 || hh < 16)) rotate_area(e, T.fb[b], false);
             else fb_copy_rect(b, latest, &e->a);
