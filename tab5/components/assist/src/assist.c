@@ -1236,6 +1236,8 @@ void assist_import_card(void)
          * network still moves the tablet onto it, and leaving it alone leaves the owner's choice alone.
          * Same rule the Link's address already follows: what the owner set wins over the default. */
         if (got & 1u << ENV_WIFI_SSID) {
+            /* added to the networks the tablet remembers, beside the others, whether or not it is joined now */
+            hal_wifi_save(wifi, wifi + 64);
             char seeded[33] = "";
             hal_kv_get("wifi_env", seeded, sizeof seeded);
             if (strcmp(seeded, wifi) != 0) {

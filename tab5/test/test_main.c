@@ -13,6 +13,7 @@
 static int fails, checks;
 void test_assist(int *checks, int *fails); /* test_assist.c */
 void test_intel(int *checks, int *fails);  /* test_intel.c */
+void test_wifi(int *checks, int *fails);   /* test_wifi.c */
 #define CHECK(c) do { checks++; if (!(c)) { fails++; printf("FAIL %s:%d  %s\n", __FILE__, __LINE__, #c); } } while (0)
 #define NEAR(a, b, e) CHECK(fabs((double)(a) - (double)(b)) <= (e))
 
@@ -249,6 +250,7 @@ int main(void)
     test_tba_paths(&checks, &fails);
     test_astro(&checks, &fails);
     test_intel(&checks, &fails);
+    test_wifi(&checks, &fails);
     printf("%d checks, %d failed\n", checks, fails);
     return fails != 0;
 }

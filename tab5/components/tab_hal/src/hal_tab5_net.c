@@ -15,6 +15,7 @@
  * ones most likely to need a correction on first boot. */
 #include "hal.h"
 #include "hal_tab5_priv.h"
+#include "wifi_saved.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -37,6 +38,7 @@
 #include "esp_hosted.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/idf_additions.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "iot_eth.h"
 #include "iot_eth_netif_glue.h"
@@ -121,14 +123,123 @@ static const char *drop_name(int reason)
     }
 }
 
-/* Whether a network has been saved (hal_wifi_join; the driver keeps it in NVS). Without one there's
- * nothing to connect to, and a station forever connecting refuses to scan (ESP_ERR_WIFI_STATE). */
-static bool wifi_has_network(void)
+/* ---- the networks the tablet remembers (wifi_saved.h) ----
+ *
+ * The C6 keeps one network in its own NVS, and out of the box that one is M5Stack's factory line's. The
+ * tablet keeps every network it has joined in its own kv, a slot a key ("wifi_s0".."wifi_s15": the dev
+ * console's "kv" treats them as secret), which a reflash of the app leaves alone. The set is the truth; the
+ * C6's one network is only the last one handed to it.
+ *
+ *  - Saved when a join gets an address, never before: a mistyped password is not remembered. The password is
+ *    the one hal_wifi_join was given, or (the network the C6 already held when this firmware first ran) the
+ *    one the C6 gives back.
+ *  - With the link down, rssi_task scans and joins the loudest saved network in range, the last-used one when
+ *    the two are comparable (ws_pick). It only ever chooses while down, so two networks can't be traded back
+ *    and forth; and one that has just refused its password is passed over for a while.
+ *  - Nothing here writes a password to the log, and no call hands one back.
+ *
+ * The set is 1.6 KB, in PSRAM, behind a mutex. kv writes happen on the caller's thread for save and forget
+ * (the UI's) and on rssi_task for a join's success (its stack is internal RAM, as NVS needs). */
+static struct {
+    ws_set_t *set;
+    SemaphoreHandle_t lock;
+    bool loaded;
+    char not_ssid[33];         /* kv wifi_not: a forgotten network the C6 may still hold; not joined, not adopted */
+    volatile unsigned gen;
+    char pend_ssid[33], pend_pass[65]; /* what hal_wifi_join was last given: saved if it gets an address */
+    char want[33];             /* a saved network asked for by name (hal_wifi_join_saved), "" none */
+    volatile bool want_drop;   /* leave the network in use and choose again (it was forgotten) */
+    volatile bool save_due;    /* an address came: save what got it */
+    volatile bool pick;        /* the next attempt scans and chooses rather than repeating the C6's network */
+    int join_slot;             /* the saved slot the attempt in the air is for, -1 not one */
+    int64_t bad_until[WS_MAX]; /* refused its password: passed over until then */
+} WS = { .join_slot = -1 };
+
+static void sta_tune(wifi_sta_config_t *s);
+static void net_refresh_soon(void);
+
+static volatile bool s_have_net; /* there is something to join: a saved network, or the C6's own (before any is saved) */
+
+static bool ws_take(void)
+{
+    if (!WS.lock) {
+        /* the first caller is the UI thread at start-up (the settings, or KEYS.ENV), before any other exists */
+        WS.lock = xSemaphoreCreateMutex();
+        if (!WS.lock) return false;
+    }
+    xSemaphoreTake(WS.lock, portMAX_DELAY);
+    if (!WS.loaded) {
+        WS.loaded = true;
+        WS.set = heap_caps_calloc(1, sizeof *WS.set, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        char key[12], v[WS_ENC_MAX];
+        for (int i = 0; WS.set && i < WS_MAX; i++) {
+            snprintf(key, sizeof key, "wifi_s%d", i);
+            if (hal_kv_get(key, v, sizeof v)) ws_decode(v, &WS.set->n[i]);
+        }
+        memset(v, 0, sizeof v);
+        if (!hal_kv_get("wifi_not", WS.not_ssid, sizeof WS.not_ssid)) WS.not_ssid[0] = 0;
+        ESP_LOGI(TAG, "wi-fi: %d saved network%s", WS.set ? ws_count(WS.set) : 0, WS.set && ws_count(WS.set) == 1 ? "" : "s");
+    }
+    if (!WS.set) {
+        xSemaphoreGive(WS.lock);
+        return false;
+    }
+    return true;
+}
+
+static void ws_give(void) { xSemaphoreGive(WS.lock); }
+
+/* one slot to kv (under the lock; the caller's stack must be internal RAM: hal_kv_set refuses otherwise) */
+static void ws_store(int slot)
+{
+    char key[12], v[WS_ENC_MAX];
+    snprintf(key, sizeof key, "wifi_s%d", slot);
+    ws_encode(&WS.set->n[slot], v, sizeof v);
+    hal_kv_set(key, v);
+    memset(v, 0, sizeof v);
+    WS.gen++;
+}
+
+static bool ws_has(const char *ssid)
+{
+    if (!ws_take()) return false;
+    bool has = ws_find(WS.set, ssid) >= 0;
+    ws_give();
+    return has;
+}
+
+/* The C6's own network may be joined as it stands: there is one, it isn't the factory's, and it isn't one
+ * the owner has forgotten since (the C6 can't be made to forget it; kv wifi_not names it). */
+static bool c6_joinable(wifi_config_t *wc)
+{
+    /* M5Stack's factory test leaves its line's network in the C6's NVS: that one doesn't count */
+    if (esp_wifi_get_config(WIFI_IF_STA, wc) != ESP_OK || !wc->sta.ssid[0] ||
+        !strcmp((const char *)wc->sta.ssid, "M5Stack-Production"))
+        return false;
+    if (!ws_take()) return true;
+    bool ok = strcmp(WS.not_ssid, (const char *)wc->sta.ssid) != 0;
+    ws_give();
+    return ok;
+}
+
+/* Whether there is anything to join. Kept as a flag: this is asked from the event loop's task, which must not
+ * wait on the C6 (it used to ask the C6 for its config right there). Set by net_refresh(). */
+static bool wifi_has_network(void) { return s_have_net; }
+
+static volatile bool s_refresh_due; /* rssi_task works out s_have_net again (it asks the C6: not for the UI) */
+static void net_refresh_soon(void) { s_refresh_due = true; }
+
+static void net_refresh(void)
 {
     wifi_config_t wc;
-    /* M5Stack's factory test leaves its line's network in the C6's NVS: that one doesn't count */
-    return esp_wifi_get_config(WIFI_IF_STA, &wc) == ESP_OK && wc.sta.ssid[0] &&
-           strcmp((const char *)wc.sta.ssid, "M5Stack-Production") != 0;
+    bool c6 = c6_joinable(&wc);
+    memset(&wc, 0, sizeof wc);
+    bool any = false;
+    if (ws_take()) {
+        any = ws_count(WS.set) > 0;
+        ws_give();
+    }
+    s_have_net = c6 || any;
 }
 
 /* The reconnect, asked for here and done by rssi_task a moment later.
@@ -247,6 +358,14 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
                      drop_name(e->reason), e->rssi, (unsigned)N.drops);
         N.drop_reason = e->reason;
         s_issued = 0; /* whatever was outstanding is over, one way or the other */
+        /* Which network next. A link that was working and blinked is tried again as it is, at once; the AP not
+         * being there, the password refused, or a second failure in a row sends the next attempt through a scan
+         * and the saved set (rssi_task). A network that refused its password is passed over for a while. */
+        bool refused = e->reason == 202 || e->reason == 15 || e->reason == 204;
+        bool absent = e->reason == 201 || (e->reason >= 210 && e->reason <= 212);
+        if (refused && WS.join_slot >= 0 && WS.join_slot < WS_MAX)
+            WS.bad_until[WS.join_slot] = esp_timer_get_time() + 300 * 1000000LL;
+        if (refused || absent || s_retry_step >= 1) WS.pick = true;
         /* keep trying, backing off: the pit network comes and goes — but not during a scan, and not with
          * nothing saved */
         if (!s_scanning && wifi_has_network()) reconnect_soon(false);
@@ -257,6 +376,8 @@ static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         ip_event_got_ip_t *e = data;
         snprintf(N.ip, sizeof N.ip, IPSTR, IP2STR(&e->ip_info.ip));
         N.up = true;
+        WS.save_due = true;  /* this network and its password are worth remembering (rssi_task saves them) */
+        WS.pick = false;
         s_gw_answered = 0;   /* a different network's gateway proves nothing about this one */
         s_filtered = false;
         dns_apply();         /* DHCP has just set its own: put the owner's choice back */
@@ -415,6 +536,166 @@ static bool gw_alive(uint32_t *gw)
     return alive;
 }
 
+/* What a scan hears, for the picker: names and signals only. s_scanning holds the reconnects off meanwhile.
+ * Returns the count, -1 when the C6 wouldn't scan. On rssi_task. */
+static int scan_seen(ws_seen_t *seen, int max)
+{
+    s_scanning = true;
+    wifi_scan_config_t sc = {
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time = { .active = { .min = 80, .max = 200 } },
+    };
+    esp_err_t e = esp_wifi_scan_start(&sc, true);
+    if (e != ESP_OK) {
+        /* a station still mid-connect refuses: stop it and ask once more */
+        esp_wifi_disconnect();
+        vTaskDelay(pdMS_TO_TICKS(300));
+        e = esp_wifi_scan_start(&sc, true);
+    }
+    int n = -1;
+    if (e == ESP_OK) {
+        uint16_t found = 0;
+        esp_wifi_scan_get_ap_num(&found);
+        uint16_t k = found < (uint16_t)max ? found : (uint16_t)max;
+        wifi_ap_record_t *rec = k ? calloc(k, sizeof *rec) : NULL;
+        n = 0;
+        if (rec && esp_wifi_scan_get_ap_records(&k, rec) == ESP_OK) {
+            for (; n < k; n++) {
+                snprintf(seen[n].ssid, sizeof seen[n].ssid, "%s", (const char *)rec[n].ssid);
+                seen[n].rssi = rec[n].rssi;
+            }
+        } else if (found) {
+            esp_wifi_clear_ap_list();
+        }
+        free(rec);
+    } else {
+        ESP_LOGW(TAG, "wi-fi: the scan for a saved network didn't run: %s", esp_err_to_name(e));
+    }
+    s_scanning = false;
+    return n;
+}
+
+/* The next attempt to get on a network, with the link down (rssi_task). Plainly the C6's own network while
+ * that is what should be tried; otherwise (WS.pick) a scan, and the saved network ws_pick chooses from what
+ * it heard, handed to the C6 if it isn't the one it holds. True when a connect was asked for. */
+static bool join_next(int64_t now)
+{
+    wifi_config_t *wc = calloc(1, sizeof *wc); /* with the scan's list, too much for this task's stack */
+    if (!wc) return false;
+    bool c6 = c6_joinable(wc), asked = false;
+    bool any = false;
+    if (ws_take()) {
+        any = ws_count(WS.set) > 0;
+        ws_give();
+    }
+    s_have_net = c6 || any;
+    if (any && (WS.pick || !c6)) {
+        enum { SEEN = 24 };
+        ws_seen_t *seen = calloc(SEEN, sizeof *seen);
+        int n = seen ? scan_seen(seen, SEEN) : -1;
+        int slot = -1;
+        char ssid[33] = "";
+        if (n >= 0 && ws_take()) {
+            uint32_t skip = 0;
+            for (int i = 0; i < WS_MAX; i++)
+                if (WS.bad_until[i] > now) skip |= 1u << i;
+            slot = ws_pick(WS.set, seen, n, skip);
+            if (slot >= 0) {
+                snprintf(ssid, sizeof ssid, "%s", WS.set->n[slot].ssid);
+                if (!c6 || strcmp((const char *)wc->sta.ssid, ssid)) {
+                    /* not the one the C6 holds: hand it over */
+                    memset(wc, 0, sizeof *wc);
+                    snprintf((char *)wc->sta.ssid, sizeof wc->sta.ssid, "%s", ssid);
+                    snprintf((char *)wc->sta.password, sizeof wc->sta.password, "%s", WS.set->n[slot].pass);
+                    sta_tune(&wc->sta);
+                    esp_err_t e = ESP_FAIL;
+                    for (int i = 0; i < 6; i++) {
+                        e = esp_wifi_set_config(WIFI_IF_STA, wc);
+                        if (e != ESP_ERR_WIFI_STATE) break;
+                        vTaskDelay(pdMS_TO_TICKS(250));
+                    }
+                    if (e != ESP_OK) slot = -1;
+                }
+            }
+            ws_give();
+        }
+        int heard = 0;
+        for (int i = 0; seen && i < n; i++) heard += seen[i].ssid[0] != 0;
+        free(seen);
+        if (slot >= 0) {
+            ESP_LOGW(TAG, "wi-fi: joining saved network '%s' (%d networks heard)", ssid, heard);
+            WS.join_slot = slot;
+            s_issued = now;
+            esp_wifi_connect();
+            asked = true;
+        } else if (n >= 0) {
+            ESP_LOGI(TAG, "wi-fi: no saved network in range (%d networks heard)", heard);
+        }
+    } else if (c6) {
+        if (ws_take()) {
+            WS.join_slot = ws_find(WS.set, (const char *)wc->sta.ssid);
+            ws_give();
+        }
+        s_issued = now;
+        esp_wifi_connect();
+        asked = true;
+    }
+    memset(wc, 0, sizeof *wc); /* a password was in it */
+    free(wc);
+    return asked;
+}
+
+/* An address came: the network that gave it, and the password that got it, are remembered (rssi_task: its
+ * stack is internal RAM, which a kv write needs). Only what changed is written. */
+static void save_joined(void)
+{
+    char ssid[33], pass[65] = "";
+    snprintf(ssid, sizeof ssid, "%s", N.ssid);
+    if (!ssid[0]) return;
+    bool known = false, have = false;
+    if (ws_take()) {
+        int k = ws_find(WS.set, ssid);
+        if (!strcmp(WS.pend_ssid, ssid)) {
+            /* the password just typed (or handed in): it worked */
+            snprintf(pass, sizeof pass, "%s", WS.pend_pass);
+            have = true;
+            memset(WS.pend_pass, 0, sizeof WS.pend_pass);
+            WS.pend_ssid[0] = 0;
+        } else if (k >= 0) {
+            known = true;
+            if (ws_touch(WS.set, k)) ws_store(k);
+        }
+        ws_give();
+    }
+    if (!have && !known) {
+        /* the network the C6 already held (the first start of this firmware): it gives the password back */
+        wifi_config_t *wc = calloc(1, sizeof *wc);
+        wifi_ap_record_t ap;
+        if (wc && esp_wifi_get_config(WIFI_IF_STA, wc) == ESP_OK && !strcmp((const char *)wc->sta.ssid, ssid) &&
+            (wc->sta.password[0] || (esp_wifi_sta_get_ap_info(&ap) == ESP_OK && ap.authmode == WIFI_AUTH_OPEN))) {
+            snprintf(pass, sizeof pass, "%s", (const char *)wc->sta.password);
+            have = true;
+        } else {
+            ESP_LOGW(TAG, "wi-fi: '%s' is joined but its password didn't come back from the C6: not saved", ssid);
+        }
+        if (wc) memset(wc, 0, sizeof *wc);
+        free(wc);
+    }
+    if (have && ws_take()) {
+        bool ch = false;
+        int k = ws_put(WS.set, ssid, pass, &ch);
+        if (k >= 0 && ch) {
+            ws_store(k);
+            ESP_LOGW(TAG, "wi-fi: '%s' is saved (%d of %d)", ssid, ws_count(WS.set), WS_MAX);
+        }
+        if (k >= 0) WS.bad_until[k] = 0;
+        ws_give();
+    }
+    memset(pass, 0, sizeof pass);
+    s_have_net = true;
+}
+
 static void rssi_task(void *arg)
 {
     (void)arg;
@@ -430,17 +711,51 @@ static void rssi_task(void *arg)
     uint32_t answered = 0; /* the gateway that has answered: only its silence is news (kept across a rejoin) */
     int64_t rejoined = 0;
     for (;;) {
-        vTaskDelay(pdMS_TO_TICKS(3000));
+        /* every 3 s, or at once when the settings ask for a saved network or forget the one in use; the
+         * watchdog's own counts below run on the 3 s beat only */
+        bool poked = ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(3000)) != 0;
         wifi_ap_record_t ap;
+        if (WS.save_due && N.up) {
+            WS.save_due = false;
+            save_joined();
+        }
+        if (s_refresh_due) {
+            s_refresh_due = false;
+            net_refresh();
+        }
+        if (WS.want[0] || WS.want_drop) {
+            char ssid[33] = "", pass[65] = "";
+            bool drop = WS.want_drop;
+            WS.want_drop = false;
+            if (ws_take()) {
+                int k = ws_find(WS.set, WS.want);
+                if (k >= 0) {
+                    snprintf(ssid, sizeof ssid, "%s", WS.set->n[k].ssid);
+                    snprintf(pass, sizeof pass, "%s", WS.set->n[k].pass);
+                    WS.bad_until[k] = 0;
+                }
+                WS.want[0] = 0;
+                ws_give();
+            }
+            if (ssid[0]) {
+                ESP_LOGW(TAG, "wi-fi: joining saved network '%s' (asked for)", ssid);
+                hal_wifi_join(ssid, pass);
+            } else if (drop) {
+                /* the network in use was forgotten: leave it, and let the next attempt choose from the rest */
+                WS.pick = true;
+                s_retry_step = 0;
+                esp_wifi_disconnect();
+                if (!N.up) reconnect_soon(true);
+            }
+            memset(pass, 0, sizeof pass);
+        }
+        if (poked) continue;
         /* the reconnect the disconnect handler asked for, done here rather than on the event loop */
         int64_t now = esp_timer_get_time();
         if (s_issued && now - s_issued > CONNECT_LOST_US) s_issued = 0; /* neither joined nor dropped: gone */
         if (s_retry_at && now >= s_retry_at && !s_issued && !s_scanning && !N.up) {
             s_retry_at = 0;
-            if (wifi_has_network()) {
-                s_issued = now;
-                esp_wifi_connect();
-            }
+            join_next(now); /* the C6's own network again, or a scan and the best saved one in range */
             /* and a deadline for the next one either way: a connect that is refused, or accepted and then
              * never spoken of again, still gets asked about later. The address clears it (IP_EVENT), and
              * s_issued keeps this deadline from firing on top of an attempt that is still working. */
@@ -547,7 +862,9 @@ static void wifi_init(void)
     hal_kv_get("dns1", s_dns[0], sizeof s_dns[0]);
     hal_kv_get("dns2", s_dns[1], sizeof s_dns[1]);
     dns_apply();
-    xTaskCreatePinnedToCore(rssi_task, "rssi", 4096, NULL, 2, &N.rssi_task, 0);
+    /* 6 KB since it also chooses among the saved networks and writes one to kv when a join succeeds */
+    if (ws_take()) ws_give(); /* the saved set loaded, and its lock made, before the task that uses them */
+    xTaskCreatePinnedToCore(rssi_task, "rssi", 6144, NULL, 2, &N.rssi_task, 0);
     /* esp-hosted logs every RPC at info (one line each 3 s from the signal poll alone) */
     esp_log_level_set("rpc_core", ESP_LOG_WARN);
     esp_log_level_set("rpc_rsp", ESP_LOG_WARN);
@@ -568,6 +885,10 @@ static void wifi_init(void)
             ESP_LOGW(TAG, "wi-fi: the C6 didn't give back the password for '%.32s': leaving its settings as they are",
                      (const char *)wc.sta.ssid);
         } else {
+            /* The network the C6 holds joins the ones the tablet remembers, password and all, before anything
+             * can replace it there: until this firmware, a second network cost the first one's password. (Not
+             * the factory's, and not one the owner forgot.) */
+            if (c6_joinable(&wc) && !ws_has((const char *)wc.sta.ssid)) hal_wifi_save((const char *)wc.sta.ssid, (const char *)wc.sta.password);
             sta_tune(&wc.sta);
             t = esp_wifi_set_config(WIFI_IF_STA, &wc);
         }
@@ -577,13 +898,24 @@ static void wifi_init(void)
                                     * every poll, and what an AP throws a client off for is silence
                                     * (reason 4), never wakefulness. */
     esp_err_t s = esp_wifi_start();
+    net_refresh();
     /* The first join, from here rather than from the STA_START event: the poll that issues every later
      * reconnect only wakes every 3 s, and Wi-Fi at boot shouldn't wait for it. The event's own
-     * reconnect_soon stays as the backstop for a start that this misses. */
-    if (s == ESP_OK && wifi_has_network()) {
+     * reconnect_soon stays as the backstop for a start that this misses. The C6's own network when it is
+     * one the tablet remembers (the usual case: the last one used); else the poll scans and chooses from
+     * the saved set, as it does when this one turns out not to be in range. */
+    if (s == ESP_OK && c6_joinable(&wc)) {
+        if (ws_take()) {
+            WS.join_slot = ws_find(WS.set, (const char *)wc.sta.ssid);
+            ws_give();
+        }
         s_issued = esp_timer_get_time();
         esp_wifi_connect();
+    } else if (s == ESP_OK && s_have_net) {
+        WS.pick = true;
+        reconnect_soon(true);
     }
+    memset(&wc, 0, sizeof wc);
     /* The beacon-loss window, asked for and — on this stack — refused. The C6's default is 6 s: miss six
      * seconds of the AP's beacons, trivial on a crowded 2.4 GHz channel or a pit full of radios, and it
      * sends five probe requests and throws the connection away (reason 200). 30 s would be better, and
@@ -637,6 +969,21 @@ void hal_wifi_rejoin(void)
 
 void hal_wifi_join(const char *ssid, const char *pass)
 {
+    /* remembered once it gets an address (save_joined), not before: a wrong password is not worth keeping */
+    if (ws_take()) {
+        if (!strcmp(WS.not_ssid, ssid)) { /* asked for again: no longer forgotten */
+            WS.not_ssid[0] = 0;
+            int probe = 0;
+            if (!esp_ptr_external_ram(&probe)) hal_kv_set("wifi_not", "");
+        }
+        snprintf(WS.pend_ssid, sizeof WS.pend_ssid, "%s", ssid);
+        memset(WS.pend_pass, 0, sizeof WS.pend_pass);
+        snprintf(WS.pend_pass, sizeof WS.pend_pass, "%s", pass ? pass : "");
+        WS.join_slot = ws_find(WS.set, ssid);
+        ws_give();
+    }
+    WS.pick = false;
+    s_have_net = true;
     wifi_config_t wc = { 0 };
     snprintf((char *)wc.sta.ssid, sizeof wc.sta.ssid, "%s", ssid);
     snprintf((char *)wc.sta.password, sizeof wc.sta.password, "%s", pass);
@@ -653,9 +1000,91 @@ void hal_wifi_join(const char *ssid, const char *pass)
         vTaskDelay(pdMS_TO_TICKS(250));
     }
     if (e != ESP_OK) ESP_LOGE(TAG, "wi-fi: couldn't save '%.32s': %s", ssid, esp_err_to_name(e));
+    memset(&wc, 0, sizeof wc);
     s_retry_step = 0;
     s_issued = esp_timer_get_time();
     esp_wifi_connect();
+}
+
+int hal_wifi_saved(char names[][33], int max)
+{
+    int n = 0;
+    if (!ws_take()) return 0;
+    /* the latest used first */
+    bool done[WS_MAX] = { 0 };
+    for (; n < max; n++) {
+        int best = -1;
+        for (int i = 0; i < WS_MAX; i++)
+            if (WS.set->n[i].ssid[0] && !done[i] && (best < 0 || WS.set->n[i].used > WS.set->n[best].used)) best = i;
+        if (best < 0) break;
+        done[best] = true;
+        snprintf(names[n], 33, "%s", WS.set->n[best].ssid);
+    }
+    ws_give();
+    return n;
+}
+
+bool hal_wifi_is_saved(const char *ssid) { return ws_has(ssid); }
+
+unsigned hal_wifi_saved_gen(void) { return WS.gen; }
+
+bool hal_wifi_join_saved(const char *ssid)
+{
+    if (!ws_take()) return false;
+    bool have = ws_find(WS.set, ssid) >= 0;
+    if (have) snprintf(WS.want, sizeof WS.want, "%s", ssid);
+    ws_give();
+    if (have && N.rssi_task) xTaskNotifyGive(N.rssi_task);
+    return have;
+}
+
+void hal_wifi_save(const char *ssid, const char *pass)
+{
+    if (!ws_take()) return;
+    bool ch = false;
+    uint32_t was = 0;
+    int cur = ws_find(WS.set, ssid);
+    if (cur >= 0) was = WS.set->n[cur].used;
+    int k = ws_put(WS.set, ssid, pass, &ch);
+    /* added, not used: it doesn't jump the queue ahead of the network in use */
+    if (k >= 0) WS.set->n[k].used = cur >= 0 ? was : 0;
+    bool differs = cur < 0 || ch;
+    if (k >= 0 && cur >= 0 && ch) {
+        /* only the mark moved (and was put back)? then nothing to write */
+        char a[WS_ENC_MAX], key[12], b[WS_ENC_MAX] = "";
+        ws_encode(&WS.set->n[k], a, sizeof a);
+        snprintf(key, sizeof key, "wifi_s%d", k);
+        hal_kv_get(key, b, sizeof b);
+        differs = strcmp(a, b) != 0;
+        memset(a, 0, sizeof a);
+        memset(b, 0, sizeof b);
+    }
+    if (k >= 0 && differs) {
+        ws_store(k);
+        ESP_LOGW(TAG, "wi-fi: '%s' is saved (%d of %d)", ssid, ws_count(WS.set), WS_MAX);
+    }
+    ws_give();
+    s_have_net = true;
+}
+
+void hal_wifi_forget(const char *ssid)
+{
+    if (!ws_take()) return;
+    int k = ws_find(WS.set, ssid);
+    bool gone = ws_remove(WS.set, k);
+    if (gone) {
+        ws_store(k);
+        /* the C6 may hold it still: named, so it is neither joined from there nor taken back into the set */
+        snprintf(WS.not_ssid, sizeof WS.not_ssid, "%s", ssid);
+        hal_kv_set("wifi_not", WS.not_ssid);
+        ESP_LOGW(TAG, "wi-fi: '%s' is forgotten (%d saved)", ssid, ws_count(WS.set));
+    }
+    ws_give();
+    net_refresh_soon();
+    if (gone && !strcmp(N.ssid, ssid)) {
+        WS.want_drop = true;
+        if (N.rssi_task) xTaskNotifyGive(N.rssi_task);
+    }
 }
 
 int hal_wifi_scan(hal_ap_t *out, int max)

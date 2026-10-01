@@ -96,7 +96,7 @@ Two paths, chosen per motion:
 | notifications | `ui_lock.c`, `ui_shell.c` (the island) | every island message kept; listed in the control center and on the lock screen; the island's orb shows a pip until the control center is opened |
 | settings | `hal_kv_*` (NVS) | one key per setting |
 | storage | `ui_storage.c` | microSD layout `/sdcard/CATOS/{DOCS,PHOTOS,AUDIO,DATA,LOGS}` |
-| network | `hal_tab5_net.c` | Wi-Fi (C6 over SDIO), USB tether, mDNS, HTTPS streaming |
+| network | `hal_tab5_net.c`, `wifi_saved.c` | Wi-Fi (C6 over SDIO), USB tether, mDNS, HTTPS streaming; every network joined is remembered (below) |
 | time | SNTP, RTC | alarms ring with the app closed (`ui_os_boot`) |
 | robot | `components/catalyst` (NT4 model) | see docs/catalyst-integration.md for the library contract |
 | assistant | `components/assist`, Catalyst Link | Claude via the PC or a key; GPT with a key. Each AI has its own long-term memory, the tablet's own tools, and shows its work on the island: docs/assistant.md |
@@ -107,6 +107,31 @@ Two paths, chosen per motion:
 | log analysis | `components/assist/src/analyze.c`, `components/catalyst/src/cat_logs.c` | a log's digest read by a GPT pit engineer (below) |
 | battery fleet | `ui_batt.c`, `components/catalyst/src/cat_batt.c` | the team's batteries: which went in when, what the logs measured, which goes in next (below) |
 | home mode | `ui_home_mode.c`, `ui_home_np.c`, `ui_home_faces.c`, `ui_home_art.c`, `components/home` | three pages paged with a swipe: clock faces (dial, horizon, dots, words, moon; a flick up or down for the next; a dim night face 22:00–7:00 when asked for), the desk (time, today's sky, the PC's music, Home Assistant, the companion, a launcher: music, smart home, weather, calendar, timer, alarms, photos; and a photos screensaver), and now playing (the cover big on a surface tinted from it). Songs without art get a cover generated from their artist and album (`home_art.c`); comes up by hand, at boot, on the stand, or from an NFC tag on a Unit RFID 2 in Port A |
+
+#### Saved networks
+
+The C6 keeps one network, so until this a second network cost the first one's password. The tablet keeps its
+own set (`wifi_saved.h`, pure and host-tested in `test/test_wifi.c`): every network it has joined, with its
+password, 16 at most, the one used longest ago making room.
+
+- **Where.** kv `wifi_s0`..`wifi_s15`, one slot a key (`used:hex(ssid):password`), in the tablet's NVS: a
+  reflash of the app leaves them. The dev console's `kv` treats them as secret; nothing logs or returns a
+  password.
+- **Saved when** a join gets an address (never before: a mistyped password isn't kept); the network the C6
+  holds at start-up is taken into the set with the password the C6 gives back; KEYS.ENV's `WIFI_SSID` /
+  `WIFI_PASS` are added beside the others.
+- **Joining.** At start-up the C6's own network is tried at once (it is the last one used). When that isn't
+  in range, a password is refused, or a second attempt in a row fails, the network task (`rssi_task`, never
+  the UI's thread) scans and joins the loudest saved network in range, keeping the last-used one when it is
+  within 8 dB of the loudest, and passing over for 5 minutes one that just refused its password. It only
+  chooses while the link is down, so two networks are never traded back and forth; a working link that
+  blinks is retried as it is, at once, with the back-off as before.
+- **Settings > network.** The saved networks, the latest used first, the one in use lit: a tap joins with
+  no password asked; the x, tapped twice, forgets (the network in use is left, and another joined). A scan's
+  list marks the saved ones. A forgotten network the C6 still holds is named in kv `wifi_not`, so it is
+  neither joined from there nor taken back.
+- **Dev console.** `wifi` lists the names; `wifi join NAME`, `wifi forget NAME`, `wifi open NAME` (an open
+  network remembered without joining, for testing the list).
 
 #### Match alerts
 

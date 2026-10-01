@@ -360,6 +360,16 @@ void hal_net(hal_net_t *o)
 }
 
 void hal_wifi_join(const char *ssid, const char *pass) { (void)ssid; (void)pass; }
+int hal_wifi_saved(char names[][33], int max)
+{
+    if (max > 0) snprintf(names[0], 33, "5805_pit");
+    return max > 0;
+}
+bool hal_wifi_is_saved(const char *ssid) { return ssid && !strcmp(ssid, "5805_pit"); }
+unsigned hal_wifi_saved_gen(void) { return 1; }
+bool hal_wifi_join_saved(const char *ssid) { return hal_wifi_is_saved(ssid); }
+void hal_wifi_save(const char *ssid, const char *pass) { (void)ssid; (void)pass; }
+void hal_wifi_forget(const char *ssid) { (void)ssid; }
 
 int hal_wifi_scan(hal_ap_t *out, int max)
 {

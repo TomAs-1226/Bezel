@@ -232,7 +232,7 @@ static void run(char *line)
          * somebody's terminal scrollback and in whatever log it was piped to. */
         static const char *const SECRET[] = { "openai", "oai_key", "ha_token", "tba_key",
                                               "link_token", "anthropic", "wifi_pass", "nexus_key", "frc_ev_token",
-                                              "token", "_key" };
+                                              "token", "_key", "wifi_s" }; /* wifi_s0..15: the saved networks, passwords in them */
         const char *k = line + 3;
         bool secret = false;
         for (size_t i = 0; i < sizeof SECRET / sizeof *SECRET; i++)
@@ -245,6 +245,25 @@ static void run(char *line)
         else snprintf(msg, sizeof msg, "MEM kv %s = %s\n", k, v);
         memset(v, 0, sizeof v);
         say(msg);
+        say("OK\n");
+    } else if (!strncmp(line, "wifi", 4) && (line[4] == 0 || line[4] == ' ')) {
+        /* "wifi" lists the networks the tablet remembers (names only, the latest used first); "wifi join NAME"
+         * joins one with its saved password; "wifi forget NAME"; "wifi open NAME" remembers an open network
+         * without joining it (for testing the list: there is no way to hand a password in here). */
+        const char *a = line[4] ? line + 5 : "";
+        if (!strncmp(a, "join ", 5)) say(hal_wifi_join_saved(a + 5) ? "MEM joining\n" : "MEM not a saved network\n");
+        else if (!strncmp(a, "forget ", 7)) hal_wifi_forget(a + 7);
+        else if (!strncmp(a, "open ", 5)) hal_wifi_save(a + 5, "");
+        char (*names)[33] = calloc(HAL_WIFI_SAVED, 33);
+        int n = names ? hal_wifi_saved(names, HAL_WIFI_SAVED) : 0;
+        char m[64];
+        snprintf(m, sizeof m, "MEM %d saved\n", n);
+        say(m);
+        for (int i = 0; i < n; i++) {
+            snprintf(m, sizeof m, "MEM saved %s\n", names[i]);
+            say(m);
+        }
+        free(names);
         say("OK\n");
     } else if (!strncmp(line, "dns", 3) && (line[3] == 0 || line[3] == ' ')) {
         /* "dns" shows it, "dns auto" gives it back to DHCP, "dns 8.8.8.8 8.8.4.4" chooses. */
@@ -575,5 +594,5 @@ void hal_dev_init(void)
         return;
     }
     usb_serial_jtag_vfs_use_driver(); /* the log goes through the driver too, so the two don't collide */
-    xTaskCreatePinnedToCore(dev_task, "dev", 4096, NULL, 2, NULL, 0);
+    xTaskCreatePinnedToCore(dev_task, "dev", 5120, NULL, 2, NULL, 0); /* 5 KB: "wifi forget" writes kv from here */
 }
