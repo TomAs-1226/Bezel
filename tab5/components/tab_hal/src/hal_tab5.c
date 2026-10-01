@@ -1323,6 +1323,7 @@ static void rect_copy(uint16_t *dst, const uint16_t *src, int x, int y, int w, i
 }
 
 /* the gap a slide opens where no neighbour is drawn: copied from a buffer of ground, also by DMA */
+#define GROUND_ROWS 128
 static uint16_t *s_ground;
 static uint16_t s_ground_c;
 
@@ -1330,11 +1331,12 @@ static void rows_fill(uint16_t *dst, int dy, int n, uint16_t c)
 {
     if (n <= 0 || !s_ground) return;
     if (c != s_ground_c) {
-        for (size_t i = 0; i < (size_t)PANEL_W * PANEL_H; i++) s_ground[i] = c;
-        esp_cache_msync(s_ground, (size_t)PANEL_W * PANEL_H * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        for (size_t i = 0; i < (size_t)PANEL_W * GROUND_ROWS; i++) s_ground[i] = c;
+        esp_cache_msync(s_ground, (size_t)PANEL_W * GROUND_ROWS * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
         s_ground_c = c;
     }
-    rows_copy(dst, dy, s_ground, dy, n);
+    /* one colour: a strip of it copied as often as the gap is tall, not a whole screen of it kept (1.8 MB) */
+    for (int o = 0; o < n; o += GROUND_ROWS) rows_copy(dst, dy + o, s_ground, 0, n - o < GROUND_ROWS ? n - o : GROUND_ROWS);
 }
 
 /* where a landscape rectangle lands in the portrait buffer */
@@ -1708,7 +1710,7 @@ static void slide_init(void)
     SLD.snap = heap_caps_aligned_alloc(128, n, MALLOC_CAP_SPIRAM);
     SLD.nb = heap_caps_aligned_alloc(128, n, MALLOC_CAP_SPIRAM);
     SLD.chrome = heap_caps_aligned_alloc(128, n, MALLOC_CAP_SPIRAM);
-    s_ground = heap_caps_aligned_alloc(128, n, MALLOC_CAP_SPIRAM);
+    s_ground = heap_caps_aligned_alloc(128, (size_t)PANEL_W * GROUND_ROWS * 2, MALLOC_CAP_SPIRAM);
     s_ground_c = 1; /* differs from any real ground: filled on first use */
     if (!SLD.snap || !SLD.nb || !SLD.chrome || !s_ground) ESP_LOGW(TAG, "no memory for the page slide's pictures");
 }
