@@ -1502,6 +1502,55 @@ static struct {
 
 static bool s_mask_on = true; /* dev console "mask 0": the chrome held as its rectangles, as before */
 void hal_slide_mask(bool on) { s_mask_on = on; }
+
+/* ---- where the PSRAM went (dev "psram") ----
+ *
+ * The heap reports a number; this reports who has it. The big blocks here are all taken once, at boot,
+ * and never given back, so their total is the floor under everything the UI can allocate -- worth
+ * printing with the free figure, because "0.6 MB free" means nothing without the 12 MB it is left over
+ * from. The program's own share is in neither: with CONFIG_SPIRAM_XIP_FROM_PSRAM the .text and .rodata
+ * segments are loaded into PSRAM at boot and run from there, outside the heap entirely, so PSRAM's total
+ * is already that much smaller than the 32 MB on the package.
+ *
+ * `out` takes the figures a caller wants to print beside its own: [0] the fixed blocks' bytes, [1] free,
+ * [2] the largest free block, [3] the display's frame buffers. */
+void hal_mem_psram(size_t out[4])
+{
+    size_t fb = (size_t)PANEL_W * PANEL_H * 2 * (size_t)s_nfb;
+    size_t fixed = fb;
+    if (SLD.snap) fixed += (size_t)PANEL_W * PANEL_H * 2;
+    if (SLD.nb) fixed += (size_t)PANEL_W * PANEL_H * 2;
+    if (SLD.chrome) fixed += (size_t)PANEL_W * PANEL_H * 2;
+    if (s_ground) fixed += (size_t)PANEL_W * GROUND_ROWS * 2;
+    if (J.stage) fixed += STAGE_PX * 2 + 256;
+    if (CM.span) fixed += sizeof(cm_span_t) * CM_SPANS;
+    out[0] = fixed;
+    out[1] = heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    out[2] = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM);
+    out[3] = fb;
+}
+
+void hal_mem_psram_lines(void (*line)(const char *))
+{
+    char b[120];
+    size_t px = (size_t)PANEL_W * PANEL_H * 2;
+    snprintf(b, sizeof b, "MEM   display frame buffers   %4u KB  (%d x %ux%u)\n",
+             (unsigned)(px * s_nfb / 1024), s_nfb, (unsigned)PANEL_W, (unsigned)PANEL_H);
+    line(b);
+    snprintf(b, sizeof b, "MEM   page slide pictures     %4u KB  (snap%s nb%s chrome%s)\n",
+             (unsigned)(px * ((SLD.snap ? 1 : 0) + (SLD.nb ? 1 : 0) + (SLD.chrome ? 1 : 0)) / 1024),
+             SLD.snap ? "" : " -", SLD.nb ? "" : " -", SLD.chrome ? "" : " -");
+    line(b);
+    snprintf(b, sizeof b, "MEM   rotation stage          %4u KB\n", (unsigned)((STAGE_PX * 2 + 256) / 1024));
+    line(b);
+    snprintf(b, sizeof b, "MEM   ground strip            %4u KB  (%d rows)\n",
+             (unsigned)((size_t)PANEL_W * GROUND_ROWS * 2 / 1024), GROUND_ROWS);
+    line(b);
+    snprintf(b, sizeof b, "MEM   slide chrome mask       %4u KB  (%d spans)\n",
+             (unsigned)(CM.span ? sizeof(cm_span_t) * CM_SPANS / 1024 : 0), CM.span ? CM_SPANS : 0);
+    line(b);
+}
+
 static void cm_reset(void) { CM.ready = false; }
 
 static void cm_sync(uint16_t *buf, int y0, int y1, int dir)
@@ -1891,6 +1940,21 @@ static void display_init(void)
 #else
     ESP_ERROR_CHECK(esp_lcd_dpi_panel_get_frame_buffer(T.lcd.panel, 2, &T.fb[0], &T.fb[1]));
 #endif
+    /* Black, before the panel scans any of them out.
+     *
+     * The driver allocates these three and does not clear them, and PSRAM comes up holding whatever it
+     * holds -- which reads as vertical bars of saturated colour, one per few hundred bytes of noise. Any
+     * region of a buffer that is handed over before anything has been written into it shows exactly that,
+     * and it is what a panel shot caught: the left of the frame was the page, the right was never
+     * written and was bars of blue, green and cyan. On the glass it is a flash of colour for one frame.
+     *
+     * Clearing them does not stop a region going unwritten -- that is the catch-up's business -- but it
+     * makes the worst case black instead of a colour field, and it costs one 5.4 MB memset at boot. */
+    for (int i = 0; i < s_nfb; i++)
+        if (T.fb[i]) {
+            memset(T.fb[i], 0, (size_t)PANEL_W * PANEL_H * 2);
+            esp_cache_msync(T.fb[i], (size_t)PANEL_W * PANEL_H * 2, ESP_CACHE_MSYNC_FLAG_DIR_C2M);
+        }
     s_scan = 0; /* the panel starts on the first */
     /* PSRAM is shared by the panel's scan-out (DW-GDMA, ~110 MB/s, a hard deadline), DMA2D (a scrolled list
      * moves ~3 MB a frame), the PPA and the CPU's cache. Every master starts at QoS 0, equal: a long DMA2D
@@ -3107,6 +3171,29 @@ static void boot_on_restart(void)
 
 static void (*s_watch)(const char *stage);
 
+/* ---- counting the cyan flashes ----
+ *
+ * When the panel's scan-out cannot read the frame buffer out of PSRAM fast enough, its FIFO runs dry and
+ * the glass goes cyan for a frame. There is nothing to recover: by the time anyone knows, the line is
+ * already on screen. The DSI driver notices it in its own ISR and logs one line -- and that line is the
+ * only evidence there is, because the panel driver exposes no underrun callback and clears the interrupt
+ * status itself before anyone else could read it.
+ *
+ * So the log is the instrument. Wrapping esp_log's output and counting that one message turns "it keeps
+ * flashing cyan" into a number anybody can read off the dev console, which is the difference between
+ * guessing at a bandwidth problem and measuring one. Everything still goes through to the console: this
+ * only counts on the way past. Called from the driver's ISR, so it does nothing but add. */
+static volatile uint32_t s_underruns;
+static int (*s_log_next)(const char *, va_list);
+
+static int log_count_underruns(const char *fmt, va_list ap)
+{
+    if (fmt && strstr(fmt, "underrun")) s_underruns++;
+    return s_log_next ? s_log_next(fmt, ap) : 0;
+}
+
+uint32_t hal_underruns(void) { return s_underruns; }
+
 void hal_boot_watch(void (*fn)(const char *stage)) { s_watch = fn; }
 
 void hal_boot_stage(const char *stage)
@@ -3146,6 +3233,7 @@ bool hal_init(void)
 {
     boot_record_init();
     hal_dev_init(); /* first: the console carries the log from here on */
+    s_log_next = esp_log_set_vprintf(log_count_underruns); /* before the panel exists: count from frame one */
     hal_boot_stage("nvs");
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {
