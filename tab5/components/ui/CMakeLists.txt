@@ -1,1 +1,1 @@
-idf_component_register(SRC_DIRS "src" INCLUDE_DIRS "include" REQUIRES bezel catalyst nt4 tab_hal assist home LDFRAGMENTS "linker.lf")
+idf_component_register(SRC_DIRS "src" INCLUDE_DIRS "include" REQUIRES bezel catalyst nt4 tab_hal assist home intel LDFRAGMENTS "linker.lf")

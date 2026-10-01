@@ -66,6 +66,7 @@ static const icon_def_t DEFS[] = {
     { "ruler", BZ_I_STRAIGHTEN, DIAG },
     { "reference", BZ_I_MENU_BOOK, DIAG },
     { "assist", BZ_I_AUTO_AWESOME, TABLET },
+    { "insights", BZ_I_INSIGHTS, TABLET },
     { "link", BZ_I_COMPUTER, TABLET },
     { "pair pc", BZ_I_LINK, TABLET },
     { "companion", BZ_I_VISIBILITY, TABLET },

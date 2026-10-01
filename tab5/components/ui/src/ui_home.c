@@ -10,6 +10,7 @@
  * Portrait: the hero full width across the top, the robot under it, the three small cards across, the row in two
  * lines of three. `hm_layout()` is where that choice is made and the only place either frame's numbers appear. */
 #include "ui_internal.h"
+#include "ui_intel.h"
 
 #include <string.h>
 #include <time.h>
@@ -104,8 +105,9 @@ static void home_refresh(void *u)
         ui_text(HM.date, "%s %d", d, tm.tm_mday);
         /* an event day: the next match of ours where the greeting was ("next: Q34 · 14:52 · red with ..."),
          * in full ink, and the card opens The Blue Alliance */
-        char nx[96];
-        bool match = ui_match_next_line(nx, sizeof nx);
+        char nx[160];
+        /* what the intelligence core says matters most, when it says anything (ui_intel.h), else the next match */
+        bool match = ui_intel_line(nx, sizeof nx) || ui_match_next_line(nx, sizeof nx);
         if (match) ui_text(HM.greet, "%s", nx);
         else ui_text(HM.greet, "%s", tm.tm_hour < 5 ? "late night" : tm.tm_hour < 12 ? "good morning" : tm.tm_hour < 18 ? "good afternoon" : "good evening");
         if (match != HM.match) {

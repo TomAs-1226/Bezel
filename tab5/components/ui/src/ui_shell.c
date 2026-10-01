@@ -1718,7 +1718,8 @@ static void warm_apps(double now)
     static const ui_app_t *const WARM[] = { &APP_SETTINGS, &APP_SYSTEMCORE };
     static size_t next;
     static double idle_since;
-    if (next >= sizeof WARM / sizeof WARM[0]) return;
+    static bool glass_done;
+    if (next >= sizeof WARM / sizeof WARM[0] && glass_done) return;
     bool quiet = !U.app && U.k.value <= 0.01f && lv_obj_has_flag(U.win, LV_OBJ_FLAG_HIDDEN) && !MC.pages && !MC.window &&
                  !bz_ui_thawing() && !ui_home_mode_active() && !ui_overlay_up() && !ui_alarm_up() && bz_ui_idle_s() > 3;
     if (!quiet || now < 20) {
@@ -1726,6 +1727,12 @@ static void warm_apps(double now)
         return;
     }
     if (now - idle_since < 1) return; /* quiet for a moment first: not the frame a finger lands */
+    if (next >= sizeof WARM / sizeof WARM[0]) {
+        /* then the glass surfaces not baked yet (the control center's panels), one per quiet moment */
+        glass_done = !bz_ui_glass_prewarm_one();
+        idle_since = now - 0.6; /* the next in ~0.4 s, if it stays quiet */
+        return;
+    }
     double t0 = hal_seconds();
     app_inner(WARM[next]);
     printf("app %s: built ahead in %.0f ms\n", WARM[next]->name, (hal_seconds() - t0) * 1e3);

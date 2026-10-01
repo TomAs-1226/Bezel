@@ -12,6 +12,7 @@
  * control does. The grid takes eight columns across the landscape frame and four across phone mode's, so
  * the same controls reflow into either rather than needing a second layout. */
 #include "ui_internal.h"
+#include "ui_intel.h"
 
 #include <math.h>
 #include <stdlib.h>
@@ -876,6 +877,7 @@ void ui_cc_init(void)
      * belong at the foot */
     ui_light_cc_add();
     ui_home_mode_cc_add();
+    ui_intel_cc_add(); /* ask or do anything (ui_intel.c) */
     add(&CTL_LINK);
     add(&CTL_BRIGHT);
     add(&CTL_VOL);

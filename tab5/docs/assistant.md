@@ -121,6 +121,19 @@ thread and answered within 4 s (a request the worker stopped waiting for is fini
 never answered into the next one). Anything that would take the screen from the companion (another app,
 sleep, the lock screen, home mode) waits until she has finished speaking.
 
+## The intelligence core's tools
+
+Both AIs read what the tablet's intelligence core knows (docs/intel.md), served through the ui's handler on
+the calling AI's worker:
+
+| Tool | Returns |
+|---|---|
+| `insights` | what the tablet noticed, worst first, each with where it came from; today's briefing; the sources' state |
+| `event_live` | Nexus's live queue (now queuing, our matches' status and estimated times, announcements, parts requests) and Statbotics (EPA, ranks, each match's win chance); asked again when stale |
+| `robot_network` | Systemcore's vision aggregator, each Limelight's REST status, CTRE Phoenix's devices and firmware |
+
+Every question's context line also ends with the core's most important insight ("noticed: ...").
+
 ## Diagnostics
 
 - `triage`: every anomaly the tablet can see, ranked worst first in the triage order (link and program,

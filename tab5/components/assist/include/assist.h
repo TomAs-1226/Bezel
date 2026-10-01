@@ -149,7 +149,9 @@ const char *assist_import_note(void);
  * (NULL or "" clears it). The tools get_matches and get_batteries return MATCHES and BATTERIES; NOW is one line
  * for every question's context ("next match Q34 at 14:05 on red · battery #7 goes in next"). Any thread;
  * assist_desk_get's copy is the caller's to free. */
-typedef enum { AS_DESK_MATCHES, AS_DESK_BATTERIES, AS_DESK_NOW, AS_DESK_N } as_desk_t;
+typedef enum { AS_DESK_MATCHES, AS_DESK_BATTERIES, AS_DESK_NOW, AS_DESK_INTEL, AS_DESK_N } as_desk_t;
+/* AS_DESK_INTEL: the intelligence core's most important insight, one line ("noticed: Q34 queues ~14:32 ..."),
+ * for every question's context after NOW (ui_intel.c posts it; "" none). */
 /* The Blue Alliance, handed in rather than called: `home` requires `assist`, so the assistant
  * cannot reach tba.h. Whoever requires both (the ui) registers tba_read here at start-up; without
  * it the tba_query tool says so rather than failing obscurely. Called from the assistant's worker,
