@@ -208,6 +208,25 @@ void hal_wifi_diag(char *out, size_t n);
 void hal_wifi_join(const char *ssid, const char *pass);
 void hal_wifi_rejoin(void);
 
+/* The networks the tablet remembers (wifi_saved.h): every one it has joined, with its password, 16 at most
+ * (the one used longest ago makes room), in the tablet's own kv so they survive a reflash and whatever the
+ * C6 keeps. A network is saved when a join to it gets an address. With the link down the tablet scans and
+ * joins the loudest saved network in range, keeping the last-used when the two are comparable; it never
+ * leaves a network that works for a louder one. Passwords are never returned, shown or logged. */
+#define HAL_WIFI_SAVED 16
+/* The saved names, the latest used first; the count. */
+int hal_wifi_saved(char names[][33], int max);
+bool hal_wifi_is_saved(const char *ssid);
+unsigned hal_wifi_saved_gen(void);            /* changes with the set: a list redraws on it */
+/* Joins a saved network with the password it was saved with; false when it isn't saved. Returns at once:
+ * the radio is asked on the network task. */
+bool hal_wifi_join_saved(const char *ssid);
+/* Adds a network without joining it (KEYS.ENV's WIFI_SSID/WIFI_PASS). Writes kv: UI thread or a worker with
+ * an internal stack. */
+void hal_wifi_save(const char *ssid, const char *pass);
+/* Forgets one (kv: as above). The network in use is left, and another saved one in range joined. */
+void hal_wifi_forget(const char *ssid);
+
 /* Something on this network answered for a host we asked for and its certificate did not match: a
  * school filter, a captive portal, a proxy. The link is fine; the internet is not what it claims to
  * be. Cleared when the tablet gets a new address. */

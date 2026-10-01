@@ -1076,7 +1076,15 @@ static struct {
     ui_kb_t *pwkb;                 /* the Wi-Fi password: the shell's one keyboard */
     char entry[8];
     char join_ssid[33];
-} ST;
+    /* the networks the tablet remembers (hal_wifi_saved): a tap joins, the x (twice) forgets */
+    lv_obj_t *saved_list;
+    char saved[HAL_WIFI_SAVED][33];
+    int nsaved;
+    unsigned saved_gen;
+    int forget_armed;              /* the saved network whose x was tapped once, -1 none */
+    double forget_at;
+    char shown_ssid[33];           /* the network in use when the list was last drawn */
+} ST = { .forget_armed = -1 };
 
 static const char *const ADDR_LABEL[6] = { "by team", "robot.local", "usb 172.22.11.2", "systemcore usb",
                                            "the pc", "simulator" };
@@ -1275,11 +1283,71 @@ static void *scan_worker(void *u)
     return NULL;
 }
 
+/* a network the tablet remembers: joined with the password it was saved with, nothing asked */
+static void st_join_saved(const char *ssid)
+{
+    if (!hal_wifi_join_saved(ssid)) return;
+    snprintf(S.wifi_ssid, sizeof S.wifi_ssid, "%s", ssid);
+    char msg[64];
+    snprintf(msg, sizeof msg, "joining %.40s", ssid);
+    ui_island_say(BZ_I_WIFI, msg);
+}
+
+static void st_saved_tap(lv_obj_t *o, void *u)
+{
+    (void)o;
+    int i = (int)(intptr_t)u;
+    if (i >= 0 && i < ST.nsaved) st_join_saved(ST.saved[i]);
+}
+
+static void st_saved_forget(lv_obj_t *o, void *u)
+{
+    (void)o;
+    int i = (int)(intptr_t)u;
+    if (i < 0 || i >= ST.nsaved) return;
+    char msg[80];
+    if (ST.forget_armed == i && hal_seconds() - ST.forget_at < 5) {
+        ST.forget_armed = -1;
+        snprintf(msg, sizeof msg, "forgot %.40s", ST.saved[i]);
+        hal_wifi_forget(ST.saved[i]); /* the list redraws on the set's change */
+    } else {
+        ST.forget_armed = i;
+        ST.forget_at = hal_seconds();
+        snprintf(msg, sizeof msg, "tap the x again to forget %.40s", ST.saved[i]);
+    }
+    ui_island_say(BZ_I_WIFI, msg);
+}
+
+/* the saved networks, the latest used first; drawn again when the set or the network in use changes */
+static void st_saved_show(const hal_net_t *n)
+{
+    if (!ST.saved_list) return;
+    const char *cur = n->up ? n->ssid : "";
+    if (ST.saved_gen == hal_wifi_saved_gen() + 1 && !strcmp(ST.shown_ssid, cur)) return;
+    ST.saved_gen = hal_wifi_saved_gen() + 1;
+    snprintf(ST.shown_ssid, sizeof ST.shown_ssid, "%s", cur);
+    ST.forget_armed = -1;
+    ST.nsaved = hal_wifi_saved(ST.saved, HAL_WIFI_SAVED);
+    lv_obj_clean(ST.saved_list);
+    for (int i = 0; i < ST.nsaved; i++) {
+        /* a name and its x, kept together as the row wraps */
+        lv_obj_t *pair = bz_row(ST.saved_list, 4);
+        lv_obj_t *c = ui_chip(pair, ST.saved[i], st_saved_tap, (void *)(intptr_t)i);
+        ui_chip_set(c, !strcmp(ST.saved[i], cur));
+        ui_button(pair, BZ_I_CLOSE, NULL, st_saved_forget, (void *)(intptr_t)i);
+    }
+    if (!ST.nsaved) bz_label(ST.saved_list, "none yet: a network is remembered once it has been joined", BZ_F_CAPTION, BZ_C_DIM);
+}
+
 static void st_ap(lv_obj_t *o, void *u)
 {
     (void)o;
     const hal_ap_t *ap = &SCN.ap[(intptr_t)u];
     snprintf(ST.join_ssid, sizeof ST.join_ssid, "%s", ap->ssid);
+    if (hal_wifi_is_saved(ap->ssid)) {
+        st_join_saved(ap->ssid);
+        return;
+    }
     if (!ap->secure) {
         /* an open network needs no password */
         hal_wifi_join(ST.join_ssid, "");
@@ -1312,11 +1380,11 @@ static void st_scan_show(void)
     SCN.state = 0;
     lv_obj_clean(ST.wifi_list);
     for (int i = 0; i < SCN.n; i++) {
-        char t[48];
-        /* four steps of signal, as a phone shows it */
+        char t[64];
+        /* four steps of signal, as a phone shows it; a remembered one says so (a tap joins it, no password) */
         int r = SCN.ap[i].rssi, bars = r > -55 ? 4 : r > -67 ? 3 : r > -78 ? 2 : 1;
-        snprintf(t, sizeof t, "%s  %.*s%.*s", SCN.ap[i].ssid, bars * 3, "\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f",
-                 (4 - bars) * 3, "\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b");
+        snprintf(t, sizeof t, "%s  %.*s%.*s%s", SCN.ap[i].ssid, bars * 3, "\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f\xe2\x97\x8f",
+                 (4 - bars) * 3, "\xe2\x97\x8b\xe2\x97\x8b\xe2\x97\x8b", hal_wifi_is_saved(SCN.ap[i].ssid) ? "  saved" : "");
         ui_chip(ST.wifi_list, t, st_ap, (void *)(intptr_t)i);
     }
     if (!SCN.n) bz_label(ST.wifi_list, "nothing in range", BZ_F_CAPTION, BZ_C_DIM);
@@ -1333,6 +1401,7 @@ static void settings_refresh(void)
     hal_net_t n;
     hal_net(&n);
     st_scan_show();
+    st_saved_show(&n);
     if (n.up) ui_text(ST.wifi_state, "%s · %d dBm · %s", n.ssid, n.rssi, n.ip);
     else if (S.wifi_ssid[0]) ui_text(ST.wifi_state, "not connected · looking for %s", S.wifi_ssid);
     else ui_text(ST.wifi_state, "not connected · scan to pick a network");
@@ -1796,6 +1865,13 @@ static void settings_build(lv_obj_t *b)
     ST.wifi_state = bz_label_line(t, "", BZ_F_BODY, BZ_C_INK, iw);
     ui_button(t, BZ_I_WIFI, "scan for networks", st_scan, NULL);
     ST.wifi_list = sx_wrap_row(t, iw);
+    bz_label(t, "saved networks: a tap joins, the x forgets", BZ_F_LABEL, BZ_C_DIM);
+    ST.saved_list = sx_wrap_row(t, iw);
+    lv_obj_t *wn = bz_label(t, "Every network the tablet has joined is remembered with its password (16 at most). When the "
+                               "link drops, or at start-up, it joins the strongest one in range by itself.",
+                            BZ_F_CAPTION, BZ_C_DIM);
+    lv_obj_set_width(wn, iw);
+    lv_label_set_long_mode(wn, LV_LABEL_LONG_WRAP);
     ui_section(t, "usb tether");
     ST.usb_state = bz_label(t, "", BZ_F_BODY, BZ_C_INK);
     lv_obj_set_width(ST.usb_state, iw);
