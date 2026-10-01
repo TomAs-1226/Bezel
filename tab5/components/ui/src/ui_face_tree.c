@@ -172,7 +172,7 @@ static void tree_build(lv_obj_t *b)
         p->shown_x = p->shown_y = -9999;
     }
     TR.time = lv_label_create(b);
-    lv_obj_set_style_text_font(TR.time, &hm_font_thin, 0);
+    ui_face_font_bind(TR.time, UI_FF_THIN);
     TR.date = bz_label_line(b, "", BZ_F_BODY, BZ_C_INK, 520);
     lv_obj_set_pos(TR.date, 56, 226);
     TR.title = bz_label_line(b, "the season's tree", BZ_F_NAME, BZ_C_INK, 520);
@@ -501,5 +501,6 @@ void hm_tree_dev(void)
            TR.view.growth, TR.steps, TR.view.fruit, TR.month, TR.wind01, TR.np, TR.pmode, TR.mesh ? "held" : "free");
 }
 
-const hm_face_t HM_F_TREE = { .name = "tree", .build = tree_build, .minute = tree_minute, .tick = tree_tick,
-                              .frame = tree_frame, .ready = tree_ready, .leave = tree_leave, .held = tree_held };
+const hm_face_t HM_F_TREE = { .name = "tree", .fonts = UI_FF_BIT(UI_FF_THIN), .build = tree_build, .minute = tree_minute,
+                              .tick = tree_tick, .frame = tree_frame, .ready = tree_ready, .leave = tree_leave,
+                              .held = tree_held };

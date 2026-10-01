@@ -44,6 +44,7 @@ static void sun_next(char *what, size_t wn, char *when, size_t hn)
 static struct {
     lv_obj_t *hh, *colon, *mm, *top[3][2], *rule, *foot_l, *foot_r;
     char shown[8];
+    const lv_font_t *font;     /* the numerals as last set out: they are set out again when it changes hands */
 } PO;
 
 static void poster_build(lv_obj_t *b)
@@ -53,7 +54,7 @@ static void poster_build(lv_obj_t *b)
     PO.mm = lv_label_create(b);
     lv_obj_t *big[3] = { PO.hh, PO.colon, PO.mm };
     for (int i = 0; i < 3; i++) {
-        lv_obj_set_style_text_font(big[i], &hm_font_poster, 0);
+        ui_face_font_bind(big[i], UI_FF_POSTER);
         lv_obj_add_flag(big[i], LV_OBJ_FLAG_EVENT_BUBBLE);
     }
     lv_label_set_text_static(PO.colon, ":");
@@ -84,7 +85,9 @@ static void poster_minute(const struct tm *tm, bool force)
     }
     char hm[8];
     hm_hm(tm, hm, sizeof hm);
-    if (strcmp(hm, PO.shown)) {
+    const lv_font_t *pf = ui_face_font(UI_FF_POSTER);
+    if (strcmp(hm, PO.shown) || pf != PO.font) {
+        PO.font = pf;
         snprintf(PO.shown, sizeof PO.shown, "%s", hm);
         char *c = strchr(hm, ':');
         if (c) *c = 0;
@@ -93,9 +96,9 @@ static void poster_minute(const struct tm *tm, bool force)
         /* set in one line, left on the grid: the hours, the colon, the minutes, each where the one before ends */
         int x = PO_X;
         hm_baseline(PO.hh, x, PO_BASE);
-        x += hm_text_w(hm, &hm_font_poster);
+        x += hm_text_w(hm, pf);
         hm_baseline(PO.colon, x, PO_BASE);
-        x += hm_text_w(":", &hm_font_poster);
+        x += hm_text_w(":", pf);
         hm_baseline(PO.mm, x, PO_BASE);
     }
     char a[48], b[48];
@@ -131,7 +134,8 @@ static void poster_minute(const struct tm *tm, bool force)
     }
 }
 
-const hm_face_t HM_F_TYPE = { .name = "type", .build = poster_build, .minute = poster_minute };
+const hm_face_t HM_F_TYPE = { .name = "type", .fonts = UI_FF_BIT(UI_FF_POSTER), .build = poster_build,
+                              .minute = poster_minute };
 
 /* ================================================================ the split flaps */
 
@@ -158,16 +162,20 @@ static struct {
     card_t c[4];
     lv_obj_t *hinge[4], *date, *wx;
     uint32_t top_rgb, bot_rgb;
+    const lv_font_t *font;     /* the digits as last fitted to their cards */
 } FL;
+
+/* where a digit's label sits on its half card, by the font's own height (the card's centre, a little low) */
+static int digit_y(void) { return (FL_CH - ui_face_font(UI_FF_FLIP)->line_height) / 2 + 6; }
 
 /* a digit's label inside a half: centred on the card, so each half shows its own part of it */
 static lv_obj_t *half_label(lv_obj_t *half, bool lower)
 {
     lv_obj_t *l = lv_label_create(half);
-    lv_obj_set_style_text_font(l, &hm_font_flip, 0);
+    ui_face_font_bind(l, UI_FF_FLIP);
     lv_obj_set_width(l, FL_CW);
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
-    int y = (FL_CH - hm_font_flip.line_height) / 2 + 6;
+    int y = digit_y();
     lv_obj_set_pos(l, 0, lower ? y - FL_CH / 2 : y);
     lv_obj_add_flag(l, LV_OBJ_FLAG_EVENT_BUBBLE);
     return l;
@@ -286,7 +294,7 @@ static void flip_phase(card_t *c, int phase)
     lv_obj_set_style_bg_color(c->flap, bz_lv_rgb(top ? FL.top_rgb : FL.bot_rgb), 0);
     char s[2] = { top ? c->old[0] : c->now[0], 0 };
     lv_label_set_text(c->lflap, s);
-    int y = (FL_CH - hm_font_flip.line_height) / 2 + 6;
+    int y = digit_y();
     lv_obj_set_y(c->lflap, top ? y : y - FL_CH / 2);
     c->scale = -1;
     flip_set_scale(c, 1, top);
@@ -316,9 +324,25 @@ static void card_set(card_t *c, char d, bool animate)
     flip_phase(c, 1);
 }
 
+/* the digits' labels at the height the font now in them wants: again whenever it changes hands */
+static void flip_fit(void)
+{
+    int y = digit_y();
+    for (int i = 0; i < 4; i++) {
+        card_t *c = &FL.c[i];
+        lv_obj_set_y(c->ltop, y);
+        lv_obj_set_y(c->lbot, y - FL_CH / 2);
+        lv_obj_set_y(c->lflap, c->phase == 2 ? y - FL_CH / 2 : y);
+    }
+}
+
 static void flip_minute(const struct tm *tm, bool force)
 {
     if (force) flip_colors();
+    if (FL.font != ui_face_font(UI_FF_FLIP)) {
+        FL.font = ui_face_font(UI_FF_FLIP);
+        flip_fit();
+    }
     char hm[8] = "----";
     if (hm_clock_set(tm)) {
         int h = ui_look()->h24 ? tm->tm_hour : tm->tm_hour % 12 ? tm->tm_hour % 12 : 12;
@@ -369,7 +393,8 @@ static void flip_frame(double now)
     if (any) bz_ui_keep_alive();
 }
 
-const hm_face_t HM_F_FLIP = { .name = "flip", .build = flip_build, .minute = flip_minute, .frame = flip_frame };
+const hm_face_t HM_F_FLIP = { .name = "flip", .fonts = UI_FF_BIT(UI_FF_FLIP), .build = flip_build, .minute = flip_minute,
+                              .frame = flip_frame };
 
 /* ================================================================ the word clock */
 
@@ -484,7 +509,7 @@ static void night_build(lv_obj_t *b)
     lv_obj_set_style_bg_color(b, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
     NT.time = lv_label_create(b);
-    lv_obj_set_style_text_font(NT.time, &hm_font_thin, 0);
+    ui_face_font_bind(NT.time, UI_FF_THIN);
     NT.date = bz_label(b, "", BZ_F_LABEL, BZ_C_DIM);
     /* warm and very dim, whatever the tone: this is what a dark bedroom sees */
     lv_obj_set_style_text_color(NT.time, bz_lv_rgb(0x5A4C46), 0);
@@ -503,4 +528,5 @@ static void night_minute(const struct tm *tm, bool force)
     lv_obj_align(NT.date, LV_ALIGN_CENTER, 0, 80);
 }
 
-const hm_face_t HM_F_NIGHT = { .name = "night", .build = night_build, .minute = night_minute };
+const hm_face_t HM_F_NIGHT = { .name = "night", .fonts = UI_FF_BIT(UI_FF_THIN), .build = night_build,
+                               .minute = night_minute };
