@@ -188,11 +188,10 @@ static void ring(lv_obj_t *t, bool on)
 {
     bz_tile_set_fill(t, on ? BZ_C_SURFACE3 : BZ_C_SURFACE2);
     /* every option has the ring, the unpicked ones clear: a border only on the picked one would move its
-     * contents off their neighbours' line */
-    if (lv_obj_get_style_border_width(t, 0) != 3) {
-        lv_obj_set_style_border_width(t, 3, 0);
-        lv_obj_set_style_border_color(t, bz_lv(BZ_C_INK), 0);
-    }
+     * contents off their neighbours' line. The ring is the tone's ink: a tone change re-rings (look_theme_changed) */
+    if (lv_obj_get_style_border_width(t, 0) != 3) lv_obj_set_style_border_width(t, 3, 0);
+    lv_color_t ink = bz_lv(BZ_C_INK);
+    if (!lv_color_eq(lv_obj_get_style_border_color(t, 0), ink)) lv_obj_set_style_border_color(t, ink, 0);
     lv_opa_t want = on ? LV_OPA_COVER : LV_OPA_TRANSP;
     if (lv_obj_get_style_border_opa(t, 0) != want) lv_obj_set_style_border_opa(t, want, 0);
 }
@@ -215,7 +214,11 @@ static void thumbs_bake(void)
 }
 
 /* the tone or the accent changed: the thumbnails are pictures of the ground in them */
-static void look_theme_changed(void) { thumbs_bake(); }
+static void look_theme_changed(void)
+{
+    thumbs_bake();
+    if (LS.fav_state) ui_look_settings_open(); /* the rings are the tone's ink */
+}
 
 static void fav_show(void)
 {
@@ -325,6 +328,7 @@ static lv_obj_t *caption(lv_obj_t *col, const char *text, int w)
 {
     lv_obj_t *c = bz_label(col, text, BZ_F_CAPTION, BZ_C_DIM);
     lv_obj_set_width(c, w);
+    lv_obj_set_style_text_line_space(c, 4, 0); /* prose, not a value: room between its lines */
     return c;
 }
 
@@ -335,7 +339,7 @@ void ui_look_settings(lv_obj_t *col, int w)
         bz_theme_on_change(look_theme_changed);
     }
     /* the icons: each style as two icons in it */
-    bz_label(col, "icons", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(col, "icons");
     lv_obj_t *r = wrap_row(col, w, 12);
     static const char *const STYLE_L[UI_ICON_NSTYLES] = { "colour", "tinted", "mono" };
     static const char *const SAMPLE[2] = { "preflight", "assist" };
@@ -346,11 +350,12 @@ void ui_look_settings(lv_obj_t *col, int w)
         bz_label(t, STYLE_L[s], BZ_F_CAPTION, BZ_C_INK);
         LS.style_tile[s] = t;
     }
-    caption(col, "Colour gives every app its own. Tinted draws them all in the accent, the way Material You themes "
-                 "icons; mono is the surface and the glyph.", w);
+    caption(col, "Colour lights each glyph in its group's family: ember for the robot, steel for diagnosing, jade for "
+                 "this tablet, rose for everyday. Tinted draws them all in the accent, as Material You themes icons; "
+                 "mono is the surface and its ink.", w);
 
     /* the ground: each as a small screen */
-    bz_label(col, "ground", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(col, "ground");
     if (!LS.thumbs) LS.thumbs = lv_malloc((size_t)UI_GROUND_COUNT * THUMB_W * THUMB_H * 2);
     thumbs_bake();
     r = wrap_row(col, w, 12);
@@ -371,7 +376,7 @@ void ui_look_settings(lv_obj_t *col, int w)
                  "open on plain ground.", w);
 
     /* the home page's quick-launch row */
-    bz_label(col, "home page · quick launch", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(col, "home page · quick launch");
     LS.fav_state = caption(col, "", w);
     r = wrap_row(col, w, 0);
     int cols = w / 108;
@@ -388,8 +393,9 @@ void ui_look_settings(lv_obj_t *col, int w)
         lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_t *holder = bz_box(c);
         lv_obj_set_size(holder, FAV_ICON + 12, FAV_ICON + 6);
-        lv_obj_t *ic = ui_app_icon(holder, e->app, FAV_ICON);
+        lv_obj_t *ic = ui_app_icon_on(holder, e->app, FAV_ICON, BZ_C_SURFACE1); /* on the pane: the library's */
         lv_obj_align(ic, LV_ALIGN_BOTTOM_MID, 0, 0);
+        ui_icon_press_with(c, ic);
         /* chosen: a badge on the icon's shoulder with its place in the row */
         lv_obj_t *b = bz_box(holder);
         lv_obj_set_size(b, 28, 28);
@@ -408,7 +414,7 @@ void ui_look_settings(lv_obj_t *col, int w)
     }
 
     /* the status band and the dock */
-    bz_label(col, "status band and dock", BZ_F_LABEL, BZ_C_DIM);
+    ui_section(col, "status band and dock");
     r = wrap_row(col, w, 10);
     LS.h24 = ui_chip(r, "24-hour clock", toggle_tap, (void *)(intptr_t)0);
     LS.pct = ui_chip(r, "battery percent", toggle_tap, (void *)(intptr_t)1);

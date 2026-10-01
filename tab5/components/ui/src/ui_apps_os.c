@@ -850,11 +850,12 @@ static void cal_show_month(void)
         int n = 0;
         for (int k = 0; k < CAL.nev; k++) n += CAL.ev[k].ymd == ymd;
         ui_text(c->dots[i], "%s", n == 0 ? " " : n == 1 ? "\xc2\xb7" : n == 2 ? "\xc2\xb7\xc2\xb7" : "\xc2\xb7\xc2\xb7\xc2\xb7");
-        /* today ice; the picked day lifted; the neighbours' days faint */
+        /* today ice; the picked day lifted; the rest on the card itself, so the month reads as dates rather than a
+         * wall of 42 grey keys; the neighbours' days faint */
         int look = ymd == today ? 3 : ymd == CAL.sel ? 2 : in ? 1 : 0;
         if (look == c->look[i]) continue;
         c->look[i] = (signed char)look;
-        bz_tile_set_fill(c->cell[i], look == 3 ? BZ_C_ICE : look == 2 ? BZ_C_SURFACE3 : BZ_C_SURFACE2);
+        bz_tile_set_fill(c->cell[i], look == 3 ? BZ_C_ICE : look == 2 ? BZ_C_SURFACE3 : BZ_C_SURFACE1);
         bz_color_role_t ink = look == 3 ? BZ_C_ON_ICE : look ? BZ_C_INK : BZ_C_FAINT;
         bz_set_color(c->num[i], ink);
         bz_set_color(c->dots[i], look == 3 ? BZ_C_ON_ICE : BZ_C_ICE);
@@ -1049,12 +1050,14 @@ static void calendar_build(lv_obj_t *b)
     for (int i = 0; i < 42; i++) {
         lv_obj_t *c = bz_tile(grid, cw, ch);
         lv_obj_set_pos(c, i % 7 * (cw + gap), i / 7 * (ch + gap));
-        lv_obj_set_style_radius(c, 14, 0);
-        lv_obj_set_style_pad_all(c, 8, 0);
+        lv_obj_set_style_radius(c, 20, 0);
+        lv_obj_set_style_pad_all(c, 0, 0);
         lv_obj_add_flag(c, LV_OBJ_FLAG_CLICKABLE);
+        /* the date in the middle, a day's events as dots under it (a date picker's grid, not a planner's boxes) */
         CAL.cc->num[i] = bz_label(c, "", BZ_F_BODY, BZ_C_INK);
+        lv_obj_align(CAL.cc->num[i], LV_ALIGN_CENTER, 0, -6);
         CAL.cc->dots[i] = bz_label(c, " ", BZ_F_NAME, BZ_C_ICE);
-        lv_obj_align(CAL.cc->dots[i], LV_ALIGN_BOTTOM_RIGHT, 0, 6);
+        lv_obj_align(CAL.cc->dots[i], LV_ALIGN_BOTTOM_MID, 0, 4);
         bz_on_tap(c, cal_pick, (void *)(intptr_t)i);
         CAL.cc->cell[i] = c;
     }

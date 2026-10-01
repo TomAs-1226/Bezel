@@ -42,7 +42,9 @@ static void beep(float hz, int ms) { hal_tone(hz, ms, S.volume * 0.6f); }
 enum { TM_MATCH, TM_STOPWATCH, TM_COUNTDOWN };
 
 static struct {
-    lv_obj_t *mode_chips[3], *big, *phase, *sub, *start_lbl, *laps, *presets, *auto_chips[2], *side[4], *lap_btn;
+    lv_obj_t *mode_chips[3], *big, *phase, *sub, *start, *laps, *presets, *auto_chips[2], *side[4], *lap_btn;
+    lv_obj_t *ph_box, *ph_row[3], *ph_name[3], *ph_time[3]; /* the match's three periods, the one under way lit */
+    int ph_lit;                /* which is lit (-1: none) */
     int mode;
     bool running;
     double started, acc;       /* running since, and time banked before it */
@@ -56,7 +58,8 @@ static struct {
     bool ai;
     int act;                   /* its island activity (0 none) */
     char label[28];
-} TM = { .count_s = 120, .auto_s = 20, .last_beep = -1, .col = -1 };
+} TM = { .count_s = 120, .auto_s = 20, .last_beep = -1, .col = -1, .ph_lit = -2 };
+
 
 #define TELEOP_S 140
 
@@ -125,6 +128,28 @@ static bool tm_tick(void)
     return false;
 }
 
+/* The match's periods in the side card: when each runs, and the one under way in the accent's fill. A restyle only
+ * when the period changes, never per frame. */
+static void tm_phase_times(void)
+{
+    if (!TM.ph_box) return;
+    int a = TM.auto_s, t = a + TELEOP_S;
+    ui_text(TM.ph_time[0], "0:00 — 0:%02d", a);
+    ui_text(TM.ph_time[1], "0:%02d — %d:%02d", a, (t - 30) / 60, (t - 30) % 60);
+    ui_text(TM.ph_time[2], "%d:%02d — %d:%02d", (t - 30) / 60, (t - 30) % 60, t / 60, t % 60);
+}
+
+static void tm_phase_lit(int k)
+{
+    if (!TM.ph_box || k == TM.ph_lit) return;
+    TM.ph_lit = k;
+    for (int i = 0; i < 3; i++) {
+        bz_tile_set_fill(TM.ph_row[i], i == k ? BZ_C_ICE : BZ_C_SURFACE2);
+        bz_set_color(TM.ph_name[i], i == k ? BZ_C_ON_ICE : BZ_C_INK);
+        bz_set_color(TM.ph_time[i], i == k ? BZ_C_ON_ICE : BZ_C_DIM);
+    }
+}
+
 static void tm_show(void)
 {
     tm_tick();
@@ -162,6 +187,7 @@ static void tm_show(void)
             col = BZ_C_DIM;
         }
         left = total - e < 0 ? 0 : total - e;
+        tm_phase_lit(e <= 0 && !TM.running ? -1 : e < TM.auto_s ? 0 : e >= total ? -1 : phase_left <= 30 ? 2 : 1);
         int s = (int)ceil(phase_left);
         snprintf(b, sizeof b, "%d:%02d", s / 60, s % 60);
         ui_text(TM.phase, "%s", ph);
@@ -174,7 +200,7 @@ static void tm_show(void)
         TM.col = (int)col;
         bz_set_color(TM.big, col);
     }
-    ui_text(TM.start_lbl, "%s", TM.running ? "pause" : tm_elapsed() > 0 ? "resume" : "start");
+    ui_fab_set(TM.start, TM.running ? BZ_I_PAUSE : BZ_I_PLAY_ARROW);
 }
 
 static void tm_mode(lv_obj_t *o, void *u)
@@ -188,9 +214,11 @@ static void tm_mode(lv_obj_t *o, void *u)
     TM.last_beep = -1;
     lv_obj_clean(TM.laps);
     for (int i = 0; i < 3; i++) ui_chip_set(TM.mode_chips[i], i == TM.mode);
-    lv_obj_t *const each[] = { TM.side[0], TM.side[1], TM.side[2], TM.presets, TM.side[3], TM.laps, TM.lap_btn };
-    const int mode_of[] = { TM_MATCH, TM_MATCH, TM_COUNTDOWN, TM_COUNTDOWN, TM_STOPWATCH, TM_STOPWATCH, TM_STOPWATCH };
-    for (int i = 0; i < 7; i++) {
+    lv_obj_t *const each[] = { TM.side[0], TM.side[1], TM.ph_box, TM.side[2], TM.presets, TM.side[3], TM.laps,
+                               TM.lap_btn };
+    const int mode_of[] = { TM_MATCH, TM_MATCH, TM_MATCH, TM_COUNTDOWN, TM_COUNTDOWN, TM_STOPWATCH, TM_STOPWATCH,
+                            TM_STOPWATCH };
+    for (int i = 0; i < 8; i++) {
         if (mode_of[i] == TM.mode) lv_obj_remove_flag(each[i], LV_OBJ_FLAG_HIDDEN);
         else lv_obj_add_flag(each[i], LV_OBJ_FLAG_HIDDEN);
     }
@@ -262,6 +290,7 @@ static void tm_auto(lv_obj_t *o, void *u)
     TM.auto_s = (int)(intptr_t)u;
     ui_chip_set(TM.auto_chips[0], TM.auto_s == 15);
     ui_chip_set(TM.auto_chips[1], TM.auto_s == 20);
+    tm_phase_times();
     tm_show();
 }
 
@@ -291,10 +320,10 @@ static void timer_build(lv_obj_t *b)
     lv_obj_set_pos(TM.big, 0, 140);
     TM.sub = bz_label_line(t, "", BZ_F_LABEL, BZ_C_DIM, IN(lw));
     lv_obj_set_pos(TM.sub, 0, 290);
+    /* start and pause are the one thing to do here: the signal's round button; lap and reset beside it, tonal */
     lv_obj_t *cr = bz_row(t, 14);
     lv_obj_align(cr, LV_ALIGN_BOTTOM_LEFT, 0, 0);
-    lv_obj_t *sb = ui_button(cr, BZ_I_PLAY_ARROW, "start", tm_start, NULL);
-    TM.start_lbl = lv_obj_get_child(sb, 1);
+    TM.start = ui_fab(cr, BZ_I_PLAY_ARROW, tm_start, NULL);
     TM.lap_btn = ui_button(cr, BZ_I_FLAG, "lap", tm_lap, NULL); /* the stopwatch's only (tm_mode) */
     ui_button(cr, BZ_I_RESTART_ALT, "reset", tm_reset, NULL);
 
@@ -309,6 +338,22 @@ static void timer_build(lv_obj_t *b)
     TM.side[1] = ar;
     TM.auto_chips[0] = ui_chip(ar, "15 s", tm_auto, (void *)15);
     TM.auto_chips[1] = ui_chip(ar, "20 s", tm_auto, (void *)20);
+    /* the periods, as a schedule: what a match is, at a glance, and where this one is */
+    TM.ph_box = bz_col(r, 8);
+    ui_section(TM.ph_box, "the match");
+    static const char *const PH[3] = { "autonomous", "teleop", "endgame" };
+    for (int i = 0; i < 3; i++) {
+        lv_obj_t *row = bz_tile(TM.ph_box, IN(rw), 60);
+        bz_tile_set_fill(row, BZ_C_SURFACE2);
+        lv_obj_set_style_radius(row, 18, 0);
+        lv_obj_set_style_pad_hor(row, 20, 0);
+        lv_obj_set_style_pad_ver(row, 0, 0);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        TM.ph_row[i] = row;
+        TM.ph_name[i] = bz_label(row, PH[i], BZ_F_BODY, BZ_C_INK);
+        TM.ph_time[i] = bz_label(row, "", BZ_F_LABEL, BZ_C_DIM);
+    }
     TM.side[2] = bz_label(r, "count down from", BZ_F_LABEL, BZ_C_DIM);
     TM.presets = chip_row(r, IN(rw));
     static const int PRE[6] = { 30, 60, 120, 180, 300, 600 };
@@ -891,7 +936,7 @@ static void sys_refresh(void)
         ui_text(SY.hero_sub[0], "%.2f v · %s", bt.volts, bt.charging ? "charging" : bt.external ? "plugged in" : "on battery");
     }
     ui_text(SY.hero[1], "%.1f mb", s.psram_free / 1048576.0);
-    ui_text(SY.hero_sub[1], "psram free · internal %u kb", (unsigned)(s.sram_free / 1024));
+    ui_text(SY.hero_sub[1], "psram free · sram %u kb", (unsigned)(s.sram_free / 1024)); /* fits the tile */
     ui_text(SY.hero[2], "%.0f%%", (s.cpu[0] + s.cpu[1]) * 50);
     ui_text(SY.hero_sub[2], "busy · chip %.0f °c", s.temp_c);
     if (up >= 3600) ui_text(SY.hero[3], "%dh %02dm", (int)up / 3600, (int)up / 60 % 60);

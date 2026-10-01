@@ -172,7 +172,7 @@ void bz_theme_init(void)
 }
 
 /* Whoever baked colours into pictures (app icons, the ground) and has to bake them again. */
-#define MAX_THEME_HOOKS 8
+#define MAX_THEME_HOOKS 16 /* icons, ground, look, dock, the alliances... and room for the apps that bake a colour */
 static void (*g_theme_hooks[MAX_THEME_HOOKS])(void);
 
 void bz_theme_on_change(void (*fn)(void))
@@ -416,7 +416,7 @@ typedef struct {
     float start_pos;
     bz_level_fn fn;
     void *user;
-    lv_obj_t *fill, *handle;
+    lv_obj_t *fill, *handle, *stop;
     bool dragging;
 } level_t;
 
@@ -435,8 +435,10 @@ static void level_layout(lv_obj_t *o)
     float p = L->pos.value;
     int x = (int)(p * w);
     float held = L->held.value;
-    int hw = (int)(6 - 2 * held + 0.5f), hh = (int)((h - 40) + 16 * held);
-    if (hh > h - 12) hh = h - 12;
+    /* Bezel's handle is 88 of a 128 track and grows 16 while held: in proportion, so a 52 px level in a settings
+     * pane has a 36 px handle, not a 12 px nub (the old h - 40 was only right for the tall tracks) */
+    int hw = (int)(6 - 2 * held + 0.5f), hh = (int)(h * (0.69f + 0.125f * held) + 0.5f);
+    if (hh > h - 8) hh = h - 8;
     int hx = x - 9 - hw;
     if (hx < 8) hx = 8;
     /* the fill always reaches past the handle: near the bottom the handle (on-ice ink) would otherwise sit
@@ -448,6 +450,14 @@ static void level_layout(lv_obj_t *o)
     lv_obj_set_x(L->fill, -40);
     lv_obj_set_size(L->handle, hw, hh);
     lv_obj_set_pos(L->handle, hx, (h - hh) / 2);
+    /* the stop dot marks the end of the track until the fill reaches it */
+    if (L->stop) {
+        bool covered = fx + 2 >= lv_obj_get_style_x(L->stop, 0);
+        if (covered != lv_obj_has_flag(L->stop, LV_OBJ_FLAG_HIDDEN)) {
+            if (covered) lv_obj_add_flag(L->stop, LV_OBJ_FLAG_HIDDEN);
+            else lv_obj_remove_flag(L->stop, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
 }
 
 static void level_frame(double now, double dt, void *user)
@@ -560,6 +570,17 @@ lv_obj_t *bz_level(lv_obj_t *parent, int w, int h, float min, float max, float s
     lv_obj_remove_flag(L->fill, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_flag(L->fill, LV_OBJ_FLAG_EVENT_BUBBLE);
     lv_obj_set_height(L->fill, h);
+
+    /* the stop dot: 8 px, 22 from the end on Bezel's 128 track; at least 6 and 14 on a short one */
+    int sd = h >= 96 ? 8 : 6, se = h >= 96 ? 22 : 14;
+    L->stop = lv_obj_create(o);
+    lv_obj_remove_style_all(L->stop);
+    lv_obj_add_style(L->stop, &st_capsule, 0);
+    lv_obj_add_style(L->stop, &st_fill[BZ_C_DIM], 0);
+    lv_obj_remove_flag(L->stop, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_flag(L->stop, LV_OBJ_FLAG_EVENT_BUBBLE);
+    lv_obj_set_size(L->stop, sd, sd);
+    lv_obj_set_pos(L->stop, w - se - sd / 2, (h - sd) / 2);
 
     L->handle = lv_obj_create(o);
     lv_obj_remove_style_all(L->handle);

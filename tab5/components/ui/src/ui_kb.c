@@ -303,8 +303,10 @@ static void build(void)
     lv_obj_set_style_radius(K.ta, 14, 0);
     lv_obj_set_style_border_width(K.ta, 0, 0);
     lv_obj_set_style_pad_all(K.ta, 10, 0);
-    lv_obj_set_style_bg_color(K.ta, bz_lv(BZ_C_ICE), LV_PART_CURSOR);
-    lv_obj_set_style_bg_opa(K.ta, LV_OPA_COVER, LV_PART_CURSOR);
+    /* colours from the shared styles, never bz_lv() into a local style: a local colour is the tone and accent of the
+     * moment it was set, and the keyboard is built once -- after a change to light it kept the dark ones */
+    /* the caret is the focus: Bezel's signal, which reads in both tones (light ice on the white field didn't) */
+    lv_obj_add_style(K.ta, bz_style_fill(BZ_C_SIGNAL), LV_PART_CURSOR);
 
     K.kb = lv_keyboard_create(K.sheet);
     lv_obj_remove_event_cb(K.kb, lv_keyboard_def_event_cb); /* kb_event does all of it */
@@ -329,11 +331,10 @@ static void build(void)
     lv_obj_set_style_radius(K.kb, 10, LV_PART_ITEMS);
     lv_obj_set_style_border_width(K.kb, 0, LV_PART_ITEMS);
     lv_obj_set_style_shadow_width(K.kb, 0, LV_PART_ITEMS);
-    lv_obj_set_style_bg_color(K.kb, bz_lv(BZ_C_ICE), LV_PART_ITEMS | LV_STATE_PRESSED);
-    lv_obj_set_style_bg_opa(K.kb, LV_OPA_COVER, LV_PART_ITEMS | LV_STATE_PRESSED);
-    lv_obj_set_style_text_color(K.kb, bz_lv(BZ_C_ON_ICE), LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_add_style(K.kb, bz_style_fill(BZ_C_ICE), LV_PART_ITEMS | LV_STATE_PRESSED);
+    lv_obj_add_style(K.kb, bz_style_color(BZ_C_ON_ICE), LV_PART_ITEMS | LV_STATE_PRESSED);
     /* the layer switches, del, enter and done: the quieter surface, so the letters read first */
-    lv_obj_set_style_bg_color(K.kb, bz_lv(BZ_C_SURFACE1), LV_PART_ITEMS | LV_STATE_CHECKED);
+    lv_obj_add_style(K.kb, bz_style_fill(BZ_C_SURFACE1), LV_PART_ITEMS | LV_STATE_CHECKED);
     lv_obj_set_style_text_font(K.kb, bz_font(BZ_F_LABEL), LV_PART_ITEMS | LV_STATE_CHECKED);
     lv_obj_add_event_cb(K.kb, kb_event, LV_EVENT_ALL, NULL);
 
