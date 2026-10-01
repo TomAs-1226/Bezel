@@ -176,6 +176,12 @@ void bz_ui_hooks_report(void);
  * puts the old behaviour back, so both costs can be measured on one build. */
 void bz_ui_scroll_carry(bool on);
 void bz_ui_scroll_cut(bool on);
+/* dev "psram": the renderer's own full-frame buffers, one printable line each. */
+void bz_ui_mem_lines(void (*line)(const char *));
+/* What LVGL itself is holding in PSRAM: now, the most it ever held, how many blocks, and how many of
+ * those had to fall back to internal RAM because PSRAM was full (bz_lv_mem.c). The heap can say how much
+ * PSRAM is gone; only this says how much of it is the UI's own objects, styles, strings and layers. */
+void bz_lv_mem_stat(size_t *held, size_t *peak, int *blocks, int *internal);
 /* One glass piece's surface baked ahead (idle time after start-up); true while there are more. */
 bool bz_ui_glass_prewarm_one(void); /* "cut 0": lists carry opaque chrome through them as before (A/B timing) */
 void bz_ui_trace_inv(int frames); /* log every invalidated area for this many frames */ /* logs each frame hook's time since the last call */

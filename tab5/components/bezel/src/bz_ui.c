@@ -1720,6 +1720,29 @@ void bz_ui_opaque_core(lv_obj_t *o, int ix, int iy)
 }
 void bz_ui_scroll_cut(bool on) { s_cut = on; }
 
+/* The renderer's own full-frame buffers, for the dev console's "psram". Each is a whole screen, so they
+ * are worth naming one by one rather than totalling: which ones exist depends on the platform's slide
+ * (with it the snapshot, the gap and the chrome come from the panel's side and only the neighbour's band
+ * target is kept here) and on whether the present is asynchronous. */
+void bz_ui_mem_lines(void (*line)(const char *))
+{
+    size_t px = (size_t)U.cfg.w * U.cfg.h * 2;
+    struct { const char *name; const void *p; } B[] = {
+        { "LVGL content (direct)", U.cfg.content },
+        { "second content buffer", U.bufpx[1] },
+        { "neighbour band target", U.nb },
+        { "slide snapshot", U.snap == U.bufpx[0] || U.snap == U.bufpx[1] ? NULL : U.snap },
+        { "slide gap fill", U.ground },
+        { "chrome source", U.chrome_src },
+    };
+    char b[120];
+    for (unsigned i = 0; i < sizeof B / sizeof B[0]; i++) {
+        if (!B[i].p) continue;
+        snprintf(b, sizeof b, "MEM   %-23s %4u KB\n", B[i].name, (unsigned)(px / 1024));
+        line(b);
+    }
+}
+
 #if BZ_LEAN
 /* `a` less `hole` (which it must contain): the full-height columns either side of the hole, then what is above
  * and below it between them. Columns first because a list moves vertically: a column's pixels come from the

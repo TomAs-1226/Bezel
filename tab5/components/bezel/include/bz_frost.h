@@ -39,6 +39,11 @@ void bz_frost_flush(void);
 /* How much PSRAM the baked surfaces are holding, for the dev console's "mem". */
 size_t bz_frost_bytes(void);
 
+/* Give back up to `want` bytes of baked surfaces, biggest first, and only ones nothing is showing.
+ * Returns what it actually freed, which may be less or nothing at all. For a caller that is short of
+ * PSRAM: a dropped surface is baked again if it is asked for, so this trades a stall later for room now. */
+size_t bz_frost_trim(size_t want);
+
 /* One sample of the shared surface-roughness field, -127..127, tiling every 64 px.
  *
  * Two octaves of smoothed value noise, baked once. White noise at one pixel reads as sensor grain and

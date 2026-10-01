@@ -60,6 +60,15 @@ void hal_scroll_dual(bool on); /* the tablet: a scroll's shift split between two
 void hal_catchup_trace(int n); /* dev "cudbg N" */
 void hal_cpu_rot_px(int n);     /* dev "cpurot N" */
 void hal_slide_mask(bool on); /* the tablet: a slide holds chrome by its pixels (1) or its rectangles (dev "mask") */
+/* dev "psram": [0] bytes in the big blocks taken once at boot, [1] PSRAM free, [2] its largest free
+ * block, [3] of [0], the display's frame buffers. The program's own .text/.rodata are in none of these:
+ * XIP from PSRAM puts them outside the heap, which is why PSRAM's total is not the 32 MB on the package. */
+void hal_mem_psram(size_t out[4]);
+/* Panel scan-out underruns since boot: the frames that went cyan because the DPI's FIFO could not be
+ * refilled from PSRAM in time. Counted off the DSI driver's own log line, which is the only notice of one
+ * that exists. Any number above zero is a PSRAM bandwidth problem, not a memory-capacity problem. */
+uint32_t hal_underruns(void);
+void hal_mem_psram_lines(void (*line)(const char *)); /* those blocks, one printable line each */
 void hal_loop_prof(double out[4]); /* perf: busy loops, their mean and max work (s), loops idle */
 void hal_loop_hist(int out[5]);    /* perf: busy loops under 5, 10, 16.7, 25 ms, more */
 void hal_frame_gaps(int out[4]); /* perf: frame gaps of 1, 2, 3, more vsyncs since the last call */
