@@ -95,3 +95,20 @@ all** with it — the flash on this unit will not run that fast.
 
 So the memory has to come from what the UI holds, not from where the code lives. That is what the
 transcript cap, the canvas cap and shedding are for.
+
+## Two frame buffers instead of three: also measured, also put back
+
+The panel's three frame buffers are 5.4 MB and the obvious thing to cut. Two of them frees 1.8 MB —
+4.4 MB free at boot became 6.2 MB — and costs half the frame rate:
+
+| frames at 60 | three buffers | two |
+|---|---|---|
+| page swipe | **64 of 86** | 9 of 58, with 36 at 30 |
+| app open | **77 of 94** | 23 of 50, with 21 at 30 |
+
+With two, a frame's work waits for the one on the glass to be shown, so frames land on alternate vsyncs
+and the panel runs at 30. The third buffer is not slack; it is what keeps the renderer from waiting.
+
+Three cuts have now been tried on the device — the code's residence, the flash clock, and the frame
+buffer count — and all three were worse. The fixed blocks are earning their keep. The memory that can be
+had is the memory the UI holds, and the smoothness that can be had is in what it does per frame.
