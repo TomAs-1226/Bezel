@@ -1079,10 +1079,9 @@ lv_obj_t *ui_md_svg(lv_obj_t *parent, const char *svg, int max_w, int max_h, cha
     size_t bufsize = LV_CANVAS_BUF_SIZE(cw, ch, 16, LV_DRAW_BUF_STRIDE_ALIGN);
     /* Not "is there room for this?" but "is there room left afterwards?". lv_malloc would succeed with
      * 400 KB free and leave the glass cache, the next window and the slide's own buffers with nothing. */
-    size_t m[4];
-    hal_mem_psram(m);
-    if (m[1] < bufsize + CANVAS_PSRAM_FLOOR) {
-        if (why) snprintf(why, nwhy, "no room to draw it (%u KB free)", (unsigned)(m[1] / 1024));
+    size_t free_now = hal_psram_free();
+    if (free_now < bufsize + CANVAS_PSRAM_FLOOR) {
+        if (why) snprintf(why, nwhy, "no room to draw it (%u KB free)", (unsigned)(free_now / 1024));
         return NULL;
     }
     void *buf = lv_malloc(bufsize);

@@ -64,6 +64,9 @@ void hal_slide_mask(bool on); /* the tablet: a slide holds chrome by its pixels 
  * block, [3] of [0], the display's frame buffers. The program's own .text/.rodata are in none of these:
  * XIP from PSRAM puts them outside the heap, which is why PSRAM's total is not the 32 MB on the package. */
 void hal_mem_psram(size_t out[4]);
+/* Free PSRAM alone, cheaply: the heap keeps that total running. hal_mem_psram's largest-free-block walks
+ * every free block with the heap's lock held, so anything on the frame path asks for this instead. */
+size_t hal_psram_free(void);
 /* Panel scan-out underruns since boot: the frames that went cyan because the DPI's FIFO could not be
  * refilled from PSRAM in time. Counted off the DSI driver's own log line, which is the only notice of one
  * that exists. Any number above zero is a PSRAM bandwidth problem, not a memory-capacity problem. */
@@ -81,6 +84,11 @@ bool hal_flip(void);
 void hal_dev_init(void);
 const uint16_t *hal_front_fb(void); /* the panel's current picture, portrait 720x1280 */
 bool hal_front_fb_copy(uint16_t *dst); /* that picture copied whole, the presents held meanwhile */
+/* The same picture read in place, with the presents held until it is released -- for a reader that would
+ * rather freeze the screen for a moment than find 1.8 MB of contiguous PSRAM, which a tablet short of it
+ * cannot. Every hold must be released. */
+const uint16_t *hal_front_fb_hold(void);
+void hal_front_fb_release(void);
 bool hal_dev_touch(int *x, int *y); /* an injected finger, if one is down */
 /* Commands the console doesn't know go to the UI ("open <app>", "page <n>", "close"): true if handled.
  * Called from the console's task; the handler must hand the work to the UI's own loop. */

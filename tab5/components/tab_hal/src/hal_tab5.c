@@ -1514,6 +1514,11 @@ void hal_slide_mask(bool on) { s_mask_on = on; }
  *
  * `out` takes the figures a caller wants to print beside its own: [0] the fixed blocks' bytes, [1] free,
  * [2] the largest free block, [3] the display's frame buffers. */
+/* Free PSRAM, and nothing else. The heap keeps a running total of that, so it is a handful of additions;
+ * the largest free block in hal_mem_psram is a walk of every free block with the heap's lock held, and
+ * anything on the UI's frame path must ask for this one instead. */
+size_t hal_psram_free(void) { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
+
 void hal_mem_psram(size_t out[4])
 {
     size_t fb = (size_t)PANEL_W * PANEL_H * 2 * (size_t)s_nfb;
@@ -2019,6 +2024,33 @@ const uint16_t *hal_front_fb(void) { return T.fb[fb_latest()]; }
 /* The same picture copied out whole, for the dev console's panel shot. Read in place over USB (a second or
  * more) it was overwritten by the frames after it whenever something moved: stripes of a later frame down
  * the right of the shot. The presents wait (s_hold) while the copy is made, a few tens of ms. */
+/* The front buffer, held still, to be read in place instead of copied out.
+ *
+ * hal_front_fb_copy below takes 1.8 MB to copy the picture so that the frames after it cannot overwrite
+ * it -- and 1.8 MB contiguous is exactly what a tablet short of PSRAM cannot find, so screenshots began
+ * failing with "no memory" at the very moment someone most wants one. Holding the presents for the whole
+ * shot instead needs no memory at all: the panel goes on scanning the same buffer, so nothing tears and
+ * nothing flickers, and the picture is simply still for the ~150 ms the run-length coding and the USB
+ * send take. A dev command may freeze the presents for a sixth of a second; it may not demand a quarter
+ * of the free heap. Every hold must be released.
+ */
+const uint16_t *hal_front_fb_hold(void)
+{
+    s_hold = true;
+    if (J.task) xSemaphoreTake(J.idle, portMAX_DELAY);
+    const uint16_t *src = T.fb[fb_latest()];
+    size_t n = (size_t)PANEL_W * PANEL_H * 2;
+    /* as in hal_front_fb_copy: without this the reads come from stale cache lines */
+    esp_cache_msync((void *)src, n, ESP_CACHE_MSYNC_FLAG_DIR_M2C);
+    return src;
+}
+
+void hal_front_fb_release(void)
+{
+    if (J.task) xSemaphoreGive(J.idle);
+    s_hold = false;
+}
+
 bool hal_front_fb_copy(uint16_t *dst)
 {
     s_hold = true;
@@ -3192,6 +3224,32 @@ static int log_count_underruns(const char *fmt, va_list ap)
     return s_log_next ? s_log_next(fmt, ap) : 0;
 }
 
+/* ...and the same word again, one character at a time, because the message that matters does not come
+ * through esp_log at all.
+ *
+ * The DSI driver notices an underrun in its ISR and reports it with ESP_DRAM_LOGE, which is esp_rom_printf
+ * -- it bypasses esp_log entirely (so the vprintf hook above never sees it) and it writes to the ROM
+ * console, not to the USB-Serial/JTAG console the dev tool reads (so it never reaches a capture either).
+ * Every measurement this session read zero underruns while the glass was plainly flashing, and that is
+ * why: the instrument was not connected to the signal. A putc hook is where the characters actually pass.
+ *
+ * esp_rom_printf writes to every installed channel at once, so this goes on channel 2 and the console
+ * keeps channel 1: nothing is intercepted and nothing has to be forwarded. It runs in an ISR, so it is a
+ * matcher over one word and nothing else. */
+static void IRAM_ATTR putc_count_underruns(char c)
+{
+    static const char W[] = "underrun";
+    static uint8_t at;
+    if (c == W[at]) {
+        if (!W[++at]) {
+            s_underruns++;
+            at = 0;
+        }
+    } else {
+        at = c == W[0] ? 1 : 0;
+    }
+}
+
 uint32_t hal_underruns(void) { return s_underruns; }
 
 void hal_boot_watch(void (*fn)(const char *stage)) { s_watch = fn; }
@@ -3233,7 +3291,10 @@ bool hal_init(void)
 {
     boot_record_init();
     hal_dev_init(); /* first: the console carries the log from here on */
-    s_log_next = esp_log_set_vprintf(log_count_underruns); /* before the panel exists: count from frame one */
+    /* before the panel exists, so underruns are counted from the first frame: both routes, because the
+     * one that matters is the ISR's and that one does not go through esp_log */
+    s_log_next = esp_log_set_vprintf(log_count_underruns);
+    esp_rom_install_channel_putc(2, putc_count_underruns);
     hal_boot_stage("nvs");
     esp_err_t e = nvs_flash_init();
     if (e == ESP_ERR_NVS_NO_FREE_PAGES || e == ESP_ERR_NVS_NEW_VERSION_FOUND) {

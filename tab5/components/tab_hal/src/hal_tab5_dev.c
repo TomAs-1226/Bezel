@@ -79,15 +79,22 @@ static void shot(bool panel)
     const uint16_t *px = bz_ui_content_buf(); /* LVGL's current buffer (they swap) */
     int w = panel ? PANEL_SHOT_W : hal_frame_w, h = panel ? PANEL_SHOT_H : hal_frame_h;
     size_t n = (size_t)HAL_W * HAL_H;
-    uint16_t *copy = NULL; /* the panel's picture, copied out before the frames after it can overwrite it */
+    /* The panel's picture, read where it lies with the presents held, rather than copied out first.
+     *
+     * It used to take a 1.8 MB copy so the frames after it could not overwrite it. That is a quarter of
+     * the free heap on a good day and more than exists on a bad one, so screenshots failed with "no
+     * memory" at exactly the moment someone wants one -- fifteen of them in a tour of a tablet under
+     * pressure, including every watch face. Holding the presents for the whole shot needs nothing: the
+     * panel goes on scanning the same buffer, so the picture is simply still for the ~150 ms the coding
+     * and the USB send take, and a dev command may freeze the screen for a sixth of a second. */
+    bool held = false;
     if (panel) {
-        copy = heap_caps_malloc(n * 2, MALLOC_CAP_SPIRAM);
-        if (!copy) {
-            say("ERR no memory\n");
+        px = hal_front_fb_hold();
+        if (!px) {
+            say("ERR no picture\n");
             return;
         }
-        hal_front_fb_copy(copy);
-        px = copy;
+        held = true;
     }
     /* run-length coded in two passes, so nothing the size of the picture is allocated: the first counts
      * the runs (the header carries the length), the second sends them 32 KB at a time */
@@ -101,7 +108,7 @@ static void shot(bool panel)
     }
     uint16_t *rle = heap_caps_malloc(32768, MALLOC_CAP_SPIRAM);
     if (!rle) {
-        free(copy);
+        if (held) hal_front_fb_release();
         say("ERR no memory\n");
         return;
     }
@@ -131,7 +138,7 @@ static void shot(bool panel)
     usb_serial_jtag_wait_tx_done(pdMS_TO_TICKS(2000));
     esp_log_level_set("*", was);
     free(rle);
-    free(copy);
+    if (held) hal_front_fb_release();
 }
 
 #define KEYS_MAX 8192

@@ -1820,6 +1820,14 @@ static void mem_pressure(void)
      * counts as activity, so the very next frame is never a quiet one. */
     bool force = s_mem_force;
     if (!force && ui_now() < s_mem_quiet_until) return;
+    /* Not every frame. hal_mem_psram asks the heap for its free size AND its largest free block, and the
+     * second of those walks every free block on a 23 MB heap with the heap's lock held -- which is a
+     * stall, on the UI thread, sixty times a second, to answer a question that cannot change meaningfully
+     * in 16 ms. The first version of this did exactly that and made the tablet slower, which is the
+     * opposite of the point. Twice a second is far more often than memory can run out. */
+    static double looked;
+    if (!force && ui_now() - looked < 0.5) return;
+    looked = ui_now();
     size_t m[4];
     hal_mem_psram(m);
     /* The floor is what the tablet should normally never reach, which makes the shedding path the one
@@ -1901,11 +1909,7 @@ static void warm_apps(double now)
     }
     /* building ahead is a luxury: with PSRAM this short it would be shed again before anyone opened it,
      * and the build itself needs the room it is about to take */
-    {
-        size_t m[4];
-        hal_mem_psram(m);
-        if (m[1] < MEM_TARGET) return;
-    }
+    if (hal_psram_free() < MEM_TARGET) return;
     if (now - idle_since < 1) return; /* quiet for a moment first: not the frame a finger lands */
     if (next >= sizeof WARM / sizeof WARM[0]) {
         /* then the glass surfaces not baked yet (the control center's panels), one per quiet moment */
