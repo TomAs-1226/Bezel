@@ -68,8 +68,14 @@ ui_clip_t *ui_clip_create(lv_obj_t *parent)
     return c;
 }
 
+/* Off unless asked for (dev "pet clips 1"). A clip is a video: it cannot turn to a finger or change its mind
+ * half way, and the owner saw exactly that. The avatar is drawn live; the clips stay for comparison. */
+static bool s_off = true;
+void ui_clip_enable(bool on) { s_off = !on; }
+
 bool ui_clip_available(void)
 {
+    if (s_off) return false;
     static double looked = -100;
     static bool have;
     double now = hal_seconds();

@@ -5,6 +5,7 @@
 #include "home_pet.h"
 #include "ui_avatar.h"
 #include "voice.h"
+#include "ui_clip.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -47,7 +48,8 @@ static struct {
     lv_obj_t *page, *touch, *name, *line, *meter[M_N], *mlabel[M_N], *feed, *play, *sleep, *foods, *food[PET_FOODS],
         *note, *hint, *talk;
     ui_avatar_t *av;
-    double poke_at, whim_at;
+    double poke_at, whim_at, press_at;
+    bool hugged;
     int pokes;
     uint32_t rng;
     vo_reply_t reply;      /* the last thing it said, so the page can show the words */
@@ -151,6 +153,8 @@ static void touch_ev(lv_event_t *e)
         PG.px = p.x;
         PG.py = p.y;
         PG.moved = PG.total = 0;
+        PG.press_at = now;
+        PG.hugged = false;
         ui_avatar_look(PG.av, nx, ny, 1.0f);
     } else if (c == LV_EVENT_PRESSING && PG.pressed) {
         int d = abs(p.x - PG.px) + abs(p.y - PG.py);
@@ -159,6 +163,12 @@ static void touch_ev(lv_event_t *e)
         PG.moved += d;
         PG.total += d;
         ui_avatar_look(PG.av, nx, ny, 0.8f);
+        /* a finger that stays where it landed is a hug: hearts, and it counts as affection */
+        if (!PG.hugged && PG.total < 14 && now - PG.press_at > 0.7) {
+            PG.hugged = true;
+            home_pet_do_stroke();
+            ui_avatar_react(PG.av, AV_S_LOVE);
+        }
         if (PG.moved > 70 && now - PG.stroke_at > 1.5) {
             PG.moved = 0;
             PG.stroke_at = now;
@@ -168,7 +178,7 @@ static void touch_ev(lv_event_t *e)
             if (!ui_avatar_reacting(PG.av)) ui_avatar_react(PG.av, STROKE[page_rand() % 6]);
         }
     } else if (c == LV_EVENT_RELEASED || c == LV_EVENT_PRESS_LOST) {
-        if (PG.pressed && PG.total < 14 && !ui_avatar_reacting(PG.av)) {
+        if (PG.pressed && PG.total < 14 && !PG.hugged && !ui_avatar_reacting(PG.av)) {
             /* a poke: startled, then it sees the joke, and past a few of them it has had enough */
             static const av_state_t POKE[] = { AV_S_SURPRISED, AV_S_GIGGLE, AV_S_WINK, AV_S_POUT };
             if (now - PG.poke_at > 6) PG.pokes = 0;
@@ -253,7 +263,7 @@ lv_obj_t *hm_pet_build(lv_obj_t *parent)
     lv_label_set_long_mode(PG.note, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_pos(PG.note, X, 530);
     hm_show(PG.note, false);
-    PG.hint = bz_label_line(pg, "stroke it, or say its wake word and talk", BZ_F_CAPTION, BZ_C_FAINT, WCOL);
+    PG.hint = bz_label_line(pg, "stroke her Â· poke her Â· hold to hug Â· or just talk", BZ_F_CAPTION, BZ_C_FAINT, WCOL);
     lv_obj_set_pos(PG.hint, X, 628);
     PG.state = AV_S_COUNT;
     PG.built = true;
@@ -535,6 +545,8 @@ void ui_pet_dev(const char *a)
             ui_avatar_state(PG.av, (av_state_t)s);
         }
         printf("pet: %s %s\n", react ? "react" : "state", AV_STATE_NAME[s]);
+    } else if (!strncmp(a, "clips ", 6)) {
+        ui_clip_enable(a[6] != '0'); /* the baked clips, or the avatar drawn live: takes effect when a screen next shows it */
     } else if (!strncmp(a, "avatar", 6)) {
         ui_avatar_dump();
     } else {

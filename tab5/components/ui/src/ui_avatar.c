@@ -1,6 +1,7 @@
 /* ui_avatar — see ui_avatar.h. */
 #include "ui_avatar.h"
 #include "ui_clip.h"
+#include "ui_avatar_fx.h"
 
 #include "bz_motion.h"
 #include "bz_theme.h"
@@ -223,6 +224,10 @@ struct ui_avatar {
     /* the baked clips on the card, when it has them: then nothing below draws, the clip does (ui_clip.c) */
     ui_clip_t *clip;
     bool clip_on;
+    /* the mouth, the blush and the particles (ui_avatar_fx.c): which state they belong to, since when, and
+     * when they were last drawn */
+    av_state_t rst, fx_shown;
+    double fx_t0, fx_inv;
     int S;
     float k;
     bool active, baked;
@@ -417,6 +422,7 @@ void ui_avatar_state(ui_avatar_t *a, av_state_t st)
     if (a->base == st && a->an && !a->forced) return;
     a->base = st;
     if (a->reacting && !a->forced) return; /* a reaction finishes first, and returns to this */
+    a->fx_t0 = bz_motion_now();
     resolve(a, st, false);
 }
 
@@ -427,6 +433,8 @@ void ui_avatar_react(ui_avatar_t *a, av_state_t st)
         a->reacting = clip_go(a, st, true);
         return;
     }
+    a->rst = st;
+    a->fx_t0 = bz_motion_now();
     resolve(a, st, true);
 }
 
@@ -513,7 +521,7 @@ static void av_draw(lv_event_t *e)
             h.x2 = h.x1 + (int)BK.head.header.w - 1;
             h.y2 = h.y1 + (int)BK.head.header.h - 1;
             lv_draw_image(layer, &id, &h);
-            if (BK.lp) {
+            if (0 && BK.lp) { /* the soft light banded into a blotch on a 565 panel; the Lab's own look is flat */
                 lv_draw_image_dsc_t li;
                 lv_draw_image_dsc_init(&li);
                 li.src = &BK.light;
@@ -605,6 +613,13 @@ static void av_draw(lv_event_t *e)
             lv_draw_rect(layer, &cap, &c2);
         }
     }
+    /* on and around the face: the mouth, the blush, whatever is floating */
+    av_fx_face_t f = { .cx = (float)cx, .cy = (float)cy, .u = a->k, .eyes = d->eyes, .body = d->body, .level = a->level };
+    for (int i = 0; i < 2; i++) {
+        f.ex[i] = (float)cx + d->ex[i][0] / 2.0f;
+        f.ey[i] = (float)cy + d->ex[i][1] / 2.0f;
+    }
+    av_fx_draw(layer, &f, a->reacting ? a->rst : a->base, bz_motion_now() - a->fx_t0);
 }
 
 static lv_area_t eye_box(const drawn_t *d, int i, int cx, int cy)
@@ -729,7 +744,10 @@ bool ui_avatar_frame(ui_avatar_t *a)
         if (!a->baked) return false;
         return true;
     }
-    float interval = a->calm > 0.5f ? 0.1f : 0.05f;
+    /* Still, it is looked at twenty times a second (ten when calm), which is plenty to notice a blink is due.
+     * Moving, it is drawn on every frame the panel has: at twenty a spring between two poses is a slideshow,
+     * and that, not the tablet's speed, is what made it look like a video -- the work is under 2 ms a frame. */
+    float interval = a->calm > 0.5f ? 0.1f : a->moving || a->reacting ? 0.0f : 0.05f;
     if (now - a->last < interval - 0.002) return a->moving;
     a->last = now;
     bool calm_all = bz_ui_calm();
@@ -842,6 +860,40 @@ bool ui_avatar_frame(ui_avatar_t *a)
     n.eyes = (uint32_t)(er << 16 | eg << 8 | eb);
     n.blink = (uint8_t)(bl * 255.0f + 0.5f);
     set_drawn(a, &n);
+    /* the mouth and the things that float: the whole avatar again while they move, at their own pace */
+    av_state_t cur = a->reacting ? a->rst : a->base;
+    if (cur != a->fx_shown) {
+        if (!a->reacting && a->fx_shown != a->base) a->fx_t0 = now; /* back from a reaction: the state's own clock */
+        a->fx_shown = cur;
+        lv_obj_invalidate(a->obj);
+    }
+    int hz = av_fx_rate(cur, now - a->fx_t0, a->level);
+    if (hz) {
+        if (now - a->fx_inv >= 1.0 / hz) {
+            a->fx_inv = now;
+            /* only where this state's extras move, in the avatar's own units about its centre */
+            lv_area_t co;
+            lv_obj_get_coords(a->obj, &co);
+            float u = a->k, cx = co.x1 + a->S / 2.0f, cy = co.y1 + a->S / 2.0f;
+            float mx = (a->dr.ex[0][0] + a->dr.ex[1][0]) / 4.0f, my = (a->dr.ex[0][1] + a->dr.ex[1][1]) / 4.0f;
+            unsigned r = av_fx_regions(cur, now - a->fx_t0);
+            static const struct { unsigned bit; float x1, y1, x2, y2; bool face; } R[] = {
+                { AV_R_MOUTH, -34, 22, 34, 78, true },     { AV_R_CHEEKS, -92, 16, 92, 50, true },
+                { AV_R_TOP, -150, -150, 150, -34, false }, { AV_R_SIDES, -150, -120, -98, 0, false },
+                { AV_R_SIDES, 98, -120, 150, 0, false },   { AV_R_RTOP, 60, -150, 150, -40, false },
+                { AV_R_LTOP, -110, -100, -50, -10, false }, { AV_R_BOTTOM, -110, 40, 110, 150, false },
+                { AV_R_TEAR, -80, 10, 10, 100, true },
+            };
+            for (unsigned i = 0; i < sizeof R / sizeof R[0]; i++) {
+                if (!(r & R[i].bit)) continue;
+                float ox = R[i].face ? mx : 0, oy = R[i].face ? my : 0;
+                lv_area_t q = { (int)(cx + ox + R[i].x1 * u), (int)(cy + oy + R[i].y1 * u), (int)(cx + ox + R[i].x2 * u),
+                                (int)(cy + oy + R[i].y2 * u) };
+                lv_obj_invalidate_area(a->obj, &q);
+            }
+        }
+        if (hz >= 20) moving = true; /* the slow ones ride on the 10 Hz refresh: the loop need not stay awake for them */
+    }
     a->moving = moving;
     return moving;
 }

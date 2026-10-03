@@ -581,12 +581,18 @@ static void context_note(char *out, size_t n)
     struct tm tm;
     if (hal_rtc_get(&tm)) strftime(when, sizeof when, "%a %Y-%m-%d %H:%M", &tm);
     cat_robot_t *r = malloc(sizeof *r);
-    char robot[120] = "robot not connected";
+    /* Nothing about the robot unless one is actually there. The note used to say "robot not connected" on
+     * every turn, and a model told about a robot every time it speaks will talk about the robot: this is the
+     * owner's companion, and the robot is the Assist app's business. Connected, it is one fact among others. */
+    char robot[120] = "";
+    bool bot = false;
     if (r) {
         assist_robot(r);
-        if (r->connected)
-            snprintf(robot, sizeof robot, "robot %s connected, %s, %d errors, %d warnings", r->name, cat_mode_name(r),
+        if (r->connected) {
+            bot = true;
+            snprintf(robot, sizeof robot, " · robot %s connected, %s, %d errors, %d warnings", r->name, cat_mode_name(r),
                      r->n_errors, r->n_warnings);
+        }
         free(r);
     }
     ccw_session_t *s = malloc(sizeof *s * CCW_MAX);
@@ -600,8 +606,9 @@ static void context_note(char *out, size_t n)
     if (ccw_available()) snprintf(cc, sizeof cc, " · Claude Code on the PC: %d running, %d need a look", running, att);
     /* the next match and the battery to use, as the UI last posted them (get_matches / get_batteries say more) */
     char *now = assist_desk_get(AS_DESK_NOW), *seen = assist_desk_get(AS_DESK_INTEL);
-    snprintf(out, n, "[tablet: %s · %s%s%s%s%s%s]", when[0] ? when : "time unknown", robot, cc, now ? " · " : "",
-             now ? now : "", seen ? " · " : "", seen ? seen : "");
+    /* the match and battery lines are the pit's: only when the robot is there to be talked about */
+    snprintf(out, n, "[tablet: %s%s%s%s%s%s%s]", when[0] ? when : "time unknown", robot, cc, bot && now ? " · " : "",
+             bot && now ? now : "", bot && seen ? " · " : "", bot && seen ? seen : "");
     free(now);
     free(seen);
     /* the desk pet, when there is one: its state and what it did lately, and whether to mention it is hungry */

@@ -8,6 +8,7 @@
 typedef struct ui_clip ui_clip_t;
 
 ui_clip_t *ui_clip_create(lv_obj_t *parent); /* an image centred in `parent`, hidden until something plays */
+void ui_clip_enable(bool on);                /* dev: off plays nothing, so the drawn avatar shows */
 bool ui_clip_available(void);                /* the card holds a set of clips (CATOS/PET/CLIPS) */
 /* <card>/CATOS/PET/CLIPS/<name>.CLP. `once`: play it through and stop, whatever the file says about looping.
  * Asking again for the loop already playing changes nothing. False: no such clip, or no memory. */
