@@ -1825,6 +1825,61 @@ static void app_evict(const ui_app_t *app)
     }
 }
 
+/* ---- apps in the background ----
+ *
+ * A window that is not on screen is only there to make the next open quick. So they are managed, not kept:
+ * a shed-able window nobody has opened for a while goes; when the assistant or the companion opens, or home
+ * mode takes the screen, they all go, because that is when the memory is wanted; and an app that is slow to
+ * build says "opening ..." on the island for the moment it takes, instead of freezing with no word.
+ * Nothing is written to the card: a window is rebuilt from its code, which is cheaper than reading it back. */
+#define APP_IDLE_S 90.0
+static struct { const ui_app_t *app; float ms; } s_build[MAX_APPS];
+static int s_nbuild;
+
+static void build_note(const ui_app_t *app, double ms)
+{
+    for (int i = 0; i < s_nbuild; i++)
+        if (s_build[i].app == app) {
+            s_build[i].ms = (float)ms;
+            return;
+        }
+    if (s_nbuild < MAX_APPS) s_build[s_nbuild++] = (typeof(s_build[0])){ app, (float)ms };
+}
+
+static float build_ms(const ui_app_t *app)
+{
+    for (int i = 0; i < s_nbuild; i++)
+        if (s_build[i].app == app) return s_build[i].ms;
+    return 0;
+}
+
+static bool app_built(const ui_app_t *app)
+{
+    for (int i = 0; i < U.nbuilt; i++)
+        if (U.built[i].app == app) return true;
+    return false;
+}
+
+/* Take down the shed-able windows that are not the one on screen: all of them, or those idle past APP_IDLE_S
+ * (the most recently used is kept, so going back to what was just closed is instant). Returns the bytes. */
+static size_t apps_sweep(bool all)
+{
+    size_t freed = 0;
+    int newest = -1;
+    for (int i = 0; i < U.nbuilt; i++)
+        if (U.built[i].app && U.built[i].app->shed && (newest < 0 || U.built[i].used > U.built[newest].used)) newest = i;
+    const ui_app_t *keep = !all && newest >= 0 ? U.built[newest].app : NULL;
+    for (int i = U.nbuilt - 1; i >= 0; i--) {
+        const ui_app_t *a = U.built[i].app;
+        if (!a || !a->shed || a == U.app || a == keep) continue;
+        if (!all && ui_now() - U.built[i].used < APP_IDLE_S) continue;
+        freed += U.built[i].bytes;
+        app_evict(a);
+    }
+    if (freed) printf("apps: %u KB of background windows taken down (%s)\n", (unsigned)(freed / 1024), all ? "all" : "idle");
+    return freed;
+}
+
 static double s_mem_quiet_until; /* nothing could be given back: don't scan again until then */
 
 static void mem_pressure(void)
@@ -1833,6 +1888,17 @@ static void mem_pressure(void)
      * gates below then threw it away on the first frame -- the dev command's own touch of the UI loop
      * counts as activity, so the very next frame is never a quiet one. */
     bool force = s_mem_force;
+    /* home mode has just taken the screen: every background window goes, it is a desk clock now */
+    static bool was_home;
+    bool home = ui_home_mode_active();
+    if (home && !was_home) apps_sweep(true);
+    was_home = home;
+    /* and the ones nobody has gone back to, whenever the screen is quiet */
+    static double swept;
+    if (!U.app && !home && bz_ui_idle_s() > 2 && ui_now() - swept > 15) {
+        swept = ui_now();
+        apps_sweep(false);
+    }
     if (!force && ui_now() < s_mem_quiet_until) return;
     /* Not every frame. hal_mem_psram asks the heap for its free size AND its largest free block, and the
      * second of those walks every free block on a 23 MB heap with the heap's lock held -- which is a
@@ -2388,9 +2454,25 @@ static void app_sheet_frame(void)
     ASH.on = false;
 }
 
+/* An app that takes a moment to build is opened a frame or two late, with a word on the island first. */
+static struct { const ui_app_t *app; lv_area_t from; bool has_from, go; int frames; } s_defer;
+
 void ui_app_open(const ui_app_t *app, lv_obj_t *from)
 {
     bz_ui_wake();
+    if (!s_defer.go && !app_built(app) && build_ms(app) > 120) {
+        char say[48];
+        snprintf(say, sizeof say, "opening %s", app->name);
+        ui_island_say(app->icon, say);
+        s_defer.app = app;
+        s_defer.has_from = from != NULL;
+        if (from) lv_obj_get_coords(from, &s_defer.from);
+        s_defer.frames = 0;
+        bz_ui_keep_alive();
+        return;
+    }
+    /* the two AIs want the memory more than a window in the background does */
+    if (app == &APP_ASSIST || app == &APP_COMPANION) apps_sweep(true);
     /* from the page (nothing open): the sheet starts while the glass still shows the page */
     if (!U.app || U.k.target == 0) app_sheet_start(true);
     if (U.app && U.app != app) {
@@ -2400,12 +2482,15 @@ void ui_app_open(const ui_app_t *app, lv_obj_t *from)
     bool reopening = U.app == app;
     U.app = app;
     if (from) lv_obj_get_coords(from, &U.from);
+    else if (s_defer.go && s_defer.has_from) U.from = s_defer.from;
     else U.from = (lv_area_t){ W / 2 - 60, H / 2 - 60, W / 2 + 60, H / 2 + 60 };
     /* A tap that opens an app freezes the interface for as long as these take, so a slow one says which part
      * was slow (the first open builds the app; after that, open and refresh are the whole cost). */
     double t0 = hal_seconds();
+    bool fresh = !app_built(app);
     U.win_inner = app_inner(app);
     double t1 = hal_seconds();
+    if (fresh) build_note(app, (t1 - t0) * 1e3);
     lv_obj_remove_flag(U.win_inner, LV_OBJ_FLAG_HIDDEN);
     for (int i = 0; i < U.nbuilt; i++) if (U.built[i].inner != U.win_inner) lv_obj_add_flag(U.built[i].inner, LV_OBJ_FLAG_HIDDEN);
     lv_obj_move_foreground(U.win);
@@ -2514,6 +2599,16 @@ static void build_windows(void)
 static void windows_frame(double now, double dt)
 {
     app_sheet_frame();
+    if (s_defer.app) {
+        bz_ui_keep_alive();
+        if (++s_defer.frames >= 3) { /* the island has had its frames: now the build */
+            const ui_app_t *a = s_defer.app;
+            s_defer.app = NULL;
+            s_defer.go = true;
+            ui_app_open(a, NULL);
+            s_defer.go = false;
+        }
+    }
     if (!U.app) return;
     bool moving = bz_motion_tick(&U.k);
     if (moving) bz_ui_keep_alive();

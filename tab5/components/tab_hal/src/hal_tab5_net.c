@@ -2051,6 +2051,22 @@ bool hal_thread_internal(const char *name, void *(*fn)(void *), void *arg, int s
     return false;
 }
 
+/* A thread whose stack is in PSRAM from the start, for a worker that never writes NVS (hal_kv_set refuses to
+ * run on such a stack): the stream receivers, which only move bytes. Internal RAM is the scarce kind, and a
+ * 6 KB stack there for something that sits on a socket all day is 6 KB the UI and the radio do not have. */
+bool hal_thread_psram(const char *name, void *(*fn)(void *), void *arg, int stack)
+{
+    if (stack < 4096) stack = 4096;
+    thread_start_t *s = malloc(sizeof *s);
+    if (!s) return false;
+    *s = (thread_start_t){ fn, arg, true };
+    if (xTaskCreatePinnedToCoreWithCaps(thread_main, name, (uint32_t)stack, s, 4, NULL, 0,
+                                        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) == pdPASS)
+        return true;
+    free(s);
+    return false;
+}
+
 bool hal_thread(const char *name, void *(*fn)(void *), void *arg, int stack)
 {
     /* Core 0: core 1 renders. Priority 4, under the NetworkTables client (5), so a slow TLS handshake

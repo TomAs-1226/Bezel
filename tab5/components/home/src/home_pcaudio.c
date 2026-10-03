@@ -478,7 +478,7 @@ void home_pcaudio_enable(bool on)
         A.st.gen++;
     }
     pthread_mutex_unlock(&A.lock);
-    if (start && !hal_thread("pcaudio", receiver, NULL, 6144)) {
+    if (start && !hal_thread_psram("pcaudio", receiver, NULL, 8192)) {
         pthread_mutex_lock(&A.lock);
         A.running = false;
         pthread_mutex_unlock(&A.lock);

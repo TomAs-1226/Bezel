@@ -763,7 +763,15 @@ bool ui_avatar_frame(ui_avatar_t *a)
     if (now - a->last < interval - 0.002) return a->moving;
     a->last = now;
     bool calm_all = bz_ui_calm();
-    if (!a->an) ui_avatar_state(a, a->base);
+    if (!a->an) {
+        /* Nothing is playing: the page has just come back, or the character was swapped. ui_avatar_state
+         * declines to start anything while a reaction is marked as running, and one can be -- the page was
+         * left in the middle of it -- which left `an` NULL for timeline() to read: the crash in the core dump,
+         * half an hour into a session, on the pet page. The reaction is over by definition; start the state. */
+        a->reacting = false;
+        resolve(a, a->base, false);
+        if (!a->an) return false;
+    }
     timeline(a, now);
     bool run = bz_motion_tick(&a->s);
     float s = a->s.value;

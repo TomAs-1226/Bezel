@@ -393,6 +393,7 @@ static inline int hal_http_fetch(const hal_http_req_t *req, char *out, int max, 
 
 /* A worker thread (core 0 on the tablet: core 1 renders). stack in bytes; TLS wants >= 12 KB. */
 bool hal_thread(const char *name, void *(*fn)(void *), void *arg, int stack);
+bool hal_thread_psram(const char *name, void *(*fn)(void *), void *arg, int stack); /* its stack in PSRAM: it must never write NVS */
 /* hal_thread, but the stack only ever in internal RAM (a thread that reads flash or writes NVS): false when it
  * doesn't fit */
 bool hal_thread_internal(const char *name, void *(*fn)(void *), void *arg, int stack);
