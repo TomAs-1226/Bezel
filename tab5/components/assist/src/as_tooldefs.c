@@ -159,7 +159,7 @@ const as_tooldef_t AS_TOOLS[] = {
     /* ---- the tablet and the house: changes, but never to the robot ---- */
     { "open_app",
       "Brings one of the tablet's apps on screen, by the name on its icon: e.g. weather, music, photos, clock, "
-      "timer, calendar, notes, documents, checklist, flashlight, batteries, blue alliance, recorder, logs, alerts, "
+      "timer, calendar, notes, documents, checklist, batteries, blue alliance, recorder, logs, alerts, "
       "tune, systemcore, assist, companion, memory (what the two AIs remember), settings. For settings, `section` "
       "opens one of its sections. Say which one you opened.",
       "{\"type\":\"object\",\"properties\":{\"app\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":32},"
@@ -169,8 +169,7 @@ const as_tooldef_t AS_TOOLS[] = {
       AS_T_DEVICE },
     { "set_tablet",
       "Changes the tablet's own settings; give only what was asked for. brightness and volume 0-100; tone dark or "
-      "light; accent, the highlight colour; calm true for less motion; flashlight true for a full-white screen, "
-      "false to put it away; screen \"sleep\" turns the screen off now (a tap wakes it), \"lock\" shows the lock "
+      "light; accent, the highlight colour; calm true for less motion; screen \"sleep\" turns the screen off now (a tap wakes it), \"lock\" shows the lock "
       "screen; home_mode true brings up the desk surface (clock, weather, music, the companion), false goes back "
       "to the robot pages.",
       "{\"type\":\"object\",\"properties\":{"
@@ -179,7 +178,7 @@ const as_tooldef_t AS_TOOLS[] = {
       "\"tone\":{\"type\":\"string\",\"enum\":[\"dark\",\"light\"]},"
       "\"accent\":{\"type\":\"string\",\"enum\":[\"ice\",\"orange\",\"leaf\",\"violet\",\"rose\",\"amber\",\"teal\","
       "\"white\"]},"
-      "\"calm\":{\"type\":\"boolean\"},\"flashlight\":{\"type\":\"boolean\"},"
+      "\"calm\":{\"type\":\"boolean\"},"
       "\"screen\":{\"type\":\"string\",\"enum\":[\"sleep\",\"lock\"]},\"home_mode\":{\"type\":\"boolean\"}},"
       "\"additionalProperties\":false}",
       AS_T_DEVICE },

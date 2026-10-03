@@ -2,7 +2,7 @@
  *
  * Both AIs' AS_T_DEVICE tools arrive here (the technician's in Assist, the companion's in her voice):
  * open an app or a settings section, the tablet's own settings (brightness, volume, tone, accent, calm,
- * the flashlight, sleep and lock, home mode), its status, the timer, the clock's alarms, reminders with
+ * sleep and lock, home mode), its status, the timer, the clock's alarms, reminders with
  * words, the notes, the documents on the card, the checklist, the calendar, the weather, the
  * notifications, the music and Home Assistant. assist cannot call the ui (`ui` REQUIRES `assist` and
  * `home`, not the other way round), so the assistant takes a handler it is handed, exactly as it takes the
@@ -179,7 +179,7 @@ static void addf(char *out, size_t n, const char *fmt, ...)
 
 /* ---------------------------------------------------------------- the screen, when the companion is done */
 
-typedef enum { DF_NONE, DF_APP, DF_SETTINGS, DF_MEMORY, DF_LIGHT, DF_SLEEP, DF_LOCK, DF_HOME_ON, DF_HOME_OFF } defer_t;
+typedef enum { DF_NONE, DF_APP, DF_SETTINGS, DF_MEMORY, DF_SLEEP, DF_LOCK, DF_HOME_ON, DF_HOME_OFF } defer_t;
 static struct {
     defer_t what;
     const ui_app_t *app;
@@ -201,7 +201,6 @@ static void screen_do(defer_t what, const ui_app_t *app, const char *section, in
     case DF_APP: ui_app_open(app, NULL); break;
     case DF_SETTINGS: ui_settings_show(section); break;
     case DF_MEMORY: ui_memory_open(pool, NULL); break;
-    case DF_LIGHT: if (!ui_app_is_open(&APP_LIGHT)) ui_app_open(&APP_LIGHT, NULL); break;
     case DF_SLEEP: ui_sleep_now(); break;
     case DF_LOCK: ui_lock_show(); break;
     case DF_HOME_ON: if (!ui_home_mode_active()) ui_home_mode_enter(); break;
@@ -447,16 +446,6 @@ static bool do_set_tablet(args_t *a, int pool, char *out, size_t n)
         }
         ui_set_accent(k);
         addf(out, n, "%saccent %s", any ? ", " : "", s);
-        any = true;
-    }
-    int light = args_bool(a, "flashlight");
-    if (light == 1) {
-        bool later = screen(DF_LIGHT, NULL, NULL, pool);
-        addf(out, n, "%sflashlight on%s", any ? ", " : "", later ? " once you finish speaking (back closes it)" : " (back closes it)");
-        any = true;
-    } else if (light == 0) {
-        if (ui_app_is_open(&APP_LIGHT)) ui_app_close();
-        addf(out, n, "%sflashlight off", any ? ", " : "");
         any = true;
     }
     int home = args_bool(a, "home_mode");

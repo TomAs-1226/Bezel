@@ -295,10 +295,6 @@ intel_intent_t intel_intent(const char *text, const char *const *apps)
         snprintf(r.arg, sizeof r.arg, "%s", starts(s, "dark") ? "dark" : "light");
         return r;
     }
-    if (is(s, "torch") || is(s, "flashlight") || is(s, "flash light") || starts(s, "turn on the flashlight")) {
-        r.kind = IN_TORCH;
-        return r;
-    }
     if (is(s, "home mode") || is(s, "desk") || is(s, "desk mode")) {
         r.kind = IN_HOME;
         return r;

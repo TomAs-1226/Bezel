@@ -380,7 +380,6 @@ typedef enum {
     IN_VOLUME,
     IN_MUTE,
     IN_TONE,       /* arg "dark" / "light" */
-    IN_TORCH,
     IN_HOME,       /* home mode */
     IN_SLEEP,
     IN_NEXT,       /* "next match" */

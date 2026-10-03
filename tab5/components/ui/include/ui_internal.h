@@ -244,8 +244,8 @@ void ui_assist_settings_open(void);
 /* The companion is on screen and the tablet on power: the screen shouldn't go off by itself. */
 bool ui_companion_keeps_awake(void);
 /* ui_apps_util.c: the tablet's own utilities */
-extern const ui_app_t APP_TIMER, APP_CALC, APP_NOTES, APP_CHECK, APP_LIGHT, APP_SYSMON, APP_FILES;
-extern const ui_app_t APP_GEAR, APP_RULER, APP_REF; /* ui_apps_shop.c */
+extern const ui_app_t APP_TIMER, APP_CALC, APP_NOTES, APP_CHECK, APP_SYSMON, APP_FILES;
+extern const ui_app_t APP_GEAR, APP_REF; /* ui_apps_shop.c */
 /* The Blue Alliance (ui_app_tba.c): the team's event, its next match, standing and the rankings. */
 extern const ui_app_t APP_TBA;
 /* Match alerts (ui_match.c): alarms before the team's matches from The Blue Alliance, polled in the background,
@@ -273,7 +273,7 @@ void ui_batt_dev(const char *args);                           /* the dev console
 /* The logs app straight onto a log's (or a recorder run's) analysis: the recorder's analyze button. */
 void ui_logs_analyze(const char *path);
 /* Catalyst OS's everyday apps (ui_apps_os.c), on the card's CATOS layout (ui_storage.h). */
-extern const ui_app_t APP_CLOCK, APP_CALENDAR, APP_DOCS, APP_PHOTOS, APP_STORAGE;
+extern const ui_app_t APP_CLOCK, APP_CALENDAR, APP_DOCS, APP_PHOTOS;
 /* The photos app straight into a full-screen slideshow of the card's pictures (home mode's screensaver); a tap
  * ends it. */
 void ui_photos_slideshow(lv_obj_t *from);
@@ -319,7 +319,6 @@ typedef struct {
 
 void ui_cc_add(const ui_cc_control_t *c); /* the struct must outlive the call: a static one */
 /* Controls that belong to another file, asked for their registration as the sheet is built. */
-void ui_light_cc_add(void);     /* ui_apps_util.c: the flashlight */
 void ui_home_mode_cc_add(void); /* ui_home_mode.c: home mode */
 
 void ui_cc_init(void);

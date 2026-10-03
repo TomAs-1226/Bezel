@@ -773,7 +773,6 @@ static void do_ask(const char *text)
         snprintf(j, sizeof j, "{\"tone\":\"%s\"}", it.arg);
         tool("set_tablet", j);
         break;
-    case IN_TORCH: tool("set_tablet", "{\"flashlight\":true}"); break;
     case IN_HOME: tool("set_tablet", "{\"home_mode\":true}"); break;
     case IN_SLEEP:
         snprintf(j, sizeof j, "{\"screen\":\"%s\"}", it.arg);

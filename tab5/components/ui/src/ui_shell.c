@@ -2831,12 +2831,9 @@ static void shell_frame(double now, double dt, void *user)
         double p = ui_home_mode_presence_idle_s(now);
         if (p < idle_s) idle_s = p;
     }
-    /* the flashlight is the panel at full: it neither dims (it went to a quarter of the normal brightness after
-     * the dim time) nor sleeps while it's open, and waking returns to it, not to the normal brightness */
-    bool torch = ui_app_is_open(&APP_LIGHT);
-    float full = torch ? 1.0f : S.brightness;
+    float full = S.brightness;
     /* the companion on a stand, on power, stays awake (it only dims) */
-    if (!SLP.asleep && (SLP.request || (!torch && !ui_companion_keeps_awake() && !ui_home_mode_keeps_awake() && S.sleep_s > 0 && idle_s > S.sleep_s))) {
+    if (!SLP.asleep && (SLP.request || (!ui_companion_keeps_awake() && !ui_home_mode_keeps_awake() && S.sleep_s > 0 && idle_s > S.sleep_s))) {
         SLP.asleep = true;
         SLP.request = false;
         SLP.at = now;
@@ -2850,7 +2847,7 @@ static void shell_frame(double now, double dt, void *user)
         hal_set_brightness(full);
         hal_tone(1200, 8, S.volume * 0.3f);
     }
-    bool idle = !SLP.asleep && !torch && S.dim_s > 0 && idle_s > S.dim_s;
+    bool idle = !SLP.asleep && S.dim_s > 0 && idle_s > S.dim_s;
     if (!SLP.asleep && idle != SLP.dimmed) {
         SLP.dimmed = idle;
         hal_set_brightness(idle ? S.brightness * 0.25f : full);
