@@ -50,6 +50,7 @@ static struct {
     ui_avatar_t *av;
     double poke_at, whim_at, press_at, sneeze_at;
     int tickle;
+    bool tickle_ok;
     bool hugged;
     int pokes;
     uint32_t rng;
@@ -156,6 +157,7 @@ static void touch_ev(lv_event_t *e)
         PG.moved = PG.total = 0;
         PG.press_at = now;
         PG.tickle = 0;
+        PG.tickle_ok = fabsf(nx) < 0.30f && ny > -0.15f && ny < 0.45f;
         PG.hugged = false;
         ui_avatar_look(PG.av, nx, ny, 1.0f);
     } else if (c == LV_EVENT_PRESSING && PG.pressed) {
@@ -174,9 +176,10 @@ static void touch_ev(lv_event_t *e)
         /* A finger wiggling on her nose -- the middle of the face, just under the eyes -- tickles, and she
          * sneezes. It is its own thing, sooner than a stroke and never a hug. */
         bool nose = fabsf(nx) < 0.30f && ny > -0.15f && ny < 0.45f;
-        if (nose) PG.tickle += d;
-        else PG.tickle = 0;
-        if (PG.tickle > 36 && now - PG.sneeze_at > 2.5) {
+        /* only a finger that landed on the nose and stayed there: a stroke passing across the face is a stroke */
+        if (!nose) PG.tickle_ok = false;
+        if (nose && PG.tickle_ok) PG.tickle += d;
+        if (PG.tickle_ok && PG.tickle > 44 && now - PG.sneeze_at > 2.5) {
             PG.tickle = 0;
             PG.moved = 0;
             PG.sneeze_at = PG.stroke_at = now;
