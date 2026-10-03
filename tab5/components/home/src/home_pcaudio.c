@@ -256,6 +256,39 @@ typedef enum { END_WANT, END_LOST, END_REFUSED } end_t;
 static const char *s_why = ""; /* what ended the last connection (one writer: the receiver thread) */
 #define LOST(w) (s_why = (w), END_LOST)
 
+/* IMA ADPCM, four bits a sample, as Python's audioop writes it (the first sample of each pair in the high
+ * nibble). Raw 48 kHz PCM is 96 KB/s through the Wi-Fi co-processor for as long as music plays, which is twice
+ * the sustained load voice.c already found it hangs under; this is 24. Each packet carries the coder's state
+ * before its first sample, so a lost packet costs that packet and nothing after it. */
+static const int8_t IMA_INDEX[16] = { -1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8 };
+static const int16_t IMA_STEP[89] = {
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66, 73, 80, 88, 97, 107, 118,
+    130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060,
+    1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484,
+    7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767
+};
+static int16_t *s_dec; /* PKT_MAX samples, the receiver's */
+
+static void ima_decode(const uint8_t *in, int n, int valprev, int index, int16_t *out)
+{
+    if (index < 0) index = 0;
+    if (index > 88) index = 88;
+    for (int i = 0; i < n; i++) {
+        int delta = (i & 1) ? in[i >> 1] & 15 : in[i >> 1] >> 4;
+        int step = IMA_STEP[index], d = step >> 3;
+        if (delta & 4) d += step;
+        if (delta & 2) d += step >> 1;
+        if (delta & 1) d += step >> 2;
+        valprev += (delta & 8) ? -d : d;
+        if (valprev > 32767) valprev = 32767;
+        if (valprev < -32768) valprev = -32768;
+        index += IMA_INDEX[delta];
+        if (index < 0) index = 0;
+        if (index > 88) index = 88;
+        out[i] = (int16_t)valprev;
+    }
+}
+
 static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
 {
     size_t have = 0;
@@ -333,8 +366,10 @@ static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
             const uint8_t *h = rx + off;
             unsigned n = (unsigned)h[2] | (unsigned)h[3] << 8;
             if (h[0] != 1 || n > PKT_MAX) return LOST("out of step"); /* start over */
-            if (have - off < PKT_HDR + (size_t)n * 2) break;
             unsigned flags = h[1];
+            bool adpcm = (flags & 2) != 0;
+            size_t body = adpcm ? 4 + (size_t)(n + 1) / 2 : (size_t)n * 2;
+            if (have - off < PKT_HDR + body) break;
             last_seq = (unsigned)h[4] | (unsigned)h[5] << 8 | (unsigned)h[6] << 16 | (unsigned)h[7] << 24;
             packets++;
             got_any = true;
@@ -353,11 +388,17 @@ static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
                     spk_close(s);
                 } else if (spk_open(s, now)) {
                     /* a dry queue while audio is flowing is a dropout; one after a silence is just the start */
-                    feed(s, (const int16_t *)(const void *)(h + PKT_HDR), (int)n);
+                    if (adpcm && s_dec) {
+                        const uint8_t *p = h + PKT_HDR;
+                        ima_decode(p + 4, (int)n, (int16_t)(p[0] | p[1] << 8), p[2], s_dec);
+                        feed(s, s_dec, (int)n);
+                    } else if (!adpcm) {
+                        feed(s, (const int16_t *)(const void *)(h + PKT_HDR), (int)n);
+                    }
                 }
                 publish(hold || !s->open ? PCA_HELD : PCA_LIVE, hold ? "the assistant has the speaker" : "");
             }
-            off += PKT_HDR + (size_t)n * 2;
+            off += PKT_HDR + body;
         }
         if (off) {
             have -= off;
@@ -397,6 +438,7 @@ static void *receiver(void *arg)
 {
     (void)arg;
     uint8_t *rx = malloc(RX_BYTES);
+    if (!s_dec) s_dec = malloc(PKT_MAX * sizeof(int16_t));
     spk_t s = { 0 };
     s.tmp = malloc((PKT_MAX + PKT_MAX / 33 + 8) * sizeof(int16_t));
     for (;;) {

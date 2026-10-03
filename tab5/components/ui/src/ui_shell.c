@@ -1833,6 +1833,7 @@ static void app_evict(const ui_app_t *app)
  * build says "opening ..." on the island for the moment it takes, instead of freezing with no word.
  * Nothing is written to the card: a window is rebuilt from its code, which is cheaper than reading it back. */
 #define APP_IDLE_S 90.0
+#define APP_SWEEP_BELOW (3072u * 1024u) /* with more than this free nothing is taken down at all */
 static struct { const ui_app_t *app; float ms; } s_build[MAX_APPS];
 static int s_nbuild;
 
@@ -1888,16 +1889,14 @@ static void mem_pressure(void)
      * gates below then threw it away on the first frame -- the dev command's own touch of the UI loop
      * counts as activity, so the very next frame is never a quiet one. */
     bool force = s_mem_force;
-    /* home mode has just taken the screen: every background window goes, it is a desk clock now */
-    static bool was_home;
-    bool home = ui_home_mode_active();
-    if (home && !was_home) apps_sweep(true);
-    was_home = home;
-    /* and the ones nobody has gone back to, whenever the screen is quiet */
+    /* Windows go when the memory is wanted, not on a clock. The first version took them down after 90 s and
+     * whenever home mode or an assistant opened, and the owner's verdict was that it closed too much: every
+     * window taken down is a rebuild later (settings is most of a second), and the rebuilding was the lag.
+     * So: only below APP_SWEEP_BELOW free, and then the idle ones first. */
     static double swept;
-    if (!U.app && !home && bz_ui_idle_s() > 2 && ui_now() - swept > 15) {
+    if (!U.app && !ui_home_mode_active() && bz_ui_idle_s() > 2 && ui_now() - swept > 15) {
         swept = ui_now();
-        apps_sweep(false);
+        if (hal_psram_free() < APP_SWEEP_BELOW) apps_sweep(false);
     }
     if (!force && ui_now() < s_mem_quiet_until) return;
     /* Not every frame. hal_mem_psram asks the heap for its free size AND its largest free block, and the
@@ -2472,7 +2471,7 @@ void ui_app_open(const ui_app_t *app, lv_obj_t *from)
         return;
     }
     /* the two AIs want the memory more than a window in the background does */
-    if (app == &APP_ASSIST || app == &APP_COMPANION) apps_sweep(true);
+    if ((app == &APP_ASSIST || app == &APP_COMPANION) && hal_psram_free() < APP_SWEEP_BELOW) apps_sweep(true);
     /* from the page (nothing open): the sheet starts while the glass still shows the page */
     if (!U.app || U.k.target == 0) app_sheet_start(true);
     if (U.app && U.app != app) {

@@ -30,6 +30,11 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
+try:  # IMA ADPCM at C speed; gone from Python 3.13, and then the stream is raw PCM as before
+    import audioop  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    audioop = None  # type: ignore[assignment]
+
 RATE = 48000
 CHANNELS = 1
 PACKET = struct.Struct("<BBHII")
@@ -356,6 +361,7 @@ class AudioService:
 
         threading.Thread(target=reader, name="audio-acks", daemon=True).start()
         seq = 0
+        adpcm_state: Any = None  # audioop's (valprev, index), carried from packet to packet
         next_tick = time.monotonic()
         last_ka = 0.0
         t_start = time.monotonic()
@@ -384,7 +390,16 @@ class AudioService:
                 if n > 0:
                     while data:
                         part, data = data[:4800], data[4800:]
-                        wfile.write(PACKET.pack(1, 0, len(part) // 2, seq & 0xFFFFFFFF, t_ms) + part)
+                        if audioop is not None:
+                            # four bits a sample: 24 KB/s where raw PCM is 96, which the tablet's Wi-Fi chip
+                            # cannot carry for long. The coder's state before this packet goes with it, so a
+                            # lost packet costs only itself.
+                            vp, ix = adpcm_state if adpcm_state else (0, 0)
+                            body, adpcm_state = audioop.lin2adpcm(part, 2, adpcm_state)
+                            wfile.write(PACKET.pack(1, 2, len(part) // 2, seq & 0xFFFFFFFF, t_ms)
+                                        + struct.pack("<hBB", vp, ix, 0) + body)
+                        else:
+                            wfile.write(PACKET.pack(1, 0, len(part) // 2, seq & 0xFFFFFFFF, t_ms) + part)
                         sent[seq] = now
                         info["packets"] += 1
                         seq += 1
