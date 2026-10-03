@@ -16,3 +16,7 @@ winrt-Windows.Devices.Bluetooth>=2.0; sys_platform == "win32"
 # Optional: the desktop app's firmware panel. It runs `python -m esptool` in the same interpreter it
 # runs the Link with, so this has to be in that interpreter, not just on PATH.
 esptool>=4.7
+# Optional, Windows: sound to the tablet (everything the PC plays, out of the tablet's speaker). WASAPI loopback
+# through pyaudiowpatch; numpy for the mix-down. No virtual cable is needed while the PC has an output device.
+pyaudiowpatch>=0.2.12.7; sys_platform == "win32"
+numpy>=1.24
