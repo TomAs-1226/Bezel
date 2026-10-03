@@ -1051,6 +1051,8 @@ static const struct {
     { "TBA_API_KEY", "tba_key" },          /* The Blue Alliance, read API v3 (X-TBA-Auth-Key) */
     { "HA_URL", "ha_url" },                /* Home Assistant, as home mode keeps it */
     { "HA_TOKEN", "ha_token" },
+    { "FISH_API_KEY", "fish_key" },        /* fish.audio: the companion's own voice (voice.c) */
+    { "FISH_VOICE", "fish_voice" },        /* a fish.audio voice model id, in place of the default one */
     { "NEXUS_API_KEY", "nexus_key" },      /* frc.nexus (Nexus-Api-Key): the live queue (intel.h, ui_match.c) */
     { "FRC_EVENTS_USER", "frc_ev_user" },  /* FIRST's FRC Events API: kept for later */
     { "FRC_EVENTS_TOKEN", "frc_ev_token" },

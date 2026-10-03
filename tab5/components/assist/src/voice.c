@@ -230,6 +230,23 @@ static char *oai_key(void)
     return k;
 }
 
+/* Fish Audio's key and the voice she speaks with there: FISH_API_KEY and FISH_VOICE in KEYS.ENV (kv "fish_key",
+ * "fish_voice"). NULL when there is no key, and then the speech is OpenAI's as before. The default voice is
+ * fish.audio's "cute girl" (English, bright and sweet); any model id from fish.audio/m/<id> can replace it. */
+#define FISH_VOICE_DEFAULT "e81daf02ca2e401693524c3b5afd18ec"
+static bool s_fish_off; /* it failed once this session: OpenAI's voice until the tablet restarts */
+
+static char *fish_key(void)
+{
+    char *k = malloc(160);
+    if (!k) return NULL;
+    if (!hal_kv_get("fish_key", k, 160) || !k[0]) {
+        free(k);
+        return NULL;
+    }
+    return k;
+}
+
 static void drop_key(char *k)
 {
     if (!k) return;
@@ -970,20 +987,53 @@ static bool speak(const vo_reply_t *rep)
         pthread_mutex_unlock(&V.lock);
         const char *model = c.tts_model[0] ? c.tts_model : fb ? VO_TTS_FALLBACK : VO_TTS_DEFAULT;
         const char *voice = as_tts_voice(model, safe ? AS_TTS_VOICE_SAFE : c.voice);
+        /* Her own voice, when the card gave a Fish Audio key: an anime-style girl's voice from fish.audio, in
+         * place of OpenAI's. First try only; whatever goes wrong there, the next try is OpenAI's and she still
+         * answers. */
+        char *fk = attempt == 0 && !s_fish_off ? fish_key() : NULL;
+        bool fish = fk != NULL;
+        char fvoice[48] = FISH_VOICE_DEFAULT;
+        if (fish) {
+            char v[48];
+            if (hal_kv_get("fish_voice", v, sizeof v) && strlen(v) >= 16) snprintf(fvoice, sizeof fvoice, "%s", v);
+            model = "fish s1";
+            voice = fvoice;
+        }
         ab_t b;
         ab_init(&b);
+        if (fish) {
+            /* s1 reads a feeling in brackets at the head of the line as a direction, not as words */
+            static const char *const FEEL[VO_EMO_COUNT] = {
+                [VO_EMO_HAPPY] = "(happy) ", [VO_EMO_EXCITED] = "(excited) ", [VO_EMO_CURIOUS] = "(curious) ",
+                [VO_EMO_SLEEPY] = "(sleepy) ", [VO_EMO_SAD] = "(sad) ", [VO_EMO_WORRIED] = "(worried) ",
+                [VO_EMO_SURPRISED] = "(surprised) ", [VO_EMO_LOVE] = "(joyful) ", [VO_EMO_PROUD] = "(proud) ",
+                [VO_EMO_CONFUSED] = "(confused) ",
+            };
+            const char *feel = rep->emotion < VO_EMO_COUNT && FEEL[rep->emotion] ? FEEL[rep->emotion] : "";
+            size_t tn = strlen(feel) + strlen(rep->say) + 1;
+            char *text = malloc(tn);
+            if (text) snprintf(text, tn, "%s%s", feel, rep->say);
+            ab_puts(&b, "{\"text\":");
+            ab_str(&b, text ? text : rep->say);
+            free(text);
+            ab_puts(&b, ",\"reference_id\":");
+            ab_str(&b, fvoice);
+            ab_puts(&b, ",\"latency\":\"balanced\",\"normalize\":true,\"mp3_bitrate\":64,\"sample_rate\":24000");
+        } else {
         ab_puts(&b, "{\"model\":");
         ab_str(&b, model);
         ab_puts(&b, ",\"voice\":");
         ab_str(&b, voice);
         ab_puts(&b, ",\"input\":");
         ab_str(&b, rep->say);
+        }
         pthread_mutex_lock(&V.lock);
         bool want_pcm = V.tts_pcm;
         pthread_mutex_unlock(&V.lock);
         hal_mp3_t *mp3 = want_pcm ? NULL : hal_mp3_open();
-        ab_puts(&b, mp3 ? ",\"response_format\":\"mp3\"" : ",\"response_format\":\"pcm\"");
-        if (!strncmp(model, "gpt-", 4)) {
+        if (fish) ab_puts(&b, mp3 ? ",\"format\":\"mp3\"" : ",\"format\":\"pcm\"");
+        else ab_puts(&b, mp3 ? ",\"response_format\":\"mp3\"" : ",\"response_format\":\"pcm\"");
+        if (!fish && !strncmp(model, "gpt-", 4)) {
             /* who is speaking, and the feeling of this line (only gpt-4o-mini-tts takes instructions) */
             char ins[320];
             as_tts_instructions(ins, sizeof ins, TONE[rep->emotion < VO_EMO_COUNT ? rep->emotion : 0],
@@ -992,7 +1042,7 @@ static bool speak(const vo_reply_t *rep)
             ab_str(&b, ins);
         }
         ab_puts(&b, "}");
-        char url[200], *hdr = malloc(512), *key = oai_key();
+        char url[200], *hdr = malloc(512), *key = fish ? fk : oai_key();
         if (!hdr || !key || b.oom) {
             free(hdr);
             drop_key(key);
@@ -1003,7 +1053,8 @@ static bool speak(const vo_reply_t *rep)
         pthread_mutex_lock(&V.lock);
         snprintf(url, sizeof url, "%s/v1/audio/speech", V.base);
         pthread_mutex_unlock(&V.lock);
-        snprintf(hdr, 512, "Authorization: Bearer %s\r\nContent-Type: application/json\r\n", key);
+        if (fish) snprintf(url, sizeof url, "https://api.fish.audio/v1/tts");
+        snprintf(hdr, 512, "Authorization: Bearer %s\r\nContent-Type: application/json\r\n%s", key, fish ? "model: s1\r\n" : "");
         drop_key(key);
         hal_http_req_t rq = { .method = "POST", .url = url, .headers = hdr, .body = b.p, .body_len = b.n,
                               .timeout_ms = 20000 };
@@ -1017,6 +1068,14 @@ static bool speak(const vo_reply_t *rep)
          * and what came back */
         printf("voice: POST /v1/audio/speech %s/%s -> %d in %.1f s%s%s\n", model, voice, h ? r.status : -1,
                hal_seconds() - t_req, r.err[0] ? ": " : "", r.err);
+        if (fish && (!h || r.status != 200)) {
+            /* her own voice would not come: say so once, and OpenAI's speaks this line and the rest */
+            printf("voice: fish audio refused (%d): OpenAI's voice until the tablet restarts\n", h ? r.status : -1);
+            if (h) hal_http_close(h);
+            hal_mp3_close(mp3);
+            s_fish_off = true;
+            continue;
+        }
         if (!h) {
             describe(&r, "speaking");
             hal_mp3_close(mp3);

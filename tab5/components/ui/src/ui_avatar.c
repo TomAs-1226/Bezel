@@ -228,6 +228,7 @@ struct ui_avatar {
      * when they were last drawn */
     av_state_t rst, fx_shown;
     double fx_t0, fx_inv;
+    bool fx_live;
     int S;
     float k;
     bool active, baked;
@@ -904,7 +905,10 @@ bool ui_avatar_frame(ui_avatar_t *a)
             }
         }
         if (hz >= 20) moving = true; /* the slow ones ride on the 10 Hz refresh: the loop need not stay awake for them */
+    } else if (a->fx_live) {
+        lv_obj_invalidate(a->obj); /* the extras have stopped: the whole of it once more, so nothing of them is left behind */
     }
+    a->fx_live = hz != 0;
     a->moving = moving;
     return moving;
 }
