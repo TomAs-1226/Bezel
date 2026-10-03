@@ -21,7 +21,12 @@
  * A step is a push: a flick up brings the next face up from the bottom edge and the old one leaves by the top
  * (down, the other way), the platform moving both pictures by block copies (bz_ui_push_begin), the new face
  * drawn offscreen a band at a time as it comes into view, and the index, the page dots and the orb held still
- * over both. The new face's pictures are painted before it starts, so the motion never waits on the worker. */
+ * over both. The new face's pictures are painted before it starts, so the motion never waits on the worker.
+ *
+ * The faces that set their time in a big font have it from the card (ui_face_fonts.c). The fonts held are exactly
+ * the face on screen's, and the arriving face's besides during a step, when the old one is still on the glass
+ * until the push has begun. A face waits for its fonts as it waits for its pictures: a step is not pushed, and a
+ * face set at once is not shown, until they have loaded (or have been found not to be there). */
 #include "ui_home_face.h"
 
 #include "home_scape.h"
@@ -67,6 +72,7 @@ static struct {
     bz_motion_t k;
     /* faces that went while the worker was painting for them: their memory back once it has finished */
     uint32_t leaving;
+    bool settling;            /* the face set at once is held back until its fonts are in (or not coming) */
 } FC = { .cur = -1, .last_min = -1, .dark = -1, .index_shown = -1 };
 
 /* ================================================================ shared pieces */
@@ -273,10 +279,35 @@ static void face_minute(int f, bool force)
     FACES[f]->minute(&tm, force);
 }
 
+/* The fonts are exactly the face on screen's, and the arriving one's during a step: asked for again every time
+ * (it costs a compare), so home mode coming back after it let them go gets them back. What has landed is taken
+ * here, and the faces that use it lay their text out again, in the font that has come. */
+static uint32_t fonts_wanted(void)
+{
+    return (FC.cur >= 0 ? FACES[FC.cur]->fonts : 0) | (FC.stepping ? FACES[FC.step_to]->fonts : 0);
+}
+
+static void fonts_pump(void)
+{
+    ui_face_fonts_want(fonts_wanted());
+    if (ui_face_fonts_tick()) {
+        time_t t = time(NULL);
+        struct tm tm;
+        localtime_r(&t, &tm);
+        if (FC.cur >= 0 && FC.box[FC.cur]) FACES[FC.cur]->minute(&tm, false);
+        if (FC.stepping && FC.box[FC.step_to]) FACES[FC.step_to]->minute(&tm, false);
+    }
+    if (FC.settling && FC.cur >= 0 && ui_face_fonts_ready(FACES[FC.cur]->fonts)) {
+        FC.settling = false;
+        hm_show(FC.box[FC.cur], true);
+    }
+}
+
 static bool face_ready(int f)
 {
+    fonts_pump();
     if (FACES[f]->tick) FACES[f]->tick();
-    return !FACES[f]->ready || FACES[f]->ready();
+    return ui_face_fonts_ready(FACES[f]->fonts) && (!FACES[f]->ready || FACES[f]->ready());
 }
 
 /* a face that went: its pictures' memory back (now, or once the worker has finished with them) */
@@ -378,13 +409,24 @@ lv_obj_t *hm_faces_build(lv_obj_t *parent)
 void hm_faces_set(int f)
 {
     if (f < 0 || f > HM_FACE_NIGHT) f = HM_FACE_TYPE;
-    if (f == FC.cur && FC.box[f]) return;
+    if (f == FC.cur && FC.box[f]) {
+        /* it is the face already, but home mode may have given its fonts back: not shown in the stand-in */
+        ui_face_fonts_want(fonts_wanted());
+        if (!ui_face_fonts_ready(FACES[f]->fonts)) {
+            FC.settling = true;
+            hm_show(FC.box[f], false);
+        }
+        return;
+    }
     int old = FC.cur;
     face_build(f);
     FC.cur = f;
     FC.dark = bz_ui_dark();
+    ui_face_fonts_want(fonts_wanted()); /* the old face goes just below: its fonts, but for any the new one shares */
     face_minute(f, true);
-    hm_show(FC.box[f], true);
+    /* its fonts are loading on the worker: shown when they are in, so it never draws in the stand-in and jumps */
+    FC.settling = !ui_face_fonts_ready(FACES[f]->fonts);
+    hm_show(FC.box[f], !FC.settling);
     if (old >= 0 && old != f) face_leave(old);
     lv_obj_move_foreground(FC.index);
     FC.index_shown = -1;
@@ -425,7 +467,8 @@ void hm_faces_step(int dir)
     FC.step_t0 = hal_seconds();
     face_build(f);
     FC.leaving &= ~(1u << f);
-    face_minute(f, true); /* its pictures start painting now; the push waits for them */
+    ui_face_fonts_want(fonts_wanted()); /* both: the old face is on the glass until the push has begun */
+    face_minute(f, true); /* its pictures start painting now, and its fonts loading; the push waits for them */
     hm_cfg()->face = f;
     hm_cfg_save();
     bz_ui_keep_alive();
@@ -437,6 +480,7 @@ void hm_faces_refresh(bool shown)
 {
     leaving_tick();
     if (FC.cur < 0) return;
+    fonts_pump();
     bool dark = bz_ui_dark();
     bool tone = (int)dark != FC.dark || FC.force;
     FC.dark = dark;
@@ -478,6 +522,7 @@ static void step_frame(void)
         FC.cur = FC.step_to;
         hm_show(FC.box[FC.cur], true);
         face_leave(old);
+        ui_face_fonts_want(fonts_wanted()); /* the old face is a picture now: its fonts can go */
         if (!ok) {
             index_lift(false);
             FC.stepping = false;
@@ -510,11 +555,13 @@ void hm_faces_frame(double now)
 {
     step_frame();
     if (FC.stepping || FC.cur < 0) return;
+    if (FC.settling) fonts_pump(); /* a face held back for its fonts shows the frame they are in */
     if (FACES[FC.cur]->frame) FACES[FC.cur]->frame(now);
 }
 
 void hm_faces_release(void)
 {
+    ui_face_fonts_release();
     for (int f = 0; f <= HM_FACE_NIGHT; f++)
         if (FC.box[f] && FACES[f]->leave) {
             FACES[f]->leave();
@@ -527,6 +574,7 @@ void hm_faces_release(void)
 bool hm_faces_released(void)
 {
     leaving_tick();
+    if (!ui_face_fonts_released()) return false;
     for (int f = 0; f <= HM_FACE_NIGHT; f++)
         if (FC.box[f] && FACES[f]->held && FACES[f]->held()) return false;
     return true;
@@ -544,6 +592,7 @@ void hm_faces_dev(const char *a)
         printf("hm: step %s\n", !strcmp(s, "down") ? "down" : "up");
         return;
     }
+    ui_face_fonts_dev();
     printf("hm faces: %s, %s%s, index %s, leaving 0x%x\n", FC.cur >= 0 ? HM_FACE_NAME[FC.cur] : "none",
            FC.stepping ? "stepping to " : "at rest", FC.stepping ? HM_FACE_NAME[FC.step_to] : "",
            lv_obj_get_parent(FC.index) == FC.pg ? "on the page" : "lifted", (unsigned)FC.leaving);

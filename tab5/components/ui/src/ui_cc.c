@@ -875,7 +875,6 @@ void ui_cc_init(void)
 
     /* the sheet's contents: the system's own, then whatever else asked to be on it, then the three that
      * belong at the foot */
-    ui_light_cc_add();
     ui_home_mode_cc_add();
     ui_intel_cc_add(); /* ask or do anything (ui_intel.c) */
     add(&CTL_LINK);

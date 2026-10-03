@@ -270,5 +270,8 @@ static void weather_close(void)
     WX.now_px = WX.day_px = NULL;
 }
 
+/* `shed`: checked. WX is touched only by weather_build, open, close and refresh; no ticker, no public entry point,
+ * weather_open clears the generation (so the rebuilt window fills at once) and re-makes the two pictures' pixels
+ * that close gave back, which a deleted window needs no more than a closed one. */
 const ui_app_t APP_WEATHER = { .name = "weather", .icon = BZ_I_LIGHT_MODE, .build = weather_build, .open = weather_open,
-                               .close = weather_close, .refresh = weather_refresh };
+                               .close = weather_close, .refresh = weather_refresh, .shed = true };

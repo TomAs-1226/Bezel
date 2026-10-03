@@ -5,6 +5,7 @@
  *   <sd>/CATOS/AUDIO    recordings and sounds
  *   <sd>/CATOS/DATA     app data: the calendar's EVENTS.TXT
  *   <sd>/CATOS/LOGS     the OS's own logs
+ *   <sd>/CATOS/FONTS    home mode's face fonts (ui_face_fonts.c); no cs_dir_t, the apps never open it
  *
  * Names are upper-case 8.3, so the layout reads the same on a card formatted without long names.
  * Everything here touches the card and blocks: call it from a worker (hal_thread), except a small write

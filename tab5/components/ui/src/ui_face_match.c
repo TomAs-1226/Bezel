@@ -35,7 +35,7 @@ static void match_build(lv_obj_t *b)
     lv_obj_set_pos(MT.time, MX - 6, 26);
     /* without a match to come the time is the face, as large as the other faces' */
     MT.big_time = lv_label_create(b);
-    lv_obj_set_style_text_font(MT.big_time, &hm_font_thin, 0);
+    ui_face_font_bind(MT.big_time, UI_FF_THIN);
     MT.event = bz_label_line(b, "", BZ_F_NAME, BZ_C_INK, 1100);
     lv_obj_set_pos(MT.event, MX, 336);
     MT.record = bz_label_line(b, "", BZ_F_TITLE, BZ_C_INK, 1100);
@@ -43,7 +43,7 @@ static void match_build(lv_obj_t *b)
     MT.head = bz_label_line(b, "", BZ_F_LABEL, BZ_C_DIM, 660);
     lv_obj_set_pos(MT.head, MX, 196);
     MT.label = lv_label_create(b);
-    lv_obj_set_style_text_font(MT.label, &hm_font_match, 0);
+    ui_face_font_bind(MT.label, UI_FF_MATCH);
     MT.when = bz_label_line(b, "", BZ_F_TITLE, BZ_C_INK, 660);
     MT.at = bz_label_line(b, "", BZ_F_LABEL, BZ_C_DIM, 660);
     MT.hint = bz_label(b, "", BZ_F_BODY, BZ_C_DIM);
@@ -207,4 +207,5 @@ static void match_minute(const struct tm *tm, bool force)
     }
 }
 
-const hm_face_t HM_F_MATCH = { .name = "match", .build = match_build, .minute = match_minute };
+const hm_face_t HM_F_MATCH = { .name = "match", .fonts = UI_FF_BIT(UI_FF_THIN) | UI_FF_BIT(UI_FF_MATCH), .build = match_build,
+                               .minute = match_minute };

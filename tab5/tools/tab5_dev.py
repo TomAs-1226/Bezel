@@ -5,9 +5,12 @@
   python tools/tab5_dev.py COM9 tap 640 360
   python tools/tab5_dev.py COM9 swipe 1000 360 200 360 250
   python tools/tab5_dev.py COM9 flip
+  python tools/tab5_dev.py COM9 put LOCAL /sdcard/CATOS/DATA/NAME      one file onto the card
+  python tools/tab5_dev.py COM9 deploy                                 sdcard/ (the face fonts) onto the card
 
 Several commands can be chained with ';': "tap 640 660; sleep 0.5; shot a.png".
 Needs pyserial and Pillow. Opening the port doesn't reset the tablet (DTR/RTS are held low)."""
+import os
 import struct
 import sys
 import time
@@ -85,6 +88,32 @@ def save(w, h, rle, path, flip=False, upright=False):
     im.save(path)
 
 
+def put(s, local, remote):
+    import zlib
+    with open(local, "rb") as f:
+        data = f.read()
+    s.write(("putbegin %s %d\n" % (remote, len(data))).encode())
+    if reply(s)[0] != "ok":
+        raise SystemExit("putbegin refused")
+    for i in range(0, len(data), 512):
+        for attempt in range(6):
+            s.write(("puthex %d %s\n" % (i, data[i:i + 512].hex())).encode())
+            try:
+                r = reply(s, timeout=5)
+            except SystemExit:
+                r = ("err",)  # a garbled line: sent again
+            if r[0] == "ok":
+                break
+            time.sleep(0.3)
+            s.reset_input_buffer()
+        else:
+            raise SystemExit("puthex refused at %d" % i)
+        if i % (64 * 1024) == 0:
+            print("sent %d of %d" % (i, len(data)), flush=True)
+    s.write(("putend %08x\n" % (zlib.crc32(data) & 0xffffffff)).encode())
+    print(reply(s))
+
+
 def main():
     s = open_port(sys.argv[1])
     for cmd in " ".join(sys.argv[2:]).split(";"):
@@ -105,30 +134,16 @@ def main():
             continue
         if parts[0] == "put":
             # put LOCAL REMOTE: a file onto the tablet's card, 512 bytes a line, checked by CRC-32
-            import zlib
-            local, remote = parts[1], parts[2]
-            with open(local, "rb") as f:
-                data = f.read()
-            s.write(("putbegin %s %d\n" % (remote, len(data))).encode())
-            if reply(s)[0] != "ok":
-                raise SystemExit("putbegin refused")
-            for i in range(0, len(data), 512):
-                for attempt in range(6):
-                    s.write(("puthex %d %s\n" % (i, data[i:i + 512].hex())).encode())
-                    try:
-                        r = reply(s, timeout=5)
-                    except SystemExit:
-                        r = ("err",)  # a garbled line: sent again
-                    if r[0] == "ok":
-                        break
-                    time.sleep(0.3)
-                    s.reset_input_buffer()
-                else:
-                    raise SystemExit("puthex refused at %d" % i)
-                if i % (64 * 1024) == 0:
-                    print("sent %d of %d" % (i, len(data)), flush=True)
-            s.write(("putend %08x\n" % (zlib.crc32(data) & 0xffffffff)).encode())
-            print(reply(s))
+            put(s, parts[1], parts[2])
+            continue
+        if parts[0] == "deploy":
+            # deploy [DIR]: every file under DIR (default tab5/sdcard) onto the card at the same path, folders made
+            # as needed: sdcard/CATOS/FONTS/THIN.BIN lands as /sdcard/CATOS/FONTS/THIN.BIN
+            root = os.path.abspath(parts[1] if len(parts) > 1 else os.path.join(os.path.dirname(__file__), "..", "sdcard"))
+            for dirpath, _, names in sorted(os.walk(root)):
+                for name in sorted(names):
+                    local = os.path.join(dirpath, name)
+                    put(s, local, "/sdcard/" + os.path.relpath(local, root).replace(os.sep, "/"))
             continue
         if parts[0] == "c6ota":
             s.write((" ".join(parts) + "\n").encode())

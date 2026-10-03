@@ -103,7 +103,7 @@ Both AIs can do things to the tablet, never to the robot, without asking first (
 | Tool | Does | Where the data lives |
 |---|---|---|
 | `open_app` | an app by its name, a settings section, or "memory" | |
-| `set_tablet` | brightness, volume, tone, accent, calm, flashlight, screen sleep or lock, home mode | the settings (`S`, saved) |
+| `set_tablet` | brightness, volume, tone, accent, calm, screen sleep or lock, home mode | the settings (`S`, saved) |
 | `tablet_status` | battery, Wi-Fi, time, uptime, memory, card, look, timer, alarms, reminders | |
 | `timer` | countdown (with a label), match clock, stopwatch, pause, resume, reset, status | the timer app |
 | `alarm` | list, add at HH:MM on days, on, off, remove | the clock app (kv `alarms`) |

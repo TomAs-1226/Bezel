@@ -178,6 +178,8 @@ void bz_ui_scroll_carry(bool on);
 void bz_ui_scroll_cut(bool on);
 /* dev "psram": the renderer's own full-frame buffers, one printable line each. */
 void bz_ui_mem_lines(void (*line)(const char *));
+/* The same buffers, totalled. */
+size_t bz_ui_mem_bytes(void);
 /* What LVGL itself is holding in PSRAM: now, the most it ever held, how many blocks, and how many of
  * those had to fall back to internal RAM because PSRAM was full (bz_lv_mem.c). The heap can say how much
  * PSRAM is gone; only this says how much of it is the UI's own objects, styles, strings and layers. */

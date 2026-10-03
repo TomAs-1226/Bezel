@@ -67,6 +67,8 @@ void hal_mem_psram(size_t out[4]);
 /* Free PSRAM alone, cheaply: the heap keeps that total running. hal_mem_psram's largest-free-block walks
  * every free block with the heap's lock held, so anything on the frame path asks for this instead. */
 size_t hal_psram_free(void);
+/* Bytes the PSRAM heap has handed out, and in how many blocks (what "psram" subtracts its named pools from). */
+size_t hal_psram_allocated(size_t *blocks);
 /* Panel scan-out underruns since boot: the frames that went cyan because the DPI's FIFO could not be
  * refilled from PSRAM in time. Counted off the DSI driver's own log line, which is the only notice of one
  * that exists. Any number above zero is a PSRAM bandwidth problem, not a memory-capacity problem. */

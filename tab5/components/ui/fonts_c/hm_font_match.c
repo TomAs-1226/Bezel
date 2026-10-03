@@ -1,7 +1,11 @@
+/* NOT COMPILED. The firmware loads this face font from the microSD card (CATOS/FONTS/MATCH.BIN, ui_face_fonts.c):
+ * built in, its glyph bitmaps would sit in PSRAM for good, because the program runs from PSRAM. This file is
+ * outside components/ui/src so the build's source glob never sees it; tools/make_face_fonts.py writes it next
+ * to the .BIN from the same conversion. */
 /*******************************************************************************
  * Size: 210 px
  * Bpp: 4
- * Opts: --no-compress --no-prefilter --bpp 4 --size 210 --format lvgl --lv-font-name hm_font_match --lv-include lvgl.h -o C:\Users\yu_th\dev\_worktrees\Bezel-tab5-home2\tab5\components\ui\src\hm_font_match.c --font C:/Users/yu_th/dev/fonts-src\hm_w700.ttf -r 0x30,0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38,0x39,0x3a,0x20,0x2d,0x45,0x46,0x4d,0x51,0x53,0x3f
+ * Opts: --no-compress --no-prefilter --bpp 4 --size 210 --font C:/Users/yu_th/dev/fonts-src\hm_w700.ttf -r 0x30,0x31,0x32,0x33,0x34,0x35,0x36,0x37,0x38,0x39,0x3a,0x20,0x2d,0x45,0x46,0x4d,0x51,0x53,0x3f --format lvgl --lv-font-name hm_font_match --lv-include lvgl.h -o C:\Users\yu_th\dev\_worktrees\Bezel-tab5-fonts\tab5\components\ui\fonts_c\hm_font_match.c
  ******************************************************************************/
 
 #include "lvgl.h"

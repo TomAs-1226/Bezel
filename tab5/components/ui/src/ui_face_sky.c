@@ -121,7 +121,7 @@ static void sky_build(lv_obj_t *b)
     lv_obj_set_style_shadow_width(SK.sun, 70, 0);
     lv_obj_set_style_shadow_spread(SK.sun, 8, 0);
     SK.time = lv_label_create(b);
-    lv_obj_set_style_text_font(SK.time, &hm_font_thin, 0);
+    ui_face_font_bind(SK.time, UI_FF_THIN);
     SK.date = bz_label_line(b, "", BZ_F_BODY, BZ_C_INK, 560);
     SK.line = bz_label_line(b, "", BZ_F_LABEL, BZ_C_DIM, 640);
     SK.wx = bz_label_line(b, "", BZ_F_LABEL, BZ_C_DIM, 360);
@@ -270,8 +270,8 @@ static void sky_leave(void)
 }
 static bool sky_held(void) { return hm_pic_held(&SK.strip); }
 
-const hm_face_t HM_F_SKY = { .name = "sky", .build = sky_build, .minute = sky_minute, .tick = sky_tick,
-                             .ready = sky_ready, .leave = sky_leave, .held = sky_held };
+const hm_face_t HM_F_SKY = { .name = "sky", .fonts = UI_FF_BIT(UI_FF_THIN), .build = sky_build, .minute = sky_minute,
+                             .tick = sky_tick, .ready = sky_ready, .leave = sky_leave, .held = sky_held };
 
 /* ================================================================ the moon */
 
@@ -299,7 +299,7 @@ static void moon_build(lv_obj_t *b)
 {
     hm_pic_init(&MN.pic, b, MN_X, MN_Y, MN_S, MN_S);
     MN.time = lv_label_create(b);
-    lv_obj_set_style_text_font(MN.time, &hm_font_thin, 0);
+    ui_face_font_bind(MN.time, UI_FF_THIN);
     MN.date = bz_label_line(b, "", BZ_F_BODY, BZ_C_DIM, 560);
     lv_obj_set_pos(MN.date, 56, 290);
     MN.name = bz_label_line(b, "", BZ_F_TITLE, BZ_C_INK, 580);
@@ -411,8 +411,9 @@ static void moon_leave(void)
 }
 static bool moon_held(void) { return hm_pic_held(&MN.pic); }
 
-const hm_face_t HM_F_MOON = { .name = "moon", .build = moon_build, .minute = moon_minute, .tick = moon_tick,
-                              .ready = moon_ready, .leave = moon_leave, .held = moon_held };
+const hm_face_t HM_F_MOON = { .name = "moon", .fonts = UI_FF_BIT(UI_FF_THIN), .build = moon_build,
+                              .minute = moon_minute, .tick = moon_tick, .ready = moon_ready, .leave = moon_leave,
+                              .held = moon_held };
 
 /* ================================================================ the planets */
 
@@ -504,7 +505,7 @@ static void orrery_build(lv_obj_t *b)
     lv_obj_set_style_bg_opa(OR.moon, LV_OPA_COVER, 0);
     lv_obj_add_flag(OR.moon, LV_OBJ_FLAG_HIDDEN);
     OR.time = lv_label_create(b);
-    lv_obj_set_style_text_font(OR.time, &hm_font_thin, 0);
+    ui_face_font_bind(OR.time, UI_FF_THIN);
     OR.date = bz_label_line(b, "", BZ_F_BODY, BZ_C_DIM, 520);
     lv_obj_set_pos(OR.date, 56, 290);
     OR.line = bz_label(b, "", BZ_F_LABEL, BZ_C_DIM);
@@ -617,6 +618,6 @@ static void orrery_leave(void)
 
 static bool orrery_held(void) { return hm_pic_held(&OR.sun) || OR.spr; }
 
-const hm_face_t HM_F_ORRERY = { .name = "orrery", .build = orrery_build, .minute = orrery_minute,
-                                .tick = orrery_tick, .ready = orrery_ready, .leave = orrery_leave,
-                                .held = orrery_held };
+const hm_face_t HM_F_ORRERY = { .name = "orrery", .fonts = UI_FF_BIT(UI_FF_THIN), .build = orrery_build,
+                                .minute = orrery_minute, .tick = orrery_tick, .ready = orrery_ready,
+                                .leave = orrery_leave, .held = orrery_held };

@@ -11,12 +11,13 @@
 #include "home_px.h"
 #include "home_scape.h"
 #include "tba.h"
-#include "ui_home_fonts.h"
+#include "ui_face_fonts.h"
 
 #include <time.h>
 
 typedef struct hm_face {
     const char *name;                                /* the settings' chip and the dev console's name */
+    uint32_t fonts;                                  /* the face fonts it sets text in, UI_FF_BIT()s (ui_face_fonts.h) */
     void (*build)(lv_obj_t *box);                    /* its objects, once, into its full-screen box */
     /* up to the minute (and the weather's and the blue alliance's latest); `force`: it has just come, or the tone
      * changed: colours and pictures again */

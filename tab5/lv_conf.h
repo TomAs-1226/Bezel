@@ -70,6 +70,13 @@
 #define LV_USE_FONT_PLACEHOLDER 0
 /* glyphs past 255 px: home mode's poster clock (tools/make_face_fonts.py); every glyph's descriptor grows 8 bytes */
 #define LV_FONT_FMT_TXT_LARGE 1
+/* Home mode's face fonts are LVGL binary fonts on the microSD card (ui_face_fonts.c), read through LVGL's POSIX
+ * file system as "S:<path>"; the path is the C library's own, so the card is "S:/sdcard/...". Its read cache turns
+ * the binary loader's one-byte reads of a glyph into 8 KB ones: without it a poster numeral is 35,000 reads. */
+#define LV_USE_FS_POSIX 1
+#define LV_FS_POSIX_LETTER 'S'
+#define LV_FS_POSIX_PATH ""
+#define LV_FS_POSIX_CACHE_SIZE (8 * 1024)
 
 #define LV_USE_THEME_DEFAULT 0
 #define LV_USE_THEME_SIMPLE 0

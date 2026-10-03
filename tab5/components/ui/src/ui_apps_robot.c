@@ -204,8 +204,10 @@ static void al_build(lv_obj_t *b)
     lv_obj_set_style_pad_row(AL.list, 10, 0);
 }
 
+/* `shed`: checked. AL is touched only by al_build, al_open and al_refresh; no ticker, no public entry point, and
+ * al_open clears the signature, so a rebuilt window draws its rows at once instead of waiting for a change. */
 const ui_app_t APP_ALERTS = { .name = "alerts", .icon = BZ_I_WARNING, .build = al_build, .open = al_open,
-                              .refresh = al_refresh };
+                              .refresh = al_refresh, .shed = true };
 
 /* ================================================================== tune */
 

@@ -1743,6 +1743,15 @@ void bz_ui_mem_lines(void (*line)(const char *))
     }
 }
 
+size_t bz_ui_mem_bytes(void)
+{
+    const void *P[] = { U.cfg.content, U.bufpx[1], U.nb,
+                        U.snap == U.bufpx[0] || U.snap == U.bufpx[1] ? NULL : U.snap, U.ground, U.chrome_src };
+    size_t n = 0;
+    for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) n += P[i] ? (size_t)U.cfg.w * U.cfg.h * 2 : 0;
+    return n;
+}
+
 #if BZ_LEAN
 /* `a` less `hole` (which it must contain): the full-height columns either side of the hole, then what is above
  * and below it between them. Columns first because a list moves vertically: a column's pixels come from the
