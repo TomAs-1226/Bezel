@@ -61,6 +61,8 @@ bool ui_home_settings_wanted(void);
 
 /* The app library's "home mode" tile. */
 void ui_home_mode_tap(lv_obj_t *o, void *u);
+/* The dev console's "pet ...": the desk pet (ui_pet.c). UI thread. */
+void ui_pet_dev(const char *args);
 /* The dev console's "hm ...": its pages, faces, night and covers (ui_home_mode.c lists them). UI thread. */
 void ui_home_mode_dev(const char *args);
 

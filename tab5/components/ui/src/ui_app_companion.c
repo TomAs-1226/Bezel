@@ -1,15 +1,14 @@
 /* companion — desk mode: a face for the tablet on its stand, and a voice.
  *
- * Two eyes that live: every feeling is a target shape (width, height, each upper lid's height and slant,
- * a happy crescent cut from below, a highlight, a tint) reached on springs; between feelings the eyes
- * glance about in saccades with small fixational jitters, breathe, and blink on a natural schedule with
- * the occasional double blink. While the companion speaks the eyes bob with the voice's loudness and a
- * small mouth moves with it; while it listens they open wide and a row of dots follows the microphones;
- * while it thinks they look up and aside.
+ * The face is the avatar (ui_avatar.c): a small blob with two eyes, the same character as the pet's, drawn from the
+ * Bible Strong file on the card or the built-in one. What it does is a state of the avatar: listening, thinking,
+ * speaking (the eyes bob with the voice's loudness), and after an answer the feeling the model chose, mapped to
+ * the nearest thing the character can show (happy, confused, surprised, curious, sad, love); asleep when nobody has
+ * touched it for a while. Between feelings the avatar blinks and glances by itself; at rest nothing is redrawn.
  *
  * The voice (components/assist/voice.c): "Hi ESP" (the wake word, heard on the tablet) or a tap on the face
  * starts listening, the question goes to OpenAI, and the answer comes back spoken, shown, or both, with a
- * feeling the eyes take on. The microphones are on only while this screen is. Without an OpenAI key the
+ * feeling the face takes on. The microphones are on only while this screen is. Without an OpenAI key the
  * face still answers typed questions through the assistant, as before.
  *
  * The screen stays immersive: a status line appears only when something is worth saying, the answer's
@@ -18,14 +17,12 @@
  *
  * Claude mode: a panel lists Claude Code's sessions on the owner's PC as Catalyst Link reports them
  * (components/assist/ccwatch.c), with estimates always labelled so; a finished or waiting session makes
- * the eyes react, a chime play and the island say so, and the reminder repeats until someone taps.
+ * the face react, a chime play and the island say so, and the reminder repeats until someone taps.
  *
- * Cheap to draw on the lean renderer: each eye is one object that draws itself (a rounded rectangle, a
- * lid, a crescent and a highlight, clipped to the eye) and invalidates only the union of where the eye
- * was and where it is, and only when a whole pixel changed. Two eyes are at most ~70k changed pixels a
- * frame; at rest, between glances and breaths, nothing is redrawn at all. The mouth and the dots are a
- * few hundred pixels each. */
+ * The listening dots are a few hundred pixels, drawn only while the microphones are on. */
 #include "ui_companion.h"
+
+#include "ui_avatar.h"
 
 #include "assist.h"
 #include "ccwatch.h"
@@ -35,21 +32,14 @@
 #include "ui_md.h"
 #include "ui_sys.h"
 
-#include "lvgl_private.h" /* lv_area_intersect, and the layer's clip for drawing an eye */
 
 #include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
-#define EW 150                 /* an eye at rest */
-#define EH 190
-#define EYE_GAP 330            /* centre to centre */
-#define EYE_CY 250
-#define GAZE_X 44              /* how far the eyes travel, px */
-#define GAZE_Y 26
-#define CAN_W 290              /* each eye's canvas: the eye at its largest, anywhere it can look */
-#define CAN_H 360
-#define MOUTH_Y 438            /* the mouth's and the listening dots' centre line */
+#define AVS 420                /* the avatar's box (the same size on every screen: one baked body serves them all) */
+#define FACE_CY 230            /* where the head's centre sits */
+#define MOUTH_Y 438            /* the listening dots' centre line */
 #define STATUS_Y 482
 #define BAR_H 64
 #define BAR_Y (H - PAD - BAR_H)
@@ -142,61 +132,6 @@ static void chime_tick(double now)
 /* ================================================================== feelings, as shapes */
 
 /* The model's twelve feelings (voice.h's order), then the face's own states. */
-enum {
-    F_LISTEN = VO_EMO_COUNT, F_FOCUSED, F_FAULT, F_ASLEEP, F_COUNT
-};
-
-typedef struct {
-    float w, h;            /* the eye's scale */
-    float y;               /* px, down */
-    float smile;           /* 0..1: a crescent cut from below (a happy eye) */
-    float glint;           /* the highlight's scale (0: none) */
-    float lid[2];          /* each upper lid's height at the eye's centre, 0 open .. 1 shut (left eye, right eye) */
-    float tilt[2];         /* each lid's slant, in eye heights across the eye: + inner corner down (cross,
-                              determined), - inner corner up (sad, worried) */
-    float hs[2];           /* each eye's own height scale (curious, confused: one eye bigger) */
-    uint32_t tint;         /* 0: the theme's ice */
-    float tint_k;          /* how far toward the tint */
-} shape_t;
-
-#define ICE_ 0
-static const shape_t SHAPE[F_COUNT] = {
-    [VO_EMO_NEUTRAL] = { 1.00f, 1.00f, 0, 0, 1.0f, { 0, 0 }, { 0, 0 }, { 1, 1 }, ICE_, 0 },
-    [VO_EMO_HAPPY] = { 1.04f, 0.96f, -5, 0.62f, 1.1f, { 0, 0 }, { -0.05f, -0.05f }, { 1, 1 }, 0x7BE495, 0.35f },
-    [VO_EMO_EXCITED] = { 1.10f, 1.10f, -10, 0.38f, 1.35f, { 0, 0 }, { 0, 0 }, { 1, 1 }, 0xFFD166, 0.40f },
-    [VO_EMO_CURIOUS] = { 1.02f, 1.04f, -4, 0, 1.15f, { 0.0f, 0.22f }, { -0.10f, 0.16f }, { 1.08f, 0.94f }, ICE_, 0 },
-    [VO_EMO_THINKING] = { 0.96f, 0.90f, 0, 0, 0.9f, { 0.22f, 0.22f }, { 0.12f, 0.12f }, { 1.0f, 0.92f }, 0xA08CFF, 0.35f },
-    [VO_EMO_SLEEPY] = { 1.04f, 0.86f, 10, 0, 0.6f, { 0.55f, 0.55f }, { -0.10f, -0.10f }, { 1, 1 }, 0x8C9BAA, 0.45f },
-    [VO_EMO_SAD] = { 0.94f, 0.92f, 12, 0, 0.8f, { 0.28f, 0.28f }, { -0.45f, -0.45f }, { 1, 1 }, 0x6B8CFF, 0.45f },
-    [VO_EMO_WORRIED] = { 0.90f, 0.98f, 4, 0, 0.9f, { 0.14f, 0.14f }, { -0.35f, -0.35f }, { 1, 1 }, 0xFFB347, 0.50f },
-    [VO_EMO_SURPRISED] = { 1.12f, 1.24f, -8, 0, 0.7f, { 0, 0 }, { 0, 0 }, { 1, 1 }, 0xFFFFFF, 0.20f },
-    [VO_EMO_LOVE] = { 1.06f, 1.00f, -4, 0.50f, 1.3f, { 0, 0 }, { -0.05f, -0.05f }, { 1, 1 }, 0xFF7AB6, 0.60f },
-    [VO_EMO_PROUD] = { 1.04f, 0.90f, -12, 0.30f, 1.1f, { 0.26f, 0.26f }, { -0.08f, -0.08f }, { 1, 1 }, 0xFFC857, 0.40f },
-    [VO_EMO_CONFUSED] = { 1.00f, 1.00f, 0, 0, 1.0f, { 0.30f, 0.0f }, { 0.35f, -0.25f }, { 0.90f, 1.10f }, 0xB9A7FF, 0.25f },
-    [F_LISTEN] = { 1.05f, 1.08f, -4, 0, 1.25f, { 0, 0 }, { -0.04f, -0.04f }, { 1, 1 }, ICE_, 0 },
-    [F_FOCUSED] = { 1.00f, 0.90f, 0, 0, 0.9f, { 0.18f, 0.18f }, { 0.10f, 0.10f }, { 1, 1 }, ICE_, 0 },
-    [F_FAULT] = { 0.90f, 0.96f, 2, 0, 0.8f, { 0.20f, 0.20f }, { -0.25f, -0.25f }, { 1, 1 }, 0xFF5A5A, 0.60f },
-    [F_ASLEEP] = { 1.08f, 0.90f, 16, 0, 0, { 0.92f, 0.92f }, { -0.05f, -0.05f }, { 1, 1 }, 0x6E7B88, 0.55f },
-};
-
-/* springs: the face changes feeling with a little life in it; the gaze jumps like an eye does */
-static const bz_spring_t SP_SHAPE = { 320.0f, 24.0f, 1 };  /* ~0.35 s, slight overshoot */
-static const bz_spring_t SP_GAZE = { 1800.0f, 76.0f, 1 };  /* a saccade: ~0.1 s, nearly critical */
-static const bz_spring_t SP_DRIFT = { 260.0f, 30.0f, 1 };  /* following a finger or a tilt */
-static const bz_spring_t SP_POP = { 620.0f, 20.0f, 1 };    /* a bright feeling arrives with a bounce */
-static const bz_spring_t SP_SLOW = { 110.0f, 19.0f, 1 };   /* a heavy one sinks in, ~0.6 s, no bounce */
-
-/* ================================================================== the eye objects */
-
-typedef struct {
-    int x, y, w, h, r;         /* the eye, in its canvas */
-    int lid_l, lid_r;          /* the upper lid's edge at the eye's left and right sides (<= y: no lid) */
-    int cut_y, cut_r;          /* the crescent: a circle centred under the eye (cut_r 0: none) */
-    int gx, gy, gr;            /* the highlight (gr 0: none) */
-    int g2x, g2y, g2r;         /* a second, smaller one below it */
-    uint32_t rgb;
-} eyedraw_t;
-
 struct crow {
     char id[48];
     lv_obj_t *row, *title, *sub, *step, *eta, *mark;
@@ -205,34 +140,25 @@ struct crow {
 static struct {
     bool built, open;
     lv_obj_t *cap_rich;            /* an answer with markdown in it, drawn instead of the plain label */
-    lv_obj_t *body, *face, *can[2], *mouth, *dots[3], *status, *cap, *cap_box, *asked, *answer, *bar, *chips,
+    lv_obj_t *body, *face, *dots[3], *status, *cap, *cap_box, *asked, *answer, *bar, *chips,
         *cc_btn, *cc_label, *talk_btn;
     lv_obj_t *panel, *list, *panel_note, *panel_head;
     ui_kb_t *kb;
-    eyedraw_t ed[2];
     int face_cx;
-    /* the face's springs */
-    bz_motion_t w, h, y, smile, glint, lid[2], tilt[2], hs[2], cr, cg, cb, gx, gy;
-    int feel;                  /* the shape being reached */
-    float feel_k;              /* its intensity */
-    /* behaviour */
-    double blink_t0, blink_at, sacc_at, fix_until, touch_at, mood_until, bounce_t0, tap_at, open_at, active_at;
-    int blinks_left;
-    float blink_depth;         /* 1 a full blink; now and then a half one */
-    double hop_at;             /* excited: the next little hop */
-    float fx, fy, tx, ty;      /* the fixation point; the last touch */
+    ui_avatar_t *av;
+    av_state_t state;          /* the state the avatar was last put in */
+    double touch_at, mood_until, tap_at, open_at, active_at;
     int mood;                  /* transient feeling, until mood_until */
     float mood_k;
     uint32_t rng;
     float talk;                /* the voice's loudness, smoothed */
-    /* the IMU: gravity low-passed, for knocks and tilt */
-    float gxl, gyl, gzl, tilt_x;
+    /* the IMU: gravity low-passed, for knocks */
+    float gxl, gyl, gzl;
     bool imu_seeded;
     int imu_div;
     /* the mouth and dots, as applied */
-    int mw, mh, dh[3], dstate;
-    uint32_t mrgb;
-    bool mouth_on, dots_on, cap_on, status_on, bar_on;
+    int dh[3], dstate;
+    bool dots_on, cap_on, status_on, bar_on;
     int cap_h;                 /* the caption's height as set: shorter while the controls are up */
     /* the conversation */
     uint32_t vrev, arev, reply_seq;
@@ -256,130 +182,7 @@ static struct {
     bool voice_on;
 } CP;
 
-static float rnd(void)
-{
-    CP.rng = CP.rng * 1664525u + 1013904223u;
-    return (float)(CP.rng >> 8) / 16777216.0f;
-}
-
 static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
-
-static void sp_init(bz_motion_t *m, float v)
-{
-    bz_motion_init(m, v, 0.002f);
-    m->keep = true; /* the lean renderer makes other motions instant; a face must move */
-}
-
-static void sp_to(bz_motion_t *m, float t, bz_spring_t s)
-{
-    if (fabsf(m->target - t) > 1e-4f || (!m->running && fabsf(m->value - t) > 1e-4f)) {
-        bz_motion_to(m, t, s);
-        m->keep = true;
-    }
-}
-
-static bool sp_tick(bz_motion_t *m) { return bz_motion_tick(m); }
-
-/* The eye draws itself: the eye, its highlight, then the lid and the crescent in the ground's colour,
- * all clipped to the eye. */
-static void eye_draw(lv_event_t *e)
-{
-    lv_obj_t *o = lv_event_get_current_target(e);
-    lv_layer_t *layer = lv_event_get_layer(e);
-    const eyedraw_t *d = &CP.ed[o == CP.can[1]];
-    if (d->w <= 0 || d->h <= 0) return;
-    lv_area_t co;
-    lv_obj_get_coords(o, &co);
-    lv_area_t eye = { co.x1 + d->x, co.y1 + d->y, co.x1 + d->x + d->w - 1, co.y1 + d->y + d->h - 1 };
-    lv_area_t clip_was = layer->_clip_area, clip;
-    if (!lv_area_intersect(&clip, &clip_was, &eye)) return;
-    layer->_clip_area = clip;
-
-    lv_draw_rect_dsc_t r;
-    lv_draw_rect_dsc_init(&r);
-    r.bg_color = lv_color_hex(d->rgb);
-    r.bg_opa = LV_OPA_COVER;
-    r.radius = d->r;
-    lv_draw_rect(layer, &r, &eye);
-    if (d->gr > 0) {
-        /* the highlight: the eye's colour toward white */
-        uint32_t c = d->rgb;
-        uint32_t hl = (((c >> 16 & 0xff) + 0xff * 2) / 3) << 16 | (((c >> 8 & 0xff) + 0xff * 2) / 3) << 8 | ((c & 0xff) + 0xff * 2) / 3;
-        lv_draw_rect_dsc_t g;
-        lv_draw_rect_dsc_init(&g);
-        g.bg_color = lv_color_hex(hl);
-        g.bg_opa = LV_OPA_COVER;
-        g.radius = LV_RADIUS_CIRCLE;
-        lv_area_t a = { co.x1 + d->gx - d->gr, co.y1 + d->gy - d->gr, co.x1 + d->gx + d->gr, co.y1 + d->gy + d->gr };
-        lv_draw_rect(layer, &g, &a);
-        if (d->g2r > 0) {
-            lv_area_t b = { co.x1 + d->g2x - d->g2r, co.y1 + d->g2y - d->g2r, co.x1 + d->g2x + d->g2r, co.y1 + d->g2y + d->g2r };
-            lv_draw_rect(layer, &g, &b);
-        }
-    }
-    lv_color_t ground = bz_lv(BZ_C_GROUND);
-    if (d->lid_l > d->y || d->lid_r > d->y) {
-        lv_draw_triangle_dsc_t t;
-        lv_draw_triangle_dsc_init(&t);
-        t.color = ground;
-        t.opa = LV_OPA_COVER;
-        int x0 = eye.x1 - 2, x1 = eye.x2 + 2, top = eye.y1 - 2;
-        int yl = co.y1 + d->lid_l, yr = co.y1 + d->lid_r;
-        /* the lid's edge, carried past the eye's sides so the slant reaches the corners */
-        float slope = (float)(yr - yl) / (float)(d->w > 1 ? d->w : 1);
-        float yl2 = yl - slope * 2, yr2 = yr + slope * 2;
-        t.p[0].x = x0; t.p[0].y = top;
-        t.p[1].x = x1; t.p[1].y = top;
-        t.p[2].x = x1; t.p[2].y = (lv_value_precise_t)yr2;
-        lv_draw_triangle(layer, &t);
-        t.p[0].x = x0; t.p[0].y = top;
-        t.p[1].x = x1; t.p[1].y = (lv_value_precise_t)yr2;
-        t.p[2].x = x0; t.p[2].y = (lv_value_precise_t)yl2;
-        lv_draw_triangle(layer, &t);
-    }
-    if (d->cut_r > 0) {
-        lv_draw_rect_dsc_t c;
-        lv_draw_rect_dsc_init(&c);
-        c.bg_color = ground;
-        c.bg_opa = LV_OPA_COVER;
-        c.radius = LV_RADIUS_CIRCLE;
-        int cx = co.x1 + d->x + d->w / 2, cy = co.y1 + d->cut_y;
-        lv_area_t a = { cx - d->cut_r, cy - d->cut_r, cx + d->cut_r, cy + d->cut_r };
-        lv_draw_rect(layer, &c, &a);
-    }
-    layer->_clip_area = clip_was;
-}
-
-/* Takes the new drawing of eye i; invalidates the union of where it was and where it is, if anything
- * changed by a whole pixel. */
-static void eye_set(int i, const eyedraw_t *n)
-{
-    eyedraw_t *o = &CP.ed[i];
-    if (!memcmp(o, n, sizeof *n)) return;
-    lv_area_t co;
-    lv_obj_get_coords(CP.can[i], &co);
-    int x1 = n->x, y1 = n->y, x2 = n->x + n->w, y2 = n->y + n->h;
-    if (o->w > 0) {
-        if (o->x < x1) x1 = o->x;
-        if (o->y < y1) y1 = o->y;
-        if (o->x + o->w > x2) x2 = o->x + o->w;
-        if (o->y + o->h > y2) y2 = o->y + o->h;
-    }
-    lv_area_t a = { co.x1 + x1 - 2, co.y1 + y1 - 2, co.x1 + x2 + 2, co.y1 + y2 + 2 };
-    *o = *n;
-    lv_obj_invalidate_area(CP.can[i], &a);
-}
-
-static lv_obj_t *canvas(lv_obj_t *parent)
-{
-    lv_obj_t *o = lv_obj_create(parent);
-    lv_obj_remove_style_all(o);
-    lv_obj_set_size(o, CAN_W, CAN_H);
-    lv_obj_remove_flag(o, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
-    lv_obj_add_event_cb(o, eye_draw, LV_EVENT_DRAW_MAIN, NULL);
-    return o;
-}
 
 static lv_obj_t *blob(lv_obj_t *parent)
 {
@@ -611,11 +414,7 @@ static void voice_sync(double now)
             case VO_LOOK_DOWN: ly = 0.65f; break;
             default: break;
             }
-            CP.fx = lx;
-            CP.fy = ly;
-            CP.fix_until = now + (r->look == VO_LOOK_CENTER ? 0.5 : 1.6);
-            if (r->emotion == VO_EMO_EXCITED || r->emotion == VO_EMO_HAPPY || r->emotion == VO_EMO_LOVE) CP.bounce_t0 = now;
-            if (rnd() < 0.4f) CP.blink_t0 = now;
+            if (CP.av) ui_avatar_look(CP.av, lx, ly, r->look == VO_LOOK_CENTER ? 0.5f : 1.6f);
             /* caption() decides: plain prose into the label, markdown through the renderer */
             if (r->shown) caption(asked, r->say, r->show, now);
             if (!r->spoken) {
@@ -638,12 +437,7 @@ static void voice_sync(double now)
     /* the answer's feeling outlasts the voice by a little; a follow-up question takes over at once */
     if (st != VO_THINKING && st != VO_SPEAKING && st != VO_HEARING && CP.mood < VO_EMO_COUNT && CP.mood_until > now + 3.0)
         CP.mood_until = st == VO_LISTEN ? now + 0.8 : now + 3.0;
-    if (st == VO_LISTEN && was != VO_LISTEN) {
-        CP.fx = 0;
-        CP.fy = -0.08f;
-        CP.fix_until = now + 0.4;
-        if (rnd() < 0.5f) CP.blink_t0 = now;
-    }
+    if (st == VO_LISTEN && was != VO_LISTEN && CP.av) ui_avatar_look(CP.av, 0, -0.08f, 0.4f);
 }
 
 /* The assistant's last answer (typed questions without an OpenAI key). */
@@ -703,7 +497,7 @@ static void ask(const char *q)
     }
     if (assist_send(q)) {
         hal_tone(1300, 12, S.volume * 0.4f);
-        CP.mood = F_LISTEN;
+        CP.mood = VO_EMO_THINKING; /* it has taken the question */
         CP.mood_k = 1;
         CP.mood_until = now + 0.8;
         CP.arev = 0;
@@ -796,12 +590,8 @@ static void layout(void)
     CP.face_cx = (PAD + face_right) / 2;
     int w = face_right - PAD;
     if (w > 900) w = 900;
-    for (int i = 0; i < 2; i++) {
-        int cx = CP.face_cx + (i ? EYE_GAP / 2 : -EYE_GAP / 2);
-        lv_obj_set_pos(CP.can[i], cx - CAN_W / 2, EYE_CY - CAN_H / 2);
-    }
+    lv_obj_set_pos(ui_avatar_obj(CP.av), CP.face_cx - AVS / 2, FACE_CY - AVS / 2);
     for (int i = 0; i < 3; i++) CP.dh[i] = -1;
-    CP.mw = -1;
     lv_obj_set_width(CP.status, w);
     lv_obj_set_pos(CP.status, CP.face_cx - w / 2, STATUS_Y);
     lv_obj_set_pos(CP.cap, CP.face_cx - w / 2, CAP_Y);
@@ -933,7 +723,7 @@ static bool point(lv_point_t *p)
     return true;
 }
 
-/* a finger on the face: the eyes follow it */
+/* a finger on the face: it looks at it */
 static void face_press(lv_event_t *e)
 {
     (void)e;
@@ -941,8 +731,8 @@ static void face_press(lv_event_t *e)
     if (!point(&p)) return;
     CP.touch_at = hal_seconds();
     CP.active_at = CP.touch_at;
-    CP.tx = clampf((p.x - CP.face_cx) / 380.0f, -1, 1);
-    CP.ty = clampf((p.y - EYE_CY) / 240.0f, -1, 1);
+    /* the head turns toward the finger */
+    ui_avatar_look(CP.av, clampf((p.x - CP.face_cx) / 380.0f, -1, 1), clampf((p.y - FACE_CY) / 240.0f, -1, 1), 2.5f);
 }
 
 static void face_tap(lv_obj_t *o, void *u)
@@ -963,11 +753,6 @@ static void face_tap(lv_obj_t *o, void *u)
     }
     lv_point_t p;
     if (!point(&p)) return;
-    bool on_eye = fabsf((float)(p.y - EYE_CY)) < EH / 2 && (fabsf((float)(p.x - (CP.face_cx - EYE_GAP / 2))) < EW / 2 ||
-                                                           fabsf((float)(p.x - (CP.face_cx + EYE_GAP / 2))) < EW / 2);
-    /* poked in the eye: a blink — and it still listens: "tap me" means anywhere on the face, and the eyes are
-     * most of it (a tap on an eye used to do nothing else, so the companion seemed not to work) */
-    if (on_eye) CP.blink_t0 = now;
     vo_state_t v = voice_state();
     if (v == VO_LISTEN || v == VO_HEARING || v == VO_THINKING || v == VO_SPEAKING) {
         voice_cancel(); /* a tap while it talks or listens: hush */
@@ -1012,12 +797,7 @@ static void imu_step(double now)
         CP.mood = VO_EMO_SURPRISED;
         CP.mood_k = 1;
         CP.mood_until = now + 0.9;
-        CP.blink_at = now + 0.5;
     }
-    /* gravity's x in the screen's frame: the right side down is positive; small tilts do nothing */
-    float t = CP.gxl;
-    t = fabsf(t) < 0.08f ? 0 : t - (t > 0 ? 0.08f : -0.08f);
-    CP.tilt_x = clampf(t * 2.2f, -1, 1);
 }
 
 static int running_sessions(void)
@@ -1038,365 +818,50 @@ static int running_sessions(void)
 
 /* ================================================================== the face, frame by frame */
 
-/* What to feel now, and how strongly. */
-static int pick(double now, float *k)
+/* The feeling the model chose for an answer, as the nearest thing the avatar shows. */
+static av_state_t mood_state(int m)
 {
-    *k = 1;
+    switch (m) {
+    case VO_EMO_HAPPY: case VO_EMO_EXCITED: case VO_EMO_PROUD: return AV_S_HAPPY;
+    case VO_EMO_CURIOUS: return AV_S_CURIOUS;
+    case VO_EMO_THINKING: return AV_S_THINK;
+    case VO_EMO_SLEEPY: return AV_S_DROWSY;
+    case VO_EMO_SAD: return AV_S_SAD;
+    case VO_EMO_WORRIED: case VO_EMO_CONFUSED: return AV_S_CONFUSED;
+    case VO_EMO_SURPRISED: return AV_S_SURPRISED;
+    case VO_EMO_LOVE: return AV_S_LOVE;
+    default: return voice_state() == VO_SPEAKING ? AV_S_SPEAK : AV_S_IDLE;
+    }
+}
+
+/* What the face does now. */
+static av_state_t pick(double now)
+{
     vo_state_t v = voice_state();
     as_phase_t ph = assist_phase();
     double idle = now - CP.active_at;
     double touch_idle = bz_ui_idle_s();
     if (touch_idle < idle) idle = touch_idle;
-    if (CP.mood_until > now) {
-        *k = CP.mood_k;
-        return CP.mood;
-    }
-    if (v == VO_LISTEN || ui_kb_open(CP.kb)) return F_LISTEN;
-    if (v == VO_HEARING || v == VO_THINKING) {
-        *k = 0.8f;
-        return VO_EMO_THINKING;
-    }
-    if (ph == AS_PHASE_CONFIRM) return VO_EMO_WORRIED;
+    if (CP.mood_until > now) return mood_state(CP.mood);
+    if (v == VO_LISTEN || ui_kb_open(CP.kb)) return AV_S_LISTEN;
+    if (v == VO_HEARING || v == VO_THINKING) return AV_S_THINK;
+    if (v == VO_SPEAKING) return AV_S_SPEAK;
+    if (ph == AS_PHASE_CONFIRM) return AV_S_CONFUSED;
     ccw_session_t a;
-    if (ccw_attention(&a)) {
-        *k = 0.8f;
-        return a.state == CCW_DONE ? VO_EMO_HAPPY : VO_EMO_WORRIED;
-    }
-    if (ph != AS_PHASE_IDLE && ph != AS_PHASE_ERROR) return F_FOCUSED;
-    if (robot_fault()) return F_FAULT;
-    if (ph == AS_PHASE_ERROR && now - CP.cap_at < 20) {
-        *k = 0.6f;
-        return VO_EMO_WORRIED;
-    }
-    if (running_sessions() && idle > SLEEPY_S) return F_FOCUSED; /* watching Claude work: not sleepy */
-    if (idle > ASLEEP_S) return F_ASLEEP;
-    if (idle > SLEEPY_S) return VO_EMO_SLEEPY;
-    return VO_EMO_NEUTRAL;
+    if (ccw_attention(&a)) return a.state == CCW_DONE ? AV_S_HAPPY : AV_S_CONFUSED;
+    if (ph != AS_PHASE_IDLE && ph != AS_PHASE_ERROR) return AV_S_THINK;
+    if (robot_fault()) return AV_S_SAD;
+    if (ph == AS_PHASE_ERROR && now - CP.cap_at < 20) return AV_S_CONFUSED;
+    if (running_sessions() && idle > SLEEPY_S) return AV_S_THINK; /* watching Claude work: not sleepy */
+    if (idle > ASLEEP_S) return AV_S_SLEEP;
+    if (idle > SLEEPY_S) return AV_S_DROWSY;
+    return AV_S_IDLE;
 }
 
-static void shape_to(int f, float k)
-{
-    const shape_t *t = &SHAPE[f], *n = &SHAPE[VO_EMO_NEUTRAL];
-    /* intensity scales the step from neutral: a mild feeling is still visible */
-    float s = f < VO_EMO_COUNT ? 0.45f + 0.55f * clampf(k, 0, 1) : 1.0f;
-    /* how it arrives: bright feelings pop in with a bounce, heavy ones sink in slowly */
-    bool pop = f == VO_EMO_SURPRISED || f == VO_EMO_EXCITED || f == VO_EMO_HAPPY || f == VO_EMO_LOVE || f == F_LISTEN;
-    bool slow = f == VO_EMO_SAD || f == VO_EMO_SLEEPY || f == F_ASLEEP;
-    bz_spring_t sp = pop ? SP_POP : slow ? SP_SLOW : SP_SHAPE;
-#define MIX(field) (n->field + (t->field - n->field) * s)
-    sp_to(&CP.w, MIX(w), sp);
-    sp_to(&CP.h, MIX(h), sp);
-    sp_to(&CP.y, MIX(y), sp);
-    sp_to(&CP.smile, MIX(smile), sp);
-    sp_to(&CP.glint, MIX(glint), sp);
-    for (int i = 0; i < 2; i++) {
-        sp_to(&CP.lid[i], MIX(lid[i]), sp);
-        sp_to(&CP.tilt[i], MIX(tilt[i]), sp);
-        sp_to(&CP.hs[i], MIX(hs[i]), sp);
-    }
-#undef MIX
-    if (f == VO_EMO_SURPRISED || f == VO_EMO_EXCITED) {
-        /* a pop: the eyes are thrown open past their mark and spring back */
-        bz_motion_to_v(&CP.h, CP.h.target, SP_POP, CP.h.velocity + 3.0f * s);
-        bz_motion_to_v(&CP.w, CP.w.target, SP_POP, CP.w.velocity + 1.6f * s);
-        CP.h.keep = CP.w.keep = true;
-    }
-    uint32_t base = bz_color(BZ_C_ICE) & 0xFFFFFF;
-    float tk = t->tint ? t->tint_k * s : 0;
-    uint32_t tint = t->tint ? t->tint : base;
-    float r = ((base >> 16) & 0xff) * (1 - tk) + ((tint >> 16) & 0xff) * tk;
-    float g = ((base >> 8) & 0xff) * (1 - tk) + ((tint >> 8) & 0xff) * tk;
-    float b = (base & 0xff) * (1 - tk) + (tint & 0xff) * tk;
-    sp_to(&CP.cr, r, BZ_EFFECT);
-    sp_to(&CP.cg, g, BZ_EFFECT);
-    sp_to(&CP.cb, b, BZ_EFFECT);
-}
-
-/* The next blink: every 2 to 7 s (a few more when drowsy, fewer while attending), one in seven doubled. */
-static void blink_schedule(double now, int f)
-{
-    float mean = f == VO_EMO_SLEEPY ? 2.4f : f == F_LISTEN ? 5.0f : 3.8f;
-    float gap = -logf(1.0f - rnd() * 0.95f) * (mean - 1.2f) + 1.2f;
-    if (gap > 9) gap = 9;
-    CP.blink_depth = rnd() < 0.1f ? 0.55f : 1.0f; /* a half blink now and then */
-    if (CP.blinks_left > 0) {
-        CP.blinks_left--;
-        CP.blink_at = now + gap;
-    } else if (rnd() < 0.14f) {
-        CP.blinks_left = 1;
-        CP.blink_at = now + 0.22 + rnd() * 0.08f;
-    } else {
-        CP.blink_at = now + gap;
-    }
-}
-
-/* 0 open .. 1 shut: a quick close (70 ms), a moment shut, a slower open (120 ms); slower when drowsy. */
-static float blink_amount(double now, bool slow)
-{
-    if (CP.blink_t0 <= 0) return 0;
-    float s = slow ? 1.8f : 1.0f;
-    float t = (float)(now - CP.blink_t0);
-    float c = 0.07f * s, hold = 0.03f * s, o = 0.12f * s;
-    float d = CP.blink_depth > 0 ? CP.blink_depth : 1;
-    if (t < c) {
-        float u = t / c;
-        return u * u * d;
-    }
-    if (t < c + hold) return d;
-    if (t < c + hold + o) {
-        float u = (t - c - hold) / o;
-        return (1 - u * (2 - u)) * d;
-    }
-    CP.blink_t0 = 0;
-    return 0;
-}
-
-/* Where to look: a fixation held for a while with tiny jitters around it, or a finger, or a tilt. */
-static void gaze_step(double now, int f, bool attending)
-{
-    float gx, gy;
-    bool drift = false;
-    if (ui_kb_open(CP.kb)) {
-        gx = 0;
-        gy = 0.9f;
-        drift = true;
-    } else if (now - CP.touch_at < 2.5) {
-        gx = CP.tx;
-        gy = CP.ty;
-        drift = true;
-    } else if (f == F_ASLEEP) {
-        gx = 0;
-        gy = 0.3f;
-        drift = true;
-    } else {
-        if (now > CP.fix_until) {
-            /* a new fixation: somewhere, or back to you */
-            /* where each feeling tends to look: sad down, proud up, thinking up and aside */
-            float by = f == VO_EMO_SAD ? 0.45f : f == VO_EMO_PROUD ? -0.25f : f == VO_EMO_SLEEPY ? 0.3f : 0;
-            if (attending) {
-                CP.fx = (rnd() - 0.5f) * 0.18f;
-                CP.fy = -0.05f + by * 0.6f + (rnd() - 0.5f) * 0.12f;
-                CP.fix_until = now + 0.9 + rnd() * 1.6f;
-            } else if (f == VO_EMO_WORRIED || f == F_FAULT) {
-                /* darting: short looks here and there */
-                CP.fx = (rnd() - 0.5f) * 1.0f;
-                CP.fy = (rnd() - 0.5f) * 0.5f;
-                CP.fix_until = now + 0.35 + rnd() * 0.55f;
-            } else if (f == VO_EMO_CURIOUS) {
-                /* looking all around */
-                CP.fx = (rnd() - 0.5f) * 1.8f;
-                CP.fy = (rnd() - 0.5f) * 1.1f;
-                CP.fix_until = now + 0.8 + rnd() * 1.2f;
-            } else if (f == VO_EMO_SAD || f == VO_EMO_PROUD) {
-                CP.fx = (rnd() - 0.5f) * 0.6f;
-                CP.fy = by + (rnd() - 0.5f) * 0.2f;
-                CP.fix_until = now + 2.0 + rnd() * 2.0f;
-            } else if (f == VO_EMO_THINKING) {
-                CP.fx = -0.55f + (rnd() - 0.5f) * 0.3f;
-                CP.fy = -0.65f + (rnd() - 0.5f) * 0.2f;
-                CP.fix_until = now + 0.8 + rnd() * 1.5f;
-            } else {
-                bool centre = rnd() < 0.35f;
-                float nx = centre ? 0 : (rnd() * 1.5f - 0.75f), ny = centre ? 0 : (rnd() * 0.9f - 0.45f);
-                /* now and then a look at the panel while Claude works */
-                if (CP.panel_open && running_sessions() && rnd() < 0.3f) {
-                    nx = 0.9f;
-                    ny = 0;
-                }
-                if (fabsf(nx - CP.fx) + fabsf(ny - CP.fy) > 0.6f && rnd() < 0.3f && CP.blink_t0 <= 0) CP.blink_t0 = now;
-                CP.fx = nx;
-                CP.fy = ny;
-                CP.fix_until = now + (f == VO_EMO_SLEEPY ? 3.5 : 1.2) + rnd() * 3.0f;
-            }
-            CP.sacc_at = now + 0.3 + rnd() * 0.7f;
-        }
-        gx = CP.fx;
-        gy = CP.fy;
-        /* fixational jitter: a small hop around the point now and then */
-        if (now > CP.sacc_at) {
-            CP.sacc_at = now + 0.35 + rnd() * 1.1f;
-            float a = attending ? 0.035f : 0.05f;
-            gx += (rnd() - 0.5f) * a * 2;
-            gy += (rnd() - 0.5f) * a * 2;
-            CP.fx = gx;
-            CP.fy = gy;
-        }
-    }
-    gx = clampf(gx + CP.tilt_x * 0.8f, -1.2f, 1.2f);
-    gy = clampf(gy, -1.1f, 1.1f);
-    sp_to(&CP.gx, gx, drift ? SP_DRIFT : SP_GAZE);
-    sp_to(&CP.gy, gy, drift ? SP_DRIFT : SP_GAZE);
-}
-
-static uint32_t rgb_now(void)
-{
-    int r = (int)clampf(CP.cr.value, 0, 255), g = (int)clampf(CP.cg.value, 0, 255), b = (int)clampf(CP.cb.value, 0, 255);
-    return (uint32_t)r << 16 | (uint32_t)g << 8 | (uint32_t)b;
-}
-
-/* Each feeling's own small, continuous life on top of its shape: a happy bob, love's heartbeat, a sad sway,
- * curiosity's lids working, drowsy lids drooping, confusion trading sides, a worried shiver. All of it
- * moves the eyes by a few pixels, so a frame redraws only the eyes. */
-typedef struct {
-    float dw, dh, dx, dy, dlid[2], dhs[2];
-    bool on;
-} life_t;
-
-static void life(double now, int f, float k, life_t *L)
-{
-    memset(L, 0, sizeof *L);
-    float t = (float)fmod(now, 3600.0), a = f < VO_EMO_COUNT ? 0.5f + 0.5f * clampf(k, 0, 1) : 1.0f;
-    switch (f) {
-    case VO_EMO_HAPPY:
-        L->dy = -3.5f * a * (0.5f + 0.5f * sinf(t * 4.4f));
-        break;
-    case VO_EMO_EXCITED:
-        L->dw = 0.03f * a * sinf(t * 13.0f);
-        L->dh = 0.03f * a * sinf(t * 13.0f + 1.6f);
-        break;
-    case VO_EMO_LOVE: {
-        /* a heartbeat: two quick swells, then a rest */
-        float p = fmodf(t, 1.1f), b1 = (p - 0.08f) / 0.055f, b2 = (p - 0.30f) / 0.055f;
-        float beat = expf(-b1 * b1) + 0.7f * expf(-b2 * b2);
-        L->dw = L->dh = 0.07f * a * beat;
-        break;
-    }
-    case VO_EMO_SAD:
-        L->dy = 3.0f * a * sinf(t * 0.9f);
-        L->dlid[0] = L->dlid[1] = 0.03f * a * (0.5f + 0.5f * sinf(t * 0.7f));
-        break;
-    case VO_EMO_CURIOUS:
-        L->dlid[0] = 0.06f * a * (0.5f + 0.5f * sinf(t * 1.3f));
-        L->dlid[1] = 0.06f * a * (0.5f - 0.5f * sinf(t * 1.3f));
-        L->dhs[0] = 0.03f * a * sinf(t * 1.3f);
-        break;
-    case VO_EMO_THINKING:
-        L->dlid[0] = L->dlid[1] = 0.04f * a * (0.5f + 0.5f * sinf(t * 2.1f));
-        break;
-    case VO_EMO_SLEEPY:
-    case F_ASLEEP: {
-        /* the lids sag, catch themselves, sag again */
-        float droop = 0.5f + 0.5f * sinf(t * (f == F_ASLEEP ? 0.9f : 1.8f));
-        droop = droop * droop * droop;
-        L->dlid[0] = L->dlid[1] = (f == F_ASLEEP ? 0.05f : 0.16f) * droop;
-        if (f == F_ASLEEP) L->dy = 3.0f * sinf(t * 1.2f);
-        break;
-    }
-    case VO_EMO_CONFUSED: {
-        float q = sinf(t * 1.7f) * 2.0f;
-        q = q > 1 ? 1 : q < -1 ? -1 : q;
-        L->dhs[0] = 0.06f * a * q;
-        L->dhs[1] = -0.06f * a * q;
-        break;
-    }
-    case VO_EMO_PROUD:
-        L->dy = -2.0f * a * sinf(t * 1.1f);
-        break;
-    case VO_EMO_WORRIED:
-    case F_FAULT:
-        L->dx = fmodf(t, 2.6f) < 0.25f ? 1.6f * a * sinf(t * 23.0f) : 0; /* a little shiver now and then */
-        break;
-    case F_LISTEN:
-        L->dh = 0.02f * sinf(t * 3.0f);
-        break;
-    default:
-        return;
-    }
-    L->on = true;
-}
-
-/* The drawing of both eyes, from the springs' values. */
-static void eyes_compose(double now, float blink, float bounce, float breath, const life_t *L)
-{
-    float gx = CP.gx.value, gy = CP.gy.value, talk = CP.talk;
-    /* squash and stretch: in a fast glance the eyes stretch along the way they move */
-    float vx = CP.gx.velocity * GAZE_X, vy = CP.gy.velocity * GAZE_Y, sp = sqrtf(vx * vx + vy * vy);
-    float st = clampf(sp / 2600.0f, 0, 0.14f), sx = 0, sy = 0;
-    if (sp > 1) {
-        sx = st * (fabsf(vx) / sp) - 0.5f * st * (fabsf(vy) / sp);
-        sy = st * (fabsf(vy) / sp) - 0.5f * st * (fabsf(vx) / sp);
-    }
-    float listen = voice_state() == VO_LISTEN ? voice_mic_level() : 0;
-    uint32_t rgb = rgb_now();
-    for (int i = 0; i < 2; i++) {
-        float side = i ? 1.0f : -1.0f;
-        /* depth: the eye on the side looked toward is a touch larger, and both narrow looking aside */
-        float w = EW * (CP.w.value + L->dw) * (1 - 0.05f * fabsf(gx)) * (1 + 0.035f * gx * side) * (1 + 0.04f * listen) *
-                  (1 + sx);
-        float h = EH * (CP.h.value + L->dh) * (CP.hs[i].value + L->dhs[i]) * breath * (1 + 0.05f * talk) *
-                  (1 + 0.035f * gx * side) * (1 + sy);
-        h *= 1 - 0.94f * blink;
-        if (h < 8) h = 8;
-        if (w > CAN_W - 8) w = CAN_W - 8;
-        if (h > CAN_H - 8) h = CAN_H - 8;
-        float cx = CAN_W / 2.0f + gx * GAZE_X + L->dx;
-        float cy = CAN_H / 2.0f + gy * GAZE_Y + CP.y.value + L->dy + bounce - 5 * talk + blink * EH * CP.h.value * 0.08f;
-        eyedraw_t d = { 0 };
-        d.w = (int)lroundf(w);
-        d.h = (int)lroundf(h);
-        d.x = (int)lroundf(cx - w / 2);
-        d.y = (int)lroundf(cy - h / 2);
-        if (d.x < 2) d.x = 2;
-        if (d.y < 2) d.y = 2;
-        if (d.x + d.w > CAN_W - 2) d.x = CAN_W - 2 - d.w;
-        if (d.y + d.h > CAN_H - 2) d.y = CAN_H - 2 - d.h;
-        int m = d.w < d.h ? d.w : d.h;
-        d.r = (int)(m * 0.45f);
-        /* the lid: its height at the centre, slanted; the inner corner is toward the other eye */
-        float full = EH * CP.h.value * CP.hs[i].value; /* the lid moves with the open eye, not the blink */
-        float lc = d.y + clampf(CP.lid[i].value + L->dlid[i], 0, 1) * full * (1 - blink);
-        float sl = CP.tilt[i].value * full * 0.5f;
-        float inner = lc + sl, outer = lc - sl;
-        float ll = i ? inner : outer, lr = i ? outer : inner;
-        if (CP.lid[i].value + L->dlid[i] > 0.01f || fabsf(CP.tilt[i].value) > 0.01f) {
-            d.lid_l = (int)lroundf(ll);
-            d.lid_r = (int)lroundf(lr);
-            if (d.lid_l <= d.y && d.lid_r <= d.y) d.lid_l = d.lid_r = 0;
-        }
-        /* the crescent: a circle rising from below */
-        if (CP.smile.value > 0.02f) {
-            d.cut_r = (int)lroundf(d.w * 0.78f);
-            float top = d.y + d.h * (1 - 0.55f * CP.smile.value);
-            d.cut_y = (int)lroundf(top + d.cut_r);
-        }
-        /* the highlight: up and to the side, moving a little more than the eye (it's nearer the glass) */
-        float gs = CP.glint.value * (1 - blink);
-        if (gs > 0.05f && d.h > 30) {
-            d.gr = (int)lroundf(11 * gs);
-            d.gx = (int)lroundf(d.x + d.w * 0.30f + gx * 7);
-            d.gy = (int)lroundf(d.y + d.h * 0.26f + gy * 5);
-            if (d.gr < 2) d.gr = 0;
-            d.g2r = d.gr > 4 ? (int)lroundf(d.gr * 0.45f) : 0;
-            d.g2x = d.gx + (int)lroundf(d.gr * 1.5f);
-            d.g2y = d.gy + (int)lroundf(d.gr * 1.7f);
-        }
-        d.rgb = rgb;
-        eye_set(i, &d);
-    }
-    (void)now;
-}
-
-/* The mouth while it speaks; the dots while it listens, thinks, or waits for its wake word. */
-static void mouth_and_dots(double now)
+/* The dots while it listens, thinks, or waits for its wake word. */
+static void dots_update(double now)
 {
     vo_state_t v = voice_state();
-    uint32_t rgb = rgb_now();
-    bool speak = v == VO_SPEAKING;
-    shown(CP.mouth, &CP.mouth_on, speak);
-    if (speak) {
-        /* louder opens it rounder: taller, a little narrower */
-        int mw = (int)lroundf(66 + 14 * CP.talk - 16 * CP.talk * CP.talk), mh = (int)lroundf(6 + 34 * CP.talk);
-        if (mw != CP.mw || mh != CP.mh) {
-            lv_obj_set_size(CP.mouth, mw, mh);
-            lv_obj_set_pos(CP.mouth, CP.face_cx - mw / 2, MOUTH_Y - mh / 2);
-            CP.mw = mw;
-            CP.mh = mh;
-        }
-        if (rgb >> 4 != CP.mrgb >> 4) { /* only a visible change recolours it */
-            lv_obj_set_style_bg_color(CP.mouth, lv_color_hex(rgb), 0);
-            CP.mrgb = rgb;
-        }
-    }
     /* dots: 1 the wake word is on (one faint dot), 2 listening (a small level meter), 3 thinking (a ripple) */
     int st = 0;
     if (v == VO_LISTEN) st = 2;
@@ -1440,7 +905,7 @@ static void mouth_and_dots(double now)
 
 static void comp_frame(double now, double dt)
 {
-    if (dt > 0.1) dt = 0.1;
+    (void)dt;
     imu_step(now);
     voice_sync(now);
     assist_sync(now);
@@ -1453,62 +918,25 @@ static void comp_frame(double now, double dt)
         CP.mood = ph == AS_PHASE_IDLE ? VO_EMO_HAPPY : VO_EMO_WORRIED;
         CP.mood_k = 0.8f;
         CP.mood_until = now + (ph == AS_PHASE_IDLE ? 2.5 : 3);
-        if (ph == AS_PHASE_IDLE) {
-            chime(CHIME_ANSWER);
-            CP.bounce_t0 = now;
-        }
+        if (ph == AS_PHASE_IDLE) chime(CHIME_ANSWER);
     }
     CP.last_phase = ph;
 
-    float k;
-    int f = pick(now, &k);
-    if (f != CP.feel || fabsf(k - CP.feel_k) > 0.05f) {
-        if (f != CP.feel && rnd() < 0.35f && CP.blink_t0 <= 0) CP.blink_t0 = now; /* a change of heart, a blink */
-        CP.feel = f;
-        CP.feel_k = k;
-        shape_to(f, k);
+    av_state_t st = pick(now);
+    if (st != CP.state) {
+        CP.state = st;
+        ui_avatar_state(CP.av, st);
     }
-    vo_state_t v = voice_state();
-    bool attending = v == VO_LISTEN || v == VO_SPEAKING || f == F_LISTEN;
-    gaze_step(now, f, attending);
-
     /* the voice's loudness: quick to rise, slower to fall, like a jaw */
+    vo_state_t v = voice_state();
     float lv = v == VO_SPEAKING ? voice_speak_level() : 0;
     CP.talk += (lv - CP.talk) * (lv > CP.talk ? 0.55f : 0.22f);
     if (CP.talk < 0.004f) CP.talk = 0;
-
-    /* blinks: none asleep */
-    if (f != F_ASLEEP && CP.blink_t0 <= 0 && now > CP.blink_at) {
-        CP.blink_t0 = now;
-        blink_schedule(now, f);
-    }
-    float blink = blink_amount(now, f == VO_EMO_SLEEPY || f == VO_EMO_PROUD);
-    /* excited: little hops, over and over */
-    if (f == VO_EMO_EXCITED && CP.bounce_t0 <= 0 && now > CP.hop_at) {
-        CP.bounce_t0 = now;
-        CP.hop_at = now + 1.0 + rnd() * 0.8f;
-    }
-    float bounce = 0;
-    if (CP.bounce_t0 > 0) {
-        float u = (float)((now - CP.bounce_t0) / 0.9);
-        if (u >= 1) CP.bounce_t0 = 0;
-        else bounce = -14.0f * fabsf(sinf(u * 3.14159f * 3)) * (1 - u);
-    }
-    /* breathing: 1.2 % of the height over ~4 s — about a pixel's change every few frames, no more */
-    float breath = 1 + 0.012f * sinf((float)now * (2 * 3.14159f / 4.2f));
-
-    bool moving = false;
-    bz_motion_t *all[] = { &CP.w, &CP.h, &CP.y, &CP.smile, &CP.glint, &CP.lid[0], &CP.lid[1], &CP.tilt[0], &CP.tilt[1],
-                           &CP.hs[0], &CP.hs[1], &CP.cr, &CP.cg, &CP.cb, &CP.gx, &CP.gy };
-    for (size_t i = 0; i < sizeof all / sizeof all[0]; i++) moving |= sp_tick(all[i]);
-    life_t L;
-    life(now, f, k, &L);
-    if (bz_ui_calm()) memset(&L, 0, sizeof L); /* reduced motion: the shapes, without the fidgets */
-    eyes_compose(now, blink, bounce, breath, &L);
-    mouth_and_dots(now);
-    if ((moving || L.on || CP.blink_t0 > 0 || CP.bounce_t0 > 0 || CP.talk > 0 || CP.dots_on) && !bz_ui_calm())
-        bz_ui_keep_alive();
-    (void)dt;
+    ui_avatar_level(CP.av, CP.talk);
+    ui_avatar_calm(CP.av, st == AV_S_SLEEP ? 0.8f : st == AV_S_DROWSY ? 0.4f : 0.0f);
+    bool moving = ui_avatar_frame(CP.av);
+    dots_update(now);
+    if ((moving || CP.talk > 0 || CP.dots_on) && !bz_ui_calm()) bz_ui_keep_alive();
 }
 
 /* 10 Hz: the status line, the caption, the controls, the panel, and the microphones' permission. */
@@ -1562,8 +990,8 @@ static void comp_open(void)
     CP.vrev = 0;
     CP.crev = 0xFFFFFFFFu;
     CP.last_phase = assist_phase();
-    CP.blink_at = now + 1.0;
-    CP.fix_until = now + 0.6;
+    CP.state = AV_S_COUNT;
+    ui_avatar_active(CP.av, true);
     CP.imu_seeded = false;
     CP.mood = VO_EMO_SURPRISED; /* hello */
     CP.mood_k = 0.7f;
@@ -1599,6 +1027,7 @@ static void comp_open(void)
 static void comp_close(void)
 {
     CP.open = false;
+    ui_avatar_active(CP.av, false);
     ui_kb_hide(CP.kb);
     CP.last_seen = hal_seconds();
     CP.bg_seq = CP.reply_seq; /* what the face already showed is not announced again from home mode */
@@ -1612,28 +1041,9 @@ static void comp_build(lv_obj_t *b)
     CP.built = true;
     CP.rng = (uint32_t)(hal_seconds() * 1000.0) | 1u;
     CP.rows = lv_malloc_zeroed(ROWS * sizeof *CP.rows);
-    CP.feel = -1;
-    const shape_t *n = &SHAPE[VO_EMO_NEUTRAL];
-    sp_init(&CP.w, n->w);
-    sp_init(&CP.h, n->h);
-    sp_init(&CP.y, 0);
-    sp_init(&CP.smile, 0);
-    sp_init(&CP.glint, n->glint);
-    for (int i = 0; i < 2; i++) {
-        sp_init(&CP.lid[i], 0);
-        sp_init(&CP.tilt[i], 0);
-        sp_init(&CP.hs[i], 1);
-    }
-    uint32_t ice = bz_color(BZ_C_ICE);
-    sp_init(&CP.cr, (float)((ice >> 16) & 0xff));
-    sp_init(&CP.cg, (float)((ice >> 8) & 0xff));
-    sp_init(&CP.cb, (float)(ice & 0xff));
-    sp_init(&CP.gx, 0);
-    sp_init(&CP.gy, 0);
-    CP.gx.eps = CP.gy.eps = 0.004f;
-    CP.cr.eps = CP.cg.eps = CP.cb.eps = 0.5f;
+    CP.state = AV_S_COUNT;
 
-    /* the face: the whole upper screen takes touches (the eyes follow a finger), and lets drags through */
+    /* the face: the whole upper screen takes touches (it looks at a finger), and lets drags through */
     CP.face = bz_box(b);
     lv_obj_set_pos(CP.face, 0, 0);
     lv_obj_set_size(CP.face, W, CAP_Y);
@@ -1642,8 +1052,8 @@ static void comp_build(lv_obj_t *b)
     lv_obj_add_event_cb(CP.face, face_press, LV_EVENT_PRESSED, NULL);
     lv_obj_add_event_cb(CP.face, face_press, LV_EVENT_PRESSING, NULL);
     bz_on_tap(CP.face, face_tap, NULL);
-    for (int i = 0; i < 2; i++) CP.can[i] = canvas(CP.face);
-    CP.mouth = blob(CP.face);
+    CP.av = ui_avatar_create(CP.face, AVS);
+    ui_avatar_calm(CP.av, 0);
     for (int i = 0; i < 3; i++) {
         CP.dots[i] = blob(CP.face);
         lv_obj_add_style(CP.dots[i], bz_style_fill(BZ_C_FAINT), 0);
@@ -1828,7 +1238,6 @@ void ui_companion_tick(double now, double dt)
             CP.mood_k = 0.9f;
             CP.mood_until = now + 3;
             CP.active_at = now;
-            if (e.state == CCW_DONE) CP.bounce_t0 = now;
         }
     }
     /* until someone taps, say it again every so often */
@@ -1843,7 +1252,6 @@ void ui_companion_tick(double now, double dt)
                      a.project[0] ? a.project : "a session", n > 1 ? " (+more)" : "");
             ui_island_say(a.state == CCW_DONE ? BZ_I_TASK_ALT : BZ_I_NOTIFICATIONS, msg);
             chime(a.state == CCW_DONE ? CHIME_DONE : a.state == CCW_WAITING ? CHIME_INPUT : CHIME_ERROR);
-            if (CP.open) CP.bounce_t0 = now;
         }
     }
     desk_tick(now);

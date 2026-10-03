@@ -31,6 +31,7 @@ typedef struct {
     int faces;             /* "hm_fset": the clock faces a flick up or down goes through (HM_FACE_* bits; kept by name) */
     int face;              /* "hm_fshow": the face the clock page shows (HM_FACE_*; kept by name) */
     int open_page;         /* "hm_open": the page home mode opens on (HM_PG_*) */
+    bool idle_pet;         /* "hm_idlepet": untouched for a few minutes, home mode shows the pet */
     bool night;            /* "hm_night": the night face from 22:00 to 7:00 once nobody has touched it for a minute */
     bool dial_secs;        /* "hm_dsec": the dial's second hand (default on) */
     /* the timed photo (settings > home > photo): off by default, see home.h and home_capture.c */
@@ -49,13 +50,13 @@ enum {
 };
 
 /* the pages, left to right: the clock faces, the desk (home mode's own), what's playing */
-enum { HM_PG_CLOCK, HM_PG_DESK, HM_PG_NP, HM_NPAGES };
+enum { HM_PG_CLOCK, HM_PG_DESK, HM_PG_NP, HM_PG_PET, HM_NPAGES };
 
 /* the clock faces, in the order a flick goes through them (ui_face_*.c); the night face is not in the cycle, it
  * comes by itself. Settings keep them by name, so the order can change. */
 enum {
     HM_FACE_TYPE, HM_FACE_FLIP, HM_FACE_DIAL, HM_FACE_CHRONO, HM_FACE_SKY, HM_FACE_MOON, HM_FACE_ORRERY,
-    HM_FACE_WORLD, HM_FACE_TREE, HM_FACE_MATCH, HM_FACE_WORDS, HM_NFACES, HM_FACE_NIGHT = HM_NFACES
+    HM_FACE_WORLD, HM_FACE_TREE, HM_FACE_MATCH, HM_FACE_WORDS, HM_FACE_PET, HM_NFACES, HM_FACE_NIGHT = HM_NFACES
 };
 #define HM_FACES_ALL ((1 << HM_NFACES) - 1)
 extern const char *const HM_FACE_NAME[HM_NFACES + 1];

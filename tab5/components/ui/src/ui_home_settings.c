@@ -560,16 +560,16 @@ void ui_home_settings(lv_obj_t *pane, lv_obj_t *body, int w)
 
 static const char *const CARD_L[5] = { "music", "companion", "smart home", "weather", "next match" };
 static const int CARD_BIT[5] = { HM_CARD_MUSIC, HM_CARD_COMPANION, HM_CARD_HOME, HM_CARD_WEATHER, HM_CARD_MATCH };
-static const char *const PAGE_L[HM_NPAGES] = { "clock faces", "the desk", "now playing" };
+static const char *const PAGE_L[HM_NPAGES] = { "clock faces", "the desk", "now playing", "the pet" };
 
 /* what a chip does: a card (0..4), the clock (5, 6), seconds (7), the ground (8, 9), colour from the music (10),
  * the page it opens on (20..), a face in the cycle (30..), the face shown (40..), the dial's second hand (50),
  * the night face (51) */
-enum { LK_ART = 10, LK_OPEN = 20, LK_CYCLE = 30, LK_FACE = 40, LK_DSEC = 50, LK_NIGHT = 51 };
+enum { LK_ART = 10, LK_OPEN = 20, LK_CYCLE = 30, LK_FACE = 40, LK_DSEC = 50, LK_NIGHT = 51, LK_IDLEPET = 52 };
 
 static struct {
     lv_obj_t *card[5], *big, *small, *secs, *plain, *tint, *art;
-    lv_obj_t *open[HM_NPAGES], *cycle[HM_NFACES], *face[HM_NFACES], *dsec, *night;
+    lv_obj_t *open[HM_NPAGES], *cycle[HM_NFACES], *face[HM_NFACES], *dsec, *night, *idlepet;
 } LK;
 
 static void look_show(void)
@@ -590,6 +590,7 @@ static void look_show(void)
     }
     ui_chip_set(LK.dsec, c->dial_secs);
     ui_chip_set(LK.night, c->night);
+    ui_chip_set(LK.idlepet, c->idle_pet);
 }
 
 static void look_tap(lv_obj_t *o, void *u)
@@ -618,6 +619,7 @@ static void look_tap(lv_obj_t *o, void *u)
         c->faces |= 1 << c->face;
     } else if (k == LK_DSEC) c->dial_secs = !c->dial_secs;
     else if (k == LK_NIGHT) c->night = !c->night;
+    else if (k == LK_IDLEPET) c->idle_pet = !c->idle_pet;
     hm_cfg_save();
     hm_look_changed(); /* laid out now, under the settings: it shows as it is when they close */
     look_show();
@@ -654,13 +656,15 @@ void ui_home_look_settings(lv_obj_t *col, int w)
     r = wrap(col, w);
     LK.dsec = row_chip(r, "the dial's second hand", LK_DSEC);
     LK.night = row_chip(r, "night face, 22:00 to 7:00", LK_NIGHT);
+    LK.idlepet = row_chip(r, "the pet when idle", LK_IDLEPET);
     caption(col, "Swipe home mode sideways for the clock faces and for what's playing; flick a face up or down for "
                  "the next. type: the time as a poster. flip: split-flap cards. dial, chrono: a Braun dial, and a "
                  "chronograph whose small dials show the seconds, the tablet's battery and the minutes to the next "
                  "match. sky: the sun on today's real path. moon: tonight's moon. orrery: the planets where they are "
                  "today. tree: a tree that grows with the team's matches, lit by the real sun, bent by the wind. "
                  "match: the next match from The Blue Alliance. The night face comes after a minute untouched and "
-                 "goes at a touch.", w);
+                 "goes at a touch. pet: the pet alone on the ground, doing quiet things; with \"the pet when idle\" home mode "
+                 "shows it after three minutes untouched.", w);
     ui_button(col, BZ_I_HOME, "see home mode", enter_now, NULL);
     look_show();
 }

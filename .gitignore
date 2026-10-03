@@ -10,3 +10,7 @@ tab5/sdkconfig
 tab5/sdkconfig.old
 tab5/managed_components/
 __pycache__/
+
+# an avatar definition made with the Bible Strong Avatar Lab is AGPL: it lives on the tablet's card, never here
+AVATAR.JSON
+*.avatar.json

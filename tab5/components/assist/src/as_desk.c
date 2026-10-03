@@ -44,6 +44,14 @@ static as_tba_read_fn g_tba;
 void assist_set_tba_reader(as_tba_read_fn fn) { g_tba = fn; }
 as_tba_read_fn assist_tba_reader(void) { return g_tba; }
 
+static as_pet_ctx_fn g_pet;
+void assist_set_pet_context(as_pet_ctx_fn fn) { g_pet = fn; }
+void assist_pet_context(char *out, size_t n)
+{
+    if (n) out[0] = 0;
+    if (g_pet && n) g_pet(out, n);
+}
+
 void assist_fold_text(char *s) { as_fold_text(s); }
 
 /* ---- the island's live activities, registered by the ui (as_tools.h has the calls) ---- */

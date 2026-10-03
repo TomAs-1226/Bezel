@@ -25,6 +25,7 @@
 #include "ui_home_mode.h"
 #include "ui_intel.h"
 #include "ui_storage.h"
+#include "home_pet.h"
 #include "ui_sys.h"
 
 #include <ctype.h>
@@ -1259,6 +1260,11 @@ static bool worker_side(const char *action, const char *args_json, char *out, si
 {
     if (intel_is_tool(action)) {
         *ok = intel_tool(action, args_json, out, n);
+        return true;
+    }
+    if (home_pet_is_tool(action)) {
+        /* the pet is thread-safe and answers at once: no hop to the UI thread */
+        *ok = home_pet_tool(action, args_json, out, n);
         return true;
     }
     bool docs = !strcmp(action, "documents"), weather = !strcmp(action, "weather");

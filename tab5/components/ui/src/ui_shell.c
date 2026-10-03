@@ -975,7 +975,8 @@ static bool dev_handler(const char *line)
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) && strncmp(line, "act", 3) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) && strncmp(line, "look ", 5) &&
         strncmp(line, "docwrite", 8) && strncmp(line, "assist", 6) && strncmp(line, "memo", 4) && strncmp(line, "carry", 5) &&
-        strncmp(line, "cut", 3) && strncmp(line, "hm", 2) && strncmp(line, "pca", 3) && strncmp(line, "psram", 5))
+        strncmp(line, "cut", 3) && strncmp(line, "hm", 2) && strncmp(line, "pca", 3) && strncmp(line, "pet", 3) &&
+        strncmp(line, "psram", 5))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -1199,6 +1200,8 @@ static void dev_run(void)
     } else if (!strcmp(s_dev_cmd, "home")) {
         if (ui_home_mode_active()) ui_home_mode_exit();
         else ui_home_mode_enter();
+    } else if (!strncmp(s_dev_cmd, "pet", 3)) {
+        ui_pet_dev(s_dev_cmd + 3); /* the desk pet: its screens, its state, its character */
     } else if (!strncmp(s_dev_cmd, "hm", 2)) {
         ui_home_mode_dev(s_dev_cmd + 2); /* home mode's own: its pages, faces, night, covers */
     } else if (!strncmp(s_dev_cmd, "phone", 5)) {

@@ -32,7 +32,7 @@ typedef struct hm_face {
 void hm_tree_dev(void); /* ui_face_tree.c: "hm tree" */
 
 extern const hm_face_t HM_F_TYPE, HM_F_FLIP, HM_F_DIAL, HM_F_CHRONO, HM_F_SKY, HM_F_MOON, HM_F_ORRERY, HM_F_WORLD,
-    HM_F_TREE, HM_F_MATCH, HM_F_WORDS, HM_F_NIGHT;
+    HM_F_TREE, HM_F_MATCH, HM_F_WORDS, HM_F_PET, HM_F_NIGHT;
 
 /* ---- a picture painted on the covers' worker (ui_home_art.c's hm_art_job) ---- */
 typedef struct {

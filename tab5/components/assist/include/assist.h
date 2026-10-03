@@ -188,6 +188,11 @@ void assist_set_activity_hooks(const as_activity_hooks_t *h);
 
 typedef bool (*as_tba_read_fn)(const char *path, char *out, size_t n);
 void assist_set_tba_reader(as_tba_read_fn fn);
+/* The desk pet's line for the companion's context (home_pet_context; `home` requires `assist`, so it is handed in
+ * like the reader above). Called on the companion's worker for every question; fills `out` or leaves it empty. */
+typedef void (*as_pet_ctx_fn)(char *out, size_t n);
+void assist_set_pet_context(as_pet_ctx_fn fn);
+void assist_pet_context(char *out, size_t n);
 as_tba_read_fn assist_tba_reader(void);
 
 void assist_desk_post(as_desk_t which, const char *text);
