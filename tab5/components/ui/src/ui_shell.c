@@ -1116,6 +1116,7 @@ static void dev_run(void)
         /* "psram shed" asks for one pass of the pressure path whatever the free figure is: it is the
          * only way to see a window taken down and built again without first filling the heap. */
         if (!strcmp(s_dev_cmd + 5, " shed")) s_mem_force = true;
+        else if (!strcmp(s_dev_cmd + 5, " big")) hal_mem_psram_big(mem_line);
         else mem_report();
     } else if (!strncmp(s_dev_cmd, "inv", 3)) {
         /* "inv" or "inv N": log every area LVGL invalidates for the next N frames (20 by default). A

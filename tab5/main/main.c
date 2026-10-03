@@ -247,6 +247,7 @@ void app_main(void)
         hal_set_brightness(0);
     } else {
         ui_boot_destroy(s_boot);
+        hal_boot_buffer_release(); /* only the card drew there; an abandoned card may still be, so then it stays */
     }
     s_boot = NULL;
     bz_comp_damage_all(bz_ui_comp());

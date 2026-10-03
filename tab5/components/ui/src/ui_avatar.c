@@ -653,6 +653,17 @@ static void set_drawn(ui_avatar_t *a, const drawn_t *n)
         return;
     }
     drawn_t *o = &a->dr;
+    /* The mouth and the blush hang off the eyes, so when the eyes move they move too -- and they were not
+     * being drawn again where they had been, which left a trail of mouths behind a finger dragging the face
+     * about. Whatever the eyes covered and cover, the face below and beside them goes with it. */
+    if (memcmp(o->ex, n->ex, sizeof o->ex)) {
+        for (int k = 0; k < 2; k++) {
+            const drawn_t *d = k ? n : o;
+            float mx = (d->ex[0][0] + d->ex[1][0]) / 4.0f, my = (d->ex[0][1] + d->ex[1][1]) / 4.0f, u = a->k;
+            lv_area_t f = { (int)(cx + mx - 96 * u), (int)(cy + my + 12 * u), (int)(cx + mx + 96 * u), (int)(cy + my + 82 * u) };
+            lv_obj_invalidate_area(a->obj, &f);
+        }
+    }
     for (int i = 0; i < 2; i++) {
         if (memcmp(o->ex[i], n->ex[i], sizeof o->ex[i]) == 0 && o->eyes == n->eyes && o->blink == n->blink) continue;
         lv_area_t u = eye_box(o, i, cx, cy), b = eye_box(n, i, cx, cy);

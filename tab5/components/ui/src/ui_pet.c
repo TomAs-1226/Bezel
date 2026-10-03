@@ -48,7 +48,8 @@ static struct {
     lv_obj_t *page, *touch, *name, *line, *meter[M_N], *mlabel[M_N], *feed, *play, *sleep, *foods, *food[PET_FOODS],
         *note, *hint, *talk;
     ui_avatar_t *av;
-    double poke_at, whim_at, press_at;
+    double poke_at, whim_at, press_at, sneeze_at;
+    int tickle;
     bool hugged;
     int pokes;
     uint32_t rng;
@@ -154,6 +155,7 @@ static void touch_ev(lv_event_t *e)
         PG.py = p.y;
         PG.moved = PG.total = 0;
         PG.press_at = now;
+        PG.tickle = 0;
         PG.hugged = false;
         ui_avatar_look(PG.av, nx, ny, 1.0f);
     } else if (c == LV_EVENT_PRESSING && PG.pressed) {
@@ -168,6 +170,18 @@ static void touch_ev(lv_event_t *e)
             PG.hugged = true;
             home_pet_do_stroke();
             ui_avatar_react(PG.av, AV_S_LOVE);
+        }
+        /* A finger wiggling on her nose -- the middle of the face, just under the eyes -- tickles, and she
+         * sneezes. It is its own thing, sooner than a stroke and never a hug. */
+        bool nose = fabsf(nx) < 0.30f && ny > -0.15f && ny < 0.45f;
+        if (nose) PG.tickle += d;
+        else PG.tickle = 0;
+        if (PG.tickle > 36 && now - PG.sneeze_at > 2.5) {
+            PG.tickle = 0;
+            PG.moved = 0;
+            PG.sneeze_at = PG.stroke_at = now;
+            PG.hugged = true; /* not a hug, and not a poke when the finger lifts */
+            ui_avatar_react(PG.av, AV_S_SNEEZE);
         }
         if (PG.moved > 70 && now - PG.stroke_at > 1.5) {
             PG.moved = 0;
@@ -263,7 +277,7 @@ lv_obj_t *hm_pet_build(lv_obj_t *parent)
     lv_label_set_long_mode(PG.note, LV_LABEL_LONG_MODE_WRAP);
     lv_obj_set_pos(PG.note, X, 530);
     hm_show(PG.note, false);
-    PG.hint = bz_label_line(pg, "stroke her Â· poke her Â· hold to hug Â· or just talk", BZ_F_CAPTION, BZ_C_FAINT, WCOL);
+    PG.hint = bz_label_line(pg, "stroke her Â· poke her Â· hold to hug Â· tickle her nose Â· or just talk", BZ_F_CAPTION, BZ_C_FAINT, WCOL);
     lv_obj_set_pos(PG.hint, X, 628);
     PG.state = AV_S_COUNT;
     PG.built = true;

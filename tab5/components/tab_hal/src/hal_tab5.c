@@ -1519,6 +1519,41 @@ void hal_slide_mask(bool on) { s_mask_on = on; }
  * anything on the UI's frame path must ask for this one instead. */
 size_t hal_psram_free(void) { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
 
+/* dev "psram big": every allocated PSRAM block of 24 KB or more, by size. The pools the firmware names add up
+ * to a third of what the heap has given out; the rest is "everything else", and a block's size is usually
+ * enough to say whose it is (a screen is 1843200). */
+static struct { size_t sz[48]; int n; size_t small, nsmall; } s_big;
+static bool big_cb(walker_heap_into_t h, walker_block_info_t b, void *u)
+{
+    (void)h; (void)u;
+    if (!b.used) return true;
+    if (b.size < 24 * 1024) {
+        s_big.small += b.size;
+        s_big.nsmall++;
+        return true;
+    }
+    int i = s_big.n < 48 ? s_big.n++ : 47;
+    while (i > 0 && s_big.sz[i - 1] < b.size) {
+        s_big.sz[i] = s_big.sz[i - 1];
+        i--;
+    }
+    s_big.sz[i] = b.size;
+    return true;
+}
+
+void hal_mem_psram_big(void (*line)(const char *))
+{
+    memset(&s_big, 0, sizeof s_big);
+    heap_caps_walk(MALLOC_CAP_SPIRAM, big_cb, NULL);
+    char b[96];
+    for (int i = 0; i < s_big.n; i++) {
+        snprintf(b, sizeof b, "MEM   block %8u bytes  (%u KB)\n", (unsigned)s_big.sz[i], (unsigned)(s_big.sz[i] / 1024));
+        line(b);
+    }
+    snprintf(b, sizeof b, "MEM   and %u blocks under 24 KB, %u KB between them\n", (unsigned)s_big.nsmall, (unsigned)(s_big.small / 1024));
+    line(b);
+}
+
 size_t hal_psram_allocated(size_t *blocks)
 {
     multi_heap_info_t i;
@@ -2119,6 +2154,12 @@ typedef struct { uintptr_t lo, hi; } span_t;
 static span_t s_spans[8];
 static int s_nspans, s_next_span;
 
+static void span_drop(const void *p)
+{
+    for (int i = 0; i < s_nspans; i++)
+        if (s_spans[i].lo == (uintptr_t)p) s_spans[i] = (span_t){ 0, 0 };
+}
+
 static void span_add(const void *p, size_t n)
 {
     int i = s_nspans < 8 ? s_nspans++ : (s_next_span++ % 8);
@@ -2336,6 +2377,21 @@ static void par_init(void)
 }
 
 static const bz_gfx_ops_t OPS = { .copy565 = ppa_copy565, .blend = ppa_blend, .parallel = par_run };
+
+/* The compositor's output buffer has one user on the tablet: the boot card is drawn in it. The lean renderer
+ * has no compositor -- it hands LVGL's dirty areas of `content` straight to the panel -- so once the interface
+ * is up this is a whole screen, 1.8 MB of PSRAM, that nothing will ever write again. main calls this when the
+ * boot card is gone. Its span goes with it: a stale one would vouch for whatever is allocated there next. */
+void hal_boot_buffer_release(void)
+{
+#if BZ_LEAN
+    if (!T.out) return;
+    present_sync();
+    span_drop(T.out);
+    heap_caps_free(T.out);
+    T.out = NULL;
+#endif
+}
 
 void hal_display(hal_display_t *o)
 {
