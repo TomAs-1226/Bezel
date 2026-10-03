@@ -1014,10 +1014,33 @@ void hal_frame_gaps(int out[4])
 }
 
 /* b holds this frame now: handed to the panel, which switches to it at the next vsync */
+static struct { unsigned n; bool full; int areas, hits; double at; bz_area_t a; } s_cyan;
+
 static void fb_handover(int b, const bz_present_t *areas, int n, bool full, int y0, int y1)
 {
     fb_seen(true); /* one frame waiting at a time: none is ever dropped */
     xSemaphoreTake(T.vsync, 0);
+    {
+        /* Is this frame cyan? The owner sees the glass flash cyan and the underrun counter reads nothing, so
+         * either the counter is deaf or the colour is in the picture itself. Sixty-four pixels of every frame
+         * handed to the panel settle which: if most of them are cyan, the frame was drawn that way, and what
+         * kind of frame it was (whole or areas, how many, the first one) is kept for the dev console. */
+        const uint16_t *p = T.fb[b];
+        int hits = 0;
+        for (int i = 0; i < 64; i++) {
+            uint16_t v = p[(size_t)(80 + (i / 8) * 160) * PANEL_W + 45 + (i % 8) * 90];
+            int r = v >> 11, g = v >> 5 & 63, bl = v & 31;
+            if (r <= 9 && g >= 40 && bl >= 20) hits++;
+        }
+        if (hits >= 36) {
+            s_cyan.n++;
+            s_cyan.full = full;
+            s_cyan.areas = n;
+            s_cyan.hits = hits;
+            s_cyan.at = hal_seconds();
+            if (n > 0) s_cyan.a = areas[0].a;
+        }
+    }
     esp_lcd_panel_draw_bitmap(T.lcd.panel, 0, y0, PANEL_W, y1 + 1, T.fb[b]);
     {
         static double last;
@@ -3315,6 +3338,19 @@ static void IRAM_ATTR putc_count_underruns(char c)
 }
 
 uint32_t hal_underruns(void) { return s_underruns; }
+
+/* dev "psram": the cyan frames seen going to the panel, and what the last one was. */
+void hal_cyan_line(void (*line)(const char *))
+{
+    char b[160];
+    snprintf(b, sizeof b, "MEM cyan frames handed to the panel: %u (last %.0f s ago: %s, %d areas, first %d,%d-%d,%d, %d of 64 samples)\n",
+             s_cyan.n, s_cyan.n ? hal_seconds() - s_cyan.at : 0.0, s_cyan.full ? "whole frame" : "areas", s_cyan.areas,
+             s_cyan.a.x1, s_cyan.a.y1, s_cyan.a.x2, s_cyan.a.y2, s_cyan.hits);
+    line(b);
+}
+
+/* dev "urtest": says the underrun line the way the DSI driver's ISR does, to prove the counter hears it. */
+void hal_underrun_test(void) { ESP_DRAM_LOGE(TAG, "can't fetch data from external memory fast enough, underrun happens"); }
 
 void hal_boot_watch(void (*fn)(const char *stage)) { s_watch = fn; }
 

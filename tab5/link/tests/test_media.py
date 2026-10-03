@@ -93,7 +93,8 @@ class NowPlayingTest(MediaCase):
         self.assertGreaterEqual(p["position"], 30.0)
         self.assertLess(p["position"], 33.0)
         self.assertTrue(p["can"]["next"])
-        self.assertIsNone(p["art"])  # no thumbnail
+        # no thumbnail from the player: the Link makes a cover for the song, and names it by the song
+        self.assertTrue(p["art"].startswith("g"))
 
     def test_position_runs_on_while_playing_but_not_paused(self) -> None:
         self.fake.current = song(updated=time.time() - 10)
@@ -184,9 +185,16 @@ class ControlTest(MediaCase):
 @unittest.skipUnless(HAVE_PIL, "Pillow makes the art")
 class ArtTest(MediaCase):
     def test_no_art(self) -> None:
+        # a song the player gives no thumbnail for still has a cover: one made from its title and artist,
+        # the same every time for the same song and different for another
         self.fake.current = song()
-        status, body = self.request("GET", "/media/art")
-        self.assertEqual(status, 404)
+        url = "/media/art?format=rgb565&size=32"
+        status, (resp, body) = self.request("GET", url, raw=True)
+        self.assertEqual(status, 200)
+        self.assertEqual(len(body), 32 * 32 * 2)
+        self.assertEqual(body, self.request("GET", url, raw=True)[1][1])
+        self.fake.current = song(title="Another One")
+        self.assertNotEqual(body, self.request("GET", url, raw=True)[1][1])
         self.fake.current = None
         self.assertEqual(self.request("GET", "/media/art")[0], 404)
 

@@ -934,6 +934,7 @@ static void mem_report(void)
      * looking at a stall will read it: the panel missing its deadline is a bandwidth fault, and the cure
      * is less PSRAM traffic, not more free bytes. */
     printf("MEM panel underruns (cyan frames): %u since boot\n", (unsigned)hal_underruns());
+    hal_cyan_line(mem_line);
     printf("MEM fixed, taken at boot and never given back: %u KB\n", (unsigned)(m[0] / 1024));
     hal_mem_psram_lines(mem_line);
     bz_ui_mem_lines(mem_line);
@@ -1117,6 +1118,7 @@ static void dev_run(void)
          * only way to see a window taken down and built again without first filling the heap. */
         if (!strcmp(s_dev_cmd + 5, " shed")) s_mem_force = true;
         else if (!strcmp(s_dev_cmd + 5, " big")) hal_mem_psram_big(mem_line);
+        else if (!strcmp(s_dev_cmd + 5, " urtest")) hal_underrun_test();
         else mem_report();
     } else if (!strncmp(s_dev_cmd, "inv", 3)) {
         /* "inv" or "inv N": log every area LVGL invalidates for the next N frames (20 by default). A

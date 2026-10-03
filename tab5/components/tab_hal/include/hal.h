@@ -77,6 +77,8 @@ size_t hal_psram_allocated(size_t *blocks);
  * refilled from PSRAM in time. Counted off the DSI driver's own log line, which is the only notice of one
  * that exists. Any number above zero is a PSRAM bandwidth problem, not a memory-capacity problem. */
 uint32_t hal_underruns(void);
+void hal_cyan_line(void (*line)(const char *)); /* frames that went to the panel mostly cyan, and the last one */
+void hal_underrun_test(void);                   /* dev "urtest": the driver's underrun line, to test the counter */
 void hal_mem_psram_lines(void (*line)(const char *)); /* those blocks, one printable line each */
 void hal_loop_prof(double out[4]); /* perf: busy loops, their mean and max work (s), loops idle */
 void hal_loop_hist(int out[5]);    /* perf: busy loops under 5, 10, 16.7, 25 ms, more */
