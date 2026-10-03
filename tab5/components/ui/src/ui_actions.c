@@ -1380,4 +1380,5 @@ void ui_actions_init(void)
     static const as_activity_hooks_t HOOKS = { .turn = hook_turn, .begin = hook_begin, .update = hook_update,
                                                .end = hook_end };
     assist_set_activity_hooks(&HOOKS);
+    ui_pcaudio_init(); /* the PC's sound on this speaker, if it was left on */
 }

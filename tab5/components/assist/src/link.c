@@ -898,6 +898,18 @@ int link_patches(link_item_t *out, int max)
     return n;
 }
 
+bool link_credentials(char *url, size_t un, char *token, size_t tn)
+{
+    pthread_mutex_lock(&L.lock);
+    bool ok = L.url[0] != 0;
+    if (ok) {
+        snprintf(url, un, "%s", L.url);
+        snprintf(token, tn, "%s", L.token);
+    }
+    pthread_mutex_unlock(&L.lock);
+    return ok;
+}
+
 bool link_messages_endpoint(char *url, size_t n, char *headers, size_t hn)
 {
     pthread_mutex_lock(&L.lock);

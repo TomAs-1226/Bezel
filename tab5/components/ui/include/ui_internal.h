@@ -107,6 +107,14 @@ void ui_island_say(const char *icon, const char *text);
  * call these. countdown_s > 0 shows the time left after the words, updated once a second (the activity is
  * dropped by itself 90 s after reaching zero if nobody ends it). Ending one may leave a message (`said`, or
  * NULL for none), which is said and kept like any other. Returns the activity's id (> 0). */
+/* The PC's sound on this speaker (ui_pcaudio.c): the switch, kept in kv; a row with the chip and its state for an
+ * app's pane (slot 0 music, 1 settings), refreshed from that app's own refresh hook. */
+void ui_pcaudio_init(void);
+bool ui_pcaudio_enabled(void);
+void ui_pcaudio_set(bool on);
+lv_obj_t *ui_pcaudio_row(lv_obj_t *parent, int w, int slot);
+void ui_pcaudio_row_refresh(int slot);
+void ui_pcaudio_dev(const char *cmd); /* the dev console: pca on | off | stat */
 int ui_activity_begin(const char *icon, const char *text, double countdown_s);
 void ui_activity_update(int id, const char *text);
 void ui_activity_end(int id, const char *said);

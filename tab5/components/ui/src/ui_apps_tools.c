@@ -1725,6 +1725,7 @@ static void settings_refresh_more(void)
                 b.external ? " · external power" : "");
     const cat_robot_t *r = R;
     ui_text(SX.link_state, "%s", r->connected ? "the robot is connected" : "the robot isn't connected");
+    ui_pcaudio_row_refresh(1);
 }
 
 static void settings_build(lv_obj_t *b)
@@ -1901,6 +1902,7 @@ static void settings_build(lv_obj_t *b)
                             BZ_F_BODY, BZ_C_DIM);
     sx_para(lt, iw);
     ui_button(t, BZ_I_COMPUTER, "open link", sx_open_app, (void *)&APP_LINK);
+    ui_pcaudio_row(t, iw, 1);
     t = sx_pane(b, SS_ASSIST, px, pw);
     lv_obj_t *at = bz_label(t, "The assistant runs on your Claude subscription through Claude Code on the PC (Catalyst Link), "
                                "or on an API key. It reads everything the tablet sees and changes nothing without your ok.",

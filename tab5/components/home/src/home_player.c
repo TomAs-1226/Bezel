@@ -5,6 +5,7 @@
  * no codec: WAV only there. One thread ("play") decodes while something plays and ends with the queue;
  * the folder listing runs on the home worker. Big buffers are malloc'd (PSRAM on the tablet). */
 #include "hal_play.h"
+#include "home_pcaudio.h"
 #include "home_priv.h"
 
 #include <ctype.h>
@@ -260,7 +261,13 @@ static void progress(double pos, double dur)
 static bool out(const int16_t *pcm, int frames, int ch, bool *opened, int rate)
 {
     if (!*opened) {
-        if (!hal_play_open(rate, ch)) return false;
+        home_pcaudio_yield(); /* the PC's sound may have the speaker: it lets go within a few tens of ms */
+        bool ok = hal_play_open(rate, ch);
+        for (int i = 0; i < 8 && !ok; i++) {
+            usleep(100 * 1000);
+            ok = hal_play_open(rate, ch);
+        }
+        if (!ok) return false;
         *opened = true;
     }
     while (frames > 0) {
