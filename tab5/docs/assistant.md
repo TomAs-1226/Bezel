@@ -121,6 +121,14 @@ thread and answered within 4 s (a request the worker stopped waiting for is fini
 never answered into the next one). Anything that would take the screen from the companion (another app,
 sleep, the lock screen, home mode) waits until she has finished speaking.
 
+## The pet (the companion's alone)
+
+The companion's context line also carries the desk pet's state and its last few diary entries (`home_pet_brief`,
+handed in with `assist_set_pet_context` because `home` requires `assist`), and she has four tools the technician is
+never offered (`AS_T_PET`, `as_tool_for`): `pet_status`, `pet_feed {food}`, `pet_play`, `pet_rename {name}`. They run
+on her worker, thread-safe, and the pet page or idle face reacts when one lands. A hungry pet may be mentioned once
+every three hours, and the prompt says to do it lightly and only when it fits. See pet.md.
+
 ## The intelligence core's tools
 
 Both AIs read what the tablet's intelligence core knows (docs/intel.md), served through the ui's handler on
