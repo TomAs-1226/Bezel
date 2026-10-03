@@ -119,6 +119,6 @@ void ui_pcaudio_dev(const char *cmd)
     pca_t s;
     home_pcaudio_get(&s);
     static const char *const N[] = { "off", "waiting", "connecting", "quiet", "live", "held" };
-    printf("MEM pca enabled %d state %s fill %d ms underruns %u packets %u rate %d kbps note '%s'\n", s.enabled,
-           N[s.state], s.fill_ms, s.underruns, s.packets, s.rate_kbps, s.note);
+    printf("MEM pca enabled %d state %s fill %d ms underruns %u reconnects %u packets %u rate %d kbps note '%s'\n", s.enabled,
+           N[s.state], s.fill_ms, s.underruns, s.reconnects, s.packets, s.rate_kbps, s.note);
 }

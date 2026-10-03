@@ -218,9 +218,15 @@ static void feed(spk_t *s, const int16_t *pcm, int n)
 {
     int fill = hal_play_queued_ms();
     if (fill > FILL_DROP_MS) return;
+    /* proportional: 1 ms over the target is 1/6000 of a packet shorter (280 ms: 1.5%, 450: 4.3%); under the
+     * target, longer by the same, up to 1.5% */
     int m = n;
-    if (fill > FILL_HI_MS) m = n - n / (fill > FILL_HI_MS + 80 ? 33 : 100);
-    else if (fill > 0 && fill < FILL_LO_MS) m = n + n / 100;
+    if (fill > FILL_HI_MS - 40 || (fill > 0 && fill < FILL_LO_MS)) {
+        int d = (int)((long)(fill - FILL_TARGET_MS) * n / 6000);
+        if (d > n / 20) d = n / 20;
+        if (d < -n / 60) d = -n / 60;
+        m = n - d;
+    }
     const int16_t *src = pcm;
     if (m != n && n > 8) {
         for (int i = 0; i < m; i++) {
@@ -247,6 +253,9 @@ static void feed(spk_t *s, const int16_t *pcm, int n)
 
 typedef enum { END_WANT, END_LOST, END_REFUSED } end_t;
 
+static const char *s_why = ""; /* what ended the last connection (one writer: the receiver thread) */
+#define LOST(w) (s_why = (w), END_LOST)
+
 static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
 {
     size_t have = 0;
@@ -264,16 +273,16 @@ static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
     for (;;) {
         if (!wanted()) return END_WANT;
         if (!wait_fd(fd, false, 300)) {
-            if (hal_seconds() - last_rx > 6) return END_LOST;
+            if (hal_seconds() - last_rx > 6) return LOST("no answer");
             continue;
         }
         ssize_t r = recv(fd, head + hl, RX_BYTES - 1 - hl, 0);
-        if (r <= 0) return END_LOST;
+        if (r <= 0) return LOST("closed in the head");
         hl += (size_t)r;
         head[hl] = 0;
         char *eoh = strstr(head, "\r\n\r\n");
         if (!eoh) {
-            if (hl > 1500) return END_LOST;
+            if (hl > 1500) return LOST("bad head");
             continue;
         }
         int status = atoi(head + 9);
@@ -285,13 +294,14 @@ static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
             head[hl] = 0;
             char note[80] = "";
             char *e = strstr(eoh, "\"error\"");
-            if (e && (e = strchr(e + 7, '"')) && (e = strchr(e + 1, '"'))) {
-                e++;
+            if (e && (e = strchr(e + 7, '"'))) {
+                e++; /* past the opening quote of the value */
                 size_t l = strcspn(e, "\"");
                 snprintf(note, sizeof note, "%.*s", (int)(l < sizeof note - 1 ? l : sizeof note - 1), e);
             }
             if (status == 401) snprintf(note, sizeof note, "the pc refused the tablet: pair it again");
             else if (status == 403) snprintf(note, sizeof note, "switched off on the pc");
+            else if (status == 404) snprintf(note, sizeof note, "update catalyst link on the pc for its sound");
             else if (!note[0]) snprintf(note, sizeof note, "the pc answered %d", status);
             publish(PCA_WAITING, note);
             *backoff_s = status == 401 ? 10 : 4;
@@ -310,19 +320,19 @@ static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
         if (s->open && assistant_busy()) spk_close(s); /* the card's player asked: out of its way at once */
         if (wait_fd(fd, false, 100)) {
             ssize_t r = recv(fd, rx + have, RX_BYTES - have, 0);
-            if (r <= 0) return END_LOST;
+            if (r <= 0) return LOST(r == 0 ? "the pc closed it" : "recv error");
             have += (size_t)r;
             rate_bytes += (size_t)r;
             last_rx = now;
         } else if (now - last_rx > 6) {
-            return END_LOST; /* the PC or the Wi-Fi went away without closing */
+            return LOST("silence over 6 s"); /* the PC or the Wi-Fi went away without closing */
         }
         /* whole packets */
         size_t off = 0;
         while (have - off >= PKT_HDR) {
             const uint8_t *h = rx + off;
             unsigned n = (unsigned)h[2] | (unsigned)h[3] << 8;
-            if (h[0] != 1 || n > PKT_MAX) return END_LOST; /* out of step: start over */
+            if (h[0] != 1 || n > PKT_MAX) return LOST("out of step"); /* start over */
             if (have - off < PKT_HDR + (size_t)n * 2) break;
             unsigned flags = h[1];
             last_seq = (unsigned)h[4] | (unsigned)h[5] << 8 | (unsigned)h[6] << 16 | (unsigned)h[7] << 24;
@@ -378,7 +388,7 @@ static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
             memcpy(ack + 8, &s->under_total, 4);
             uint32_t ms = (uint32_t)(now * 1000);
             memcpy(ack + 12, &ms, 4);
-            if (!send_all(fd, ack, sizeof ack)) return END_LOST;
+            if (!send_all(fd, ack, sizeof ack)) return LOST("ack not sent");
         }
     }
 }
@@ -424,7 +434,15 @@ static void *receiver(void *arg)
                 memset(token, 0, sizeof token);
                 if (send_all(fd, req, (size_t)l)) {
                     end_t e = session(fd, &s, rx, &backoff);
-                    if (e == END_LOST) publish(PCA_WAITING, "lost the pc: reconnecting");
+                    if (e == END_LOST) {
+                        char w[80];
+                        snprintf(w, sizeof w, "lost the pc (%s): reconnecting", s_why);
+                        printf("pcaudio: %s after %u packets\n", w, A.st.packets);
+                        publish(PCA_WAITING, w);
+                        pthread_mutex_lock(&A.lock);
+                        A.st.reconnects++;
+                        pthread_mutex_unlock(&A.lock);
+                    }
                 }
                 close(fd);
                 spk_close(&s);
