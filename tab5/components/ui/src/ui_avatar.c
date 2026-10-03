@@ -1,5 +1,6 @@
 /* ui_avatar — see ui_avatar.h. */
 #include "ui_avatar.h"
+#include "ui_clip.h"
 
 #include "bz_motion.h"
 #include "bz_theme.h"
@@ -50,10 +51,21 @@ static const struct {
     [AV_S_LOVE] = { "love", { "love" }, { "love", "joyful-wide" } },
     [AV_S_FED] = { "fed", { "fed" }, { "joyful-wide" } },
     [AV_S_CURIOUS] = { "curious", { "curious" }, { "curious-left" } },
+    [AV_S_SICK] = { "sick", { "sick", "sad" }, { "sick", "shy-downward" } },
+    [AV_S_SNEEZE] = { "sneeze", { "sneeze", "surprised" }, { "sneeze-blast", "eyes-closed" } },
+    [AV_S_GIGGLE] = { "giggle", { "giggle", "laughing", "happy" }, { "smile", "joyful-wide" } },
+    [AV_S_BLUSH] = { "blush", { "blush", "shy" }, { "blush-shy", "shy-downward" } },
+    [AV_S_WINK] = { "wink", { "wink", "playful" }, { "wink", "playful-right" } },
+    [AV_S_POUT] = { "pout", { "pout", "suspicious" }, { "pout", "skeptical-right" } },
+    [AV_S_NOD] = { "nod", { "nod", "happy" }, { "nod-down", "joyful-wide" } },
+    [AV_S_NO] = { "no", { "no", "confused" }, { "no-left", "skeptical-left" } },
+    [AV_S_DANCE] = { "dance", { "dance", "excited", "happy" }, { "bounce-left", "joyful-wide" } },
+    [AV_S_YAWN] = { "yawn", { "yawn", "drowsy" }, { "yawn", "sleepy-squint" } },
 };
 const char *const AV_STATE_NAME[AV_S_COUNT] = { "idle", "quiet", "listen", "think", "speak", "happy", "confused",
                                                 "surprised", "sleep", "wake", "drowsy", "sad", "hungry", "eat",
-                                                "petted", "love", "fed", "curious" };
+                                                "petted", "love", "fed", "curious", "sick", "sneeze",
+                                                "giggle", "blush", "wink", "pout", "nod", "no", "dance", "yawn" };
 
 /* ================================================================== the character (shared) */
 
@@ -208,6 +220,9 @@ typedef struct {
 
 struct ui_avatar {
     lv_obj_t *obj;
+    /* the baked clips on the card, when it has them: then nothing below draws, the clip does (ui_clip.c) */
+    ui_clip_t *clip;
+    bool clip_on;
     int S;
     float k;
     bool active, baked;
@@ -366,9 +381,39 @@ static bool resolve(ui_avatar_t *a, av_state_t st, bool once)
     return false;
 }
 
+/* The clip each meaning plays, and the one it falls back to when the card lacks it. */
+static const char *const CLIP[AV_S_COUNT][2] = {
+    [AV_S_IDLE] = { "IDLE", "IDLE_QUIET" },       [AV_S_QUIET] = { "IDLE_QUIET", "IDLE" },
+    [AV_S_LISTEN] = { "LISTENING", "IDLE" },      [AV_S_THINK] = { "THINKING", "IDLE" },
+    [AV_S_SPEAK] = { "SPEAKING", "HAPPY" },       [AV_S_HAPPY] = { "HAPPY", "FED" },
+    [AV_S_CONFUSED] = { "CONFUSED", "CURIOUS" },  [AV_S_SURPRISED] = { "SURPRISED", "CURIOUS" },
+    [AV_S_SLEEP] = { "SLEEPING", "DROWSY" },      [AV_S_WAKE] = { "WAKING", "IDLE" },
+    [AV_S_DROWSY] = { "DROWSY", "SLEEPING" },     [AV_S_SAD] = { "SAD", "HUNGRY" },
+    [AV_S_HUNGRY] = { "HUNGRY", "SAD" },          [AV_S_EAT] = { "EATING", "FED" },
+    [AV_S_PETTED] = { "PETTED", "LOVE" },         [AV_S_LOVE] = { "LOVE", "HAPPY" },
+    [AV_S_FED] = { "FED", "HAPPY" },              [AV_S_CURIOUS] = { "CURIOUS", "IDLE" },
+    [AV_S_SICK] = { "SICK", "SAD" },              [AV_S_SNEEZE] = { "SNEEZE", "SURPRISED" },
+    [AV_S_GIGGLE] = { "GIGGLE", "HAPPY" },        [AV_S_BLUSH] = { "BLUSH", "LOVE" },
+    [AV_S_WINK] = { "WINK", "HAPPY" },            [AV_S_POUT] = { "POUT", "CONFUSED" },
+    [AV_S_NOD] = { "NOD", "HAPPY" },              [AV_S_NO] = { "NO", "CONFUSED" },
+    [AV_S_DANCE] = { "DANCE", "HAPPY" },          [AV_S_YAWN] = { "YAWN", "DROWSY" },
+};
+
+static bool clip_go(ui_avatar_t *a, av_state_t st, bool once)
+{
+    return ui_clip_play(a->clip, CLIP[st][0], once) || ui_clip_play(a->clip, CLIP[st][1], once) ||
+           ui_clip_play(a->clip, "IDLE_QUIET", false);
+}
+
 void ui_avatar_state(ui_avatar_t *a, av_state_t st)
 {
     if (st < 0 || st >= AV_S_COUNT) return;
+    if (a->clip_on) {
+        if (a->base == st) return;
+        a->base = st;
+        if (!a->reacting) clip_go(a, st, false);
+        return;
+    }
     if (a->base == st && a->an && !a->forced) return;
     a->base = st;
     if (a->reacting && !a->forced) return; /* a reaction finishes first, and returns to this */
@@ -378,6 +423,10 @@ void ui_avatar_state(ui_avatar_t *a, av_state_t st)
 void ui_avatar_react(ui_avatar_t *a, av_state_t st)
 {
     if (st < 0 || st >= AV_S_COUNT) return;
+    if (a->clip_on) {
+        a->reacting = clip_go(a, st, true);
+        return;
+    }
     resolve(a, st, true);
 }
 
@@ -417,7 +466,11 @@ void ui_avatar_look(ui_avatar_t *a, float x, float y, float hold)
 void ui_avatar_level(ui_avatar_t *a, float v) { a->level = v < 0 ? 0 : v > 1 ? 1 : v; }
 void ui_avatar_calm(ui_avatar_t *a, float c) { a->calm = c < 0 ? 0 : c > 1 ? 1 : c; }
 void ui_avatar_tint(ui_avatar_t *a, uint32_t rgb) { a->tint = rgb & 0xFFFFFF; }
-void ui_avatar_dim(ui_avatar_t *a, float dim) { a->dim = dim < 0 ? 0 : dim > 0.9f ? 0.9f : dim; }
+void ui_avatar_dim(ui_avatar_t *a, float dim)
+{
+    a->dim = dim < 0 ? 0 : dim > 0.9f ? 0.9f : dim;
+    if (a->clip_on) ui_clip_dim(a->clip, a->dim);
+}
 lv_obj_t *ui_avatar_obj(ui_avatar_t *a) { return a->obj; }
 
 /* ================================================================== drawing */
@@ -437,6 +490,7 @@ static void eye_ends(const drawn_t *d, int i, int *x1, int *y1, int *x2, int *y2
 static void av_draw(lv_event_t *e)
 {
     ui_avatar_t *a = lv_event_get_user_data(e);
+    if (a && a->clip_on) return; /* the clip is the picture */
     if (!a->baked || !a->dr_ok) return;
     lv_layer_t *layer = lv_event_get_layer(e);
     lv_area_t co;
@@ -652,6 +706,16 @@ static void timeline(ui_avatar_t *a, double now)
 
 bool ui_avatar_frame(ui_avatar_t *a)
 {
+    if (a->clip_on) {
+        if (!a->active) return false;
+        bool moving = ui_clip_frame(a->clip);
+        if (a->reacting && ui_clip_done(a->clip)) { /* the reaction is over: back to what it was doing */
+            a->reacting = false;
+            clip_go(a, a->base, false);
+            moving = true;
+        }
+        return moving;
+    }
     if (!a->active || !a->baked) return false;
     double now = bz_motion_now();
     if (a->gen != g_gen) {
@@ -799,12 +863,27 @@ ui_avatar_t *ui_avatar_create(lv_obj_t *parent, int size)
     lv_obj_remove_flag(a->obj, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_remove_flag(a->obj, LV_OBJ_FLAG_CLICKABLE);
     lv_obj_add_event_cb(a->obj, av_draw, LV_EVENT_DRAW_MAIN, a);
+    a->clip = ui_clip_create(a->obj);
     return a;
 }
 
 void ui_avatar_active(ui_avatar_t *a, bool on)
 {
     if (!a || a->active == on) return;
+    if (on && a->clip && ui_clip_available()) {
+        /* the card has the baked animations: they are the avatar, and nothing here is baked or drawn */
+        a->clip_on = true;
+        a->active = true;
+        a->reacting = false;
+        ui_clip_dim(a->clip, a->dim);
+        if (clip_go(a, a->base, false)) return;
+        a->clip_on = a->active = false; /* the files would not play: the drawn one after all */
+    }
+    if (!on && a->clip_on) {
+        a->active = a->clip_on = false;
+        ui_clip_stop(a->clip);
+        return;
+    }
     if (on) {
         a->gen = g_gen;
         a->baked = bake_take(a->S);

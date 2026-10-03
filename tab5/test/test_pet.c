@@ -23,7 +23,7 @@ static void pet_tests(int *checks, int *fails)
     (void)checks; (void)fails;
     home_pet_t p;
     home_pet_init(&p, T0);
-    CHECK(!strcmp(p.name, "Pebble"));
+    CHECK(!strcmp(p.name, "Tabi"));
     CHECK(p.ndiary == 1);
 
     /* a day awake in daylight makes it hungrier and more tired, and it is asleep by night */
@@ -126,7 +126,7 @@ static void pet_tests(int *checks, int *fails)
     CHECK(strstr(b1, "mention it once") != NULL);
     home_pet_brief(&p, T0 + 200, b2, sizeof b2);
     CHECK(strstr(b2, "mention it once") == NULL); /* once, not a nag */
-    CHECK(strstr(b2, "Pebble") != NULL);
+    CHECK(strstr(b2, "Tabi") != NULL);
     home_pet_brief(&p, T0 + 4 * H, b2, sizeof b2);
     CHECK(strstr(b2, "mention it once") != NULL); /* hours later it may be again */
 

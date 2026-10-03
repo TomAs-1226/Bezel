@@ -22,7 +22,10 @@ typedef struct ui_avatar ui_avatar_t;
 typedef enum {
     AV_S_IDLE, AV_S_QUIET, AV_S_LISTEN, AV_S_THINK, AV_S_SPEAK, AV_S_HAPPY, AV_S_CONFUSED, AV_S_SURPRISED,
     AV_S_SLEEP, AV_S_WAKE, AV_S_DROWSY, AV_S_SAD, AV_S_HUNGRY, AV_S_EAT, AV_S_PETTED, AV_S_LOVE, AV_S_FED,
-    AV_S_CURIOUS, AV_S_COUNT
+    AV_S_CURIOUS,
+    /* the range that makes it somebody: these exist as baked clips; a character without them borrows */
+    AV_S_SICK, AV_S_SNEEZE, AV_S_GIGGLE, AV_S_BLUSH, AV_S_WINK, AV_S_POUT, AV_S_NOD, AV_S_NO, AV_S_DANCE, AV_S_YAWN,
+    AV_S_COUNT
 } av_state_t;
 extern const char *const AV_STATE_NAME[AV_S_COUNT];
 

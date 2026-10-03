@@ -172,7 +172,11 @@ static void load_config(void)
     if (hal_kv_get("v_chat", v, sizeof v)) snprintf(c.chat_model, sizeof c.chat_model, "%s", v);
     if (hal_kv_get("v_stt", v, sizeof v)) snprintf(c.stt_model, sizeof c.stt_model, "%s", v);
     if (hal_kv_get("v_tts", v, sizeof v)) snprintf(c.tts_model, sizeof c.tts_model, "%s", v);
-    if (hal_kv_get("v_voice", v, sizeof v)) snprintf(c.voice, sizeof c.voice, "%s", v);
+    /* She has one voice and it is a woman's: a man's or a neutral one saved by an older build is dropped, and
+     * the default (VO_VOICE_DEFAULT) speaks instead. */
+    if (hal_kv_get("v_voice", v, sizeof v) && (!strcmp(v, "marin") || !strcmp(v, "coral") || !strcmp(v, "nova") ||
+                                                !strcmp(v, "shimmer") || !strcmp(v, "sage")))
+        snprintf(c.voice, sizeof c.voice, "%s", v);
     if (hal_kv_get("v_lang", v, sizeof v)) snprintf(c.lang, sizeof c.lang, "%s", v);
     if (hal_kv_get("v_mic", v, sizeof v) && v[0]) hal_mic_channel(atoi(v));
     char base[128] = "";

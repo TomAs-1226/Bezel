@@ -1280,7 +1280,7 @@ static void link_build(lv_obj_t *b)
 
 /* ================================================================== settings > assistant */
 
-#define NVOICES 7 /* the companion's voices on offer (VOICES, below) */
+#define NVOICES 5 /* the companion's voices on offer (VOICES, below) */
 static const int REMIND_S[4] = { 0, 60, 120, 300 };
 static const char *const REMIND_L[4] = { "once", "every minute", "every 2 min", "every 5 min" };
 
@@ -1296,7 +1296,7 @@ static const char *const VOUT_L[3] = { "speak and show", "speak only", "show onl
 static const vo_out_t VOUT[3] = { VO_OUT_BOTH, VO_OUT_SPEAK, VO_OUT_SHOW };
 /* hers is a young woman's voice: the female voices first, marin (the default) leading; cedar is the one
  * male voice kept for choice. tts-1 has neither marin nor cedar: voice.c picks the nearest it does have. */
-static const char *const VOICES[NVOICES] = { "marin", "coral", "nova", "shimmer", "sage", "alloy", "cedar" };
+static const char *const VOICES[NVOICES] = { "marin", "coral", "nova", "shimmer", "sage" }; /* hers: every one a woman's voice */
 static const char *const VOICE_TITLE[4] = { "the companion's chat model (empty: the openai model above)",
                                             "speech to text model (empty: " VO_STT_DEFAULT ")",
                                             "speech model (empty: " VO_TTS_DEFAULT ")",

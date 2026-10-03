@@ -20,7 +20,7 @@ static float clampf(float v, float lo, float hi) { return v < lo ? lo : v > hi ?
 void home_pet_init(home_pet_t *p, int64_t now)
 {
     memset(p, 0, sizeof *p);
-    snprintf(p->name, sizeof p->name, "Pebble");
+    snprintf(p->name, sizeof p->name, "Tabi");
     p->hunger = 0.25f;
     p->energy = 0.9f;
     p->mood = 0.7f;
@@ -355,7 +355,7 @@ bool home_pet_from_json(home_pet_t *p, const char *js, size_t len)
         jl_doc_t D = { js, tk, nt };
         home_pet_t q;
         memset(&q, 0, sizeof q);
-        if (!jl_str(&D, jl_get(&D, 0, "name"), q.name, sizeof q.name) || !q.name[0]) snprintf(q.name, sizeof q.name, "Pebble");
+        if (!jl_str(&D, jl_get(&D, 0, "name"), q.name, sizeof q.name) || !q.name[0]) snprintf(q.name, sizeof q.name, "Tabi");
         q.hunger = clampf((float)jl_num(&D, jl_get(&D, 0, "hunger"), 0.3), 0, 0.92f);
         q.energy = clampf((float)jl_num(&D, jl_get(&D, 0, "energy"), 0.8), 0.08f, 1);
         q.mood = clampf((float)jl_num(&D, jl_get(&D, 0, "mood"), 0.6), 0, 1);

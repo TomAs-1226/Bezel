@@ -4,6 +4,7 @@
 #include "assist.h"
 #include "home_pet.h"
 #include "ui_avatar.h"
+#include "voice.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -18,12 +19,16 @@ static av_state_t base_state(const home_pet_t *p, bool idle_face)
 {
     switch (home_pet_feel(p)) {
     case PET_FEEL_ASLEEP: return AV_S_SLEEP;
-    case PET_FEEL_HUNGRY: return AV_S_HUNGRY;
+    case PET_FEEL_HUNGRY:
+        /* starved and worn out together is more than hungry: it looks unwell until it is looked after */
+        return p->hunger > 0.9f && p->energy < 0.3f ? AV_S_SICK : AV_S_HUNGRY;
     case PET_FEEL_SLEEPY: return AV_S_DROWSY;
     case PET_FEEL_SAD: return AV_S_SAD;
     default: return idle_face ? AV_S_QUIET : AV_S_IDLE;
     }
 }
+
+static uint32_t page_rand(void);
 
 static bool point(lv_point_t *p)
 {
@@ -40,8 +45,13 @@ static const char *const M_LABEL[M_N] = { "fed", "energy", "mood", "bond" };
 
 static struct {
     lv_obj_t *page, *touch, *name, *line, *meter[M_N], *mlabel[M_N], *feed, *play, *sleep, *foods, *food[PET_FOODS],
-        *note, *hint;
+        *note, *hint, *talk;
     ui_avatar_t *av;
+    double poke_at, whim_at;
+    int pokes;
+    uint32_t rng;
+    vo_reply_t reply;      /* the last thing it said, so the page can show the words */
+    uint32_t reply_seq;
     bool built, near, current;
     unsigned ev_seen;
     double foods_until, note_until;
@@ -67,6 +77,12 @@ static void avatar_sync(const home_pet_t *p)
 {
     if (!PG.av) return;
     av_state_t st = base_state(p, false);
+    /* Talking to it comes before how it feels: the pet is the companion, so while it is being spoken to it
+     * listens, thinks and answers with its own face, and goes back to being hungry or sleepy afterwards. */
+    vo_state_t vs = voice_state();
+    if (vs == VO_LISTEN || vs == VO_HEARING) st = AV_S_LISTEN;
+    else if (vs == VO_THINKING) st = AV_S_THINK;
+    else if (vs == VO_SPEAKING) st = AV_S_SPEAK;
     pet_feel_t f = home_pet_feel(p);
     if (PG.have_feel && PG.feel == PET_FEEL_ASLEEP && f != PET_FEEL_ASLEEP) ui_avatar_react(PG.av, AV_S_WAKE);
     PG.feel = f;
@@ -103,7 +119,7 @@ static void play_tap(lv_obj_t *o, void *u)
 {
     (void)o; (void)u;
     char say[96];
-    if (home_pet_do_play(say, sizeof say)) ui_avatar_react(PG.av, AV_S_HAPPY);
+    if (home_pet_do_play(say, sizeof say)) ui_avatar_react(PG.av, AV_S_DANCE);
     page_note(say);
 }
 
@@ -147,12 +163,47 @@ static void touch_ev(lv_event_t *e)
             PG.moved = 0;
             PG.stroke_at = now;
             home_pet_do_stroke();
-            if (!ui_avatar_reacting(PG.av)) ui_avatar_react(PG.av, AV_S_PETTED);
+            /* not the same answer every time: mostly it melts, sometimes it is shy about it or laughs */
+            static const av_state_t STROKE[] = { AV_S_PETTED, AV_S_PETTED, AV_S_BLUSH, AV_S_LOVE, AV_S_GIGGLE, AV_S_PETTED };
+            if (!ui_avatar_reacting(PG.av)) ui_avatar_react(PG.av, STROKE[page_rand() % 6]);
         }
     } else if (c == LV_EVENT_RELEASED || c == LV_EVENT_PRESS_LOST) {
-        if (PG.pressed && PG.total < 14 && !ui_avatar_reacting(PG.av)) ui_avatar_react(PG.av, AV_S_SURPRISED); /* a poke */
+        if (PG.pressed && PG.total < 14 && !ui_avatar_reacting(PG.av)) {
+            /* a poke: startled, then it sees the joke, and past a few of them it has had enough */
+            static const av_state_t POKE[] = { AV_S_SURPRISED, AV_S_GIGGLE, AV_S_WINK, AV_S_POUT };
+            if (now - PG.poke_at > 6) PG.pokes = 0;
+            PG.poke_at = now;
+            ui_avatar_react(PG.av, POKE[PG.pokes < 3 ? PG.pokes : 3]);
+            PG.pokes++;
+        }
         PG.pressed = false;
     }
+}
+
+static uint32_t page_rand(void)
+{
+    if (!PG.rng) PG.rng = (uint32_t)(hal_seconds() * 1000.0) | 1u;
+    PG.rng = PG.rng * 1664525u + 1013904223u;
+    return PG.rng >> 8;
+}
+
+/* Talk to it: the same conversation as the companion app and the wake word, started by hand. */
+static void talk_tap(lv_obj_t *o, void *u)
+{
+    (void)o; (void)u;
+    vo_state_t vs = voice_state();
+    if (vs == VO_LISTEN || vs == VO_SPEAKING || vs == VO_THINKING) {
+        voice_cancel();
+        return;
+    }
+    char why[96] = "";
+    if (!voice_ready(why, sizeof why)) {
+        ui_text(PG.note, "%s", why);
+        hm_show(PG.note, true);
+        PG.note_until = hal_seconds() + 5;
+        return;
+    }
+    voice_listen();
 }
 
 lv_obj_t *hm_pet_build(lv_obj_t *parent)
@@ -189,15 +240,20 @@ lv_obj_t *hm_pet_build(lv_obj_t *parent)
     lv_obj_set_pos(PG.feed, X, 450);
     lv_obj_set_pos(PG.play, X + 168, 450);
     lv_obj_set_pos(PG.sleep, X + 336, 450);
+    PG.talk = ui_button(pg, BZ_I_MIC, "talk", talk_tap, NULL);
+    lv_obj_set_pos(PG.talk, X + 504, 450);
     PG.foods = bz_row(pg, 10);
     lv_obj_set_pos(PG.foods, X, 520);
     lv_obj_set_size(PG.foods, WCOL, 56);
     for (int i = 0; i < PET_FOODS; i++) PG.food[i] = ui_chip(PG.foods, PET_FOOD_NAME[i], food_tap, (void *)(intptr_t)i);
     hm_show(PG.foods, false);
-    PG.note = bz_label_line(pg, "", BZ_F_BODY_S, BZ_C_INK, WCOL);
-    lv_obj_set_pos(PG.note, X, 596);
+    /* what it says back: several lines, so a wrapping label and not a one-line one */
+    PG.note = bz_label(pg, "", BZ_F_BODY_S, BZ_C_INK);
+    lv_obj_set_width(PG.note, WCOL);
+    lv_label_set_long_mode(PG.note, LV_LABEL_LONG_MODE_WRAP);
+    lv_obj_set_pos(PG.note, X, 530);
     hm_show(PG.note, false);
-    PG.hint = bz_label_line(pg, "stroke the pet with a finger", BZ_F_CAPTION, BZ_C_FAINT, WCOL);
+    PG.hint = bz_label_line(pg, "stroke it, or say its wake word and talk", BZ_F_CAPTION, BZ_C_FAINT, WCOL);
     lv_obj_set_pos(PG.hint, X, 628);
     PG.state = AV_S_COUNT;
     PG.built = true;
@@ -230,6 +286,7 @@ void hm_pet_refresh(bool shown)
     if (PG.note_until && now > PG.note_until) {
         PG.note_until = 0;
         hm_show(PG.note, false);
+        hm_show(PG.hint, true);
     }
     if (!PG.near) return;
     home_pet_t p;
@@ -253,10 +310,49 @@ void hm_pet_refresh(bool shown)
         bz_icon_set(lv_obj_get_child(PG.sleep, 0), p.asleep ? BZ_I_LIGHT_MODE : BZ_I_BEDTIME, 24, false);
     }
     avatar_sync(&p);
+    /* what it just said, in words beside it, and the feeling it answered with on its face */
+    vo_reply_t *r = &PG.reply;
+    if (voice_reply(r) && r->seq != PG.reply_seq) {
+        PG.reply_seq = r->seq;
+        if (r->say[0]) {
+            ui_text(PG.note, "%s", r->say);
+            hm_show(PG.note, true);
+            hm_show(PG.hint, false);
+            PG.note_until = now + 14;
+        }
+        static const av_state_t FEEL[VO_EMO_COUNT] = {
+            [VO_EMO_NEUTRAL] = AV_S_COUNT, [VO_EMO_HAPPY] = AV_S_HAPPY, [VO_EMO_EXCITED] = AV_S_DANCE,
+            [VO_EMO_CURIOUS] = AV_S_CURIOUS, [VO_EMO_THINKING] = AV_S_COUNT, [VO_EMO_SLEEPY] = AV_S_DROWSY,
+            [VO_EMO_SAD] = AV_S_SAD, [VO_EMO_WORRIED] = AV_S_SAD, [VO_EMO_SURPRISED] = AV_S_SURPRISED,
+            [VO_EMO_LOVE] = AV_S_LOVE, [VO_EMO_PROUD] = AV_S_WINK, [VO_EMO_CONFUSED] = AV_S_CONFUSED,
+        };
+        if (!r->failed && r->emotion < VO_EMO_COUNT && FEEL[r->emotion] != AV_S_COUNT)
+            ui_avatar_react(PG.av, FEEL[r->emotion]);
+    }
     /* what the AI (or anything else) did to it: the screen reacts */
     int ev = home_pet_event(&PG.ev_seen);
     if (ev == PET_EV_FED) ui_avatar_react(PG.av, AV_S_EAT);
-    else if (ev == PET_EV_PLAYED) ui_avatar_react(PG.av, AV_S_HAPPY);
+    else if (ev == PET_EV_PLAYED) ui_avatar_react(PG.av, AV_S_DANCE);
+    /* Left to itself it does not sit there like a picture: every so often a small thing of its own -- a wink,
+     * a yawn when it is tired, a sneeze now and then. Only on the page that is on screen, only when it is
+     * awake and nobody is talking to it, and never over another reaction. */
+    if (shown && now > PG.whim_at) {
+        uint32_t r = page_rand();
+        PG.whim_at = now + 9 + (double)(r % 1000) / 1000.0 * 14;
+        if (PG.state == AV_S_IDLE && voice_state() <= VO_IDLE && !ui_avatar_reacting(PG.av)) {
+            av_state_t w = AV_S_CURIOUS;
+            switch ((r >> 10) % 12) {
+            case 0: case 1: w = AV_S_WINK; break;
+            case 2: case 3: w = p.energy < 0.5f ? AV_S_YAWN : AV_S_GIGGLE; break;
+            case 4: w = AV_S_SNEEZE; break;
+            case 5: case 6: w = p.affection > 0.5f ? AV_S_BLUSH : AV_S_CURIOUS; break;
+            case 7: w = p.mood > 0.6f ? AV_S_HAPPY : AV_S_CURIOUS; break;
+            case 8: w = p.affection > 0.7f ? AV_S_LOVE : AV_S_NOD; break;
+            default: break;
+            }
+            ui_avatar_react(PG.av, w);
+        }
+    }
 }
 
 void hm_pet_frame(bool current)
@@ -300,7 +396,7 @@ static void idle_clock(const struct tm *tm)
     char t[16];
     hm_hm(tm, t, sizeof t);
     ui_text(IF.clock, "%s", t);
-    lv_obj_align(IF.clock, LV_ALIGN_TOP_RIGHT, -PAD - 6, PAD);
+    lv_obj_align(IF.clock, LV_ALIGN_TOP_LEFT, PAD + 6, PAD); /* the island's orb has the right corner */
 }
 
 static void idle_activate(bool on)
