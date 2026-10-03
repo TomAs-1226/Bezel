@@ -23,6 +23,7 @@ Needs lv_font_conv (npm) and fontTools (pip)."""
 import argparse
 import os
 import re
+import struct
 import sys
 import urllib.request
 
@@ -72,12 +73,97 @@ def fetch(fonts_dir):
         urllib.request.urlretrieve(url, path)
 
 
+def _bin_sections(d):
+    secs, off = {}, 0
+    while off < len(d):
+        ln, tag = struct.unpack_from("<I4s", d, off)
+        secs[tag] = (off, ln)
+        off += ln
+    return secs
+
+
+def _bin_glyphs(d):
+    """A binary font's glyphs as (advance, x, y, w, h, bitmap bytes), in glyph order, and its three field widths.
+    Glyph 0 is the empty one (it has no data in the file)."""
+    secs = _bin_sections(d)
+    ho = secs[b"head"][0] + 8
+    loc, _, _, bpp, xy, wh, adv, comp = struct.unpack_from("<8B", d, ho + 26)
+    assert comp == 0, "compressed"
+    lo = secs[b"loca"][0]
+    go, gl = secs[b"glyf"]
+    cnt = struct.unpack_from("<I", d, lo + 8)[0]
+    offs = struct.unpack_from(("<%dH" if loc == 0 else "<%dI") % cnt, d, lo + 12)
+    bits = lambda p: (d[p >> 3] >> (7 - (p & 7))) & 1
+    out = []
+    for i in range(cnt):
+        end = go + (offs[i + 1] if i + 1 < cnt else gl)
+        if go + offs[i] >= end:
+            out.append((0, 0, 0, 0, 0, b""))
+            continue
+        pos = (go + offs[i]) * 8
+
+        def rd(n, signed=False):
+            nonlocal pos
+            v = 0
+            for _ in range(n):
+                v = (v << 1) | bits(pos)
+                pos += 1
+            return v - (1 << n) if signed and v >> (n - 1) else v
+
+        a, x, y, w, h = rd(adv), rd(xy, True), rd(xy, True), rd(wh), rd(wh)
+        bm = bytearray(rd(8) for _ in range((w * h * bpp + 7) // 8))
+        if bm and w * h * bpp % 8:
+            bm[-1] &= 0xFF << (8 - w * h * bpp % 8) & 0xFF  # the bits past the last pixel are the next glyph's
+        out.append((a, x, y, w, h, bytes(bm)))
+    return out, (adv, xy, wh)
+
+
+def align_bin(path):
+    """Rewrites a binary font so LVGL's loader can read it fast.
+
+    lv_font_conv packs each glyph's header (advance, offsets, size) in as few bits as will do, 39 to 43 of them, so
+    a glyph's bitmap starts mid-byte, and LVGL's loader (lv_binfont_loader.c) then reads it a byte at a time through
+    a bit iterator: 358 KB of the poster took 400-600 ms of the covers' worker. When the header is a whole number
+    of bytes it reads each bitmap with one call. So: 16 bits for every field (10 bytes a glyph), the bitmaps after
+    them unchanged, loca and the section lengths to match. Read back and compared with the original before it is
+    written."""
+    d = open(path, "rb").read()
+    glyphs, _ = _bin_glyphs(d)
+    secs = _bin_sections(d)
+    glyf, offs = bytearray(), []
+    for a, x, y, w, h, bm in glyphs:
+        offs.append(8 + len(glyf))
+        if bm or w or h or a:
+            glyf += struct.pack(">HhhHH", a, x, y, w, h) + bm
+    loc = 0 if max(offs) <= 0xFFFF else 1
+    loca = struct.pack("<I", len(glyphs)) + struct.pack(("<%dH" if loc == 0 else "<%dI") % len(glyphs), *offs)
+    loca += b"\0" * (-len(loca) % 4)
+    head = bytearray(d[secs[b"head"][0]:sum(secs[b"head"])])
+    head[8 + 26] = loc          # index_to_loc_format
+    head[8 + 30:8 + 33] = bytes((16, 16, 16))  # xy_bits, wh_bits, advance_width_bits
+    out = bytearray(head)
+    for tag in secs:
+        if tag == b"head":
+            continue
+        o, ln = secs[tag]
+        if tag == b"loca":
+            out += struct.pack("<I4s", 8 + len(loca), b"loca") + loca
+        elif tag == b"glyf":
+            out += struct.pack("<I4s", 8 + len(glyf), b"glyf") + glyf
+        else:
+            out += d[o:o + ln]
+    back, widths = _bin_glyphs(bytes(out))
+    assert widths == (16, 16, 16) and back == glyphs, "aligned font differs from the original in " + path
+    open(path, "wb").write(out)
+
+
 def conv(name, card, path, size, ranges, out_c, out_bin):
     rng = make_fonts.available(path, ranges)
     common = ["--no-compress", "--no-prefilter", "--bpp", "4", "--size", str(size), "--font", path, "-r", rng]
     if out_bin:
         os.makedirs(out_bin, exist_ok=True)
         make_fonts._run([make_fonts._tool()] + common + ["--format", "bin", "-o", os.path.join(out_bin, card)])
+        align_bin(os.path.join(out_bin, card))
     if out_c:
         os.makedirs(out_c, exist_ok=True)
         out = os.path.join(out_c, name + ".c")

@@ -308,6 +308,29 @@ picture when that face shows (~350 / ~210 KB), all painted on a one-shot worker 
 stack in PSRAM, its 518 KB working picture only while it paints) and freed when home mode is left. `hm art
 bench` times the covers on the tablet.
 
+**Face fonts** are on the card, not in the image. The poster, flip, thin and match faces' numerals are 762 KB of
+glyph bitmaps, and the program (code and read-only data) runs from PSRAM (`CONFIG_SPIRAM_XIP_FROM_PSRAM`), so built
+in they were 762 KB of the ~23 MB heap gone for good: `.flash.rodata` fell from 2,750,956 to 1,969,380 bytes when
+they left. They are LVGL binary fonts in `<sd>/CATOS/FONTS/` (`POSTER.BIN` 350 KB, `FLIP.BIN` 208 KB, `MATCH.BIN`
+143 KB, `THIN.BIN` 64 KB; upper-case 8.3 like the rest of `CATOS`), loaded by `ui_face_fonts.c` on the covers' worker
+when a face that uses one is about to show, and freed when it goes: the face on screen's fonts only (the poster, at
+most 350 KB), and the arriving face's besides during a step, because the old face is still on the glass until
+the push begins. A face waits for its fonts like its pictures; it is never shown in the wrong one and then jumps.
+- **If a file is missing** (or the card is out, or PSRAM is too full to take it) the face is set in
+  `bz_font_display_92`, built in: a smaller clock, never an empty one. The log says it once:
+  `face fonts: CATOS/FONTS/POSTER.BIN: it is not on the card; the face is set in bz_font_display_92 …`. A file
+  copied to the card later is picked up the next time its face is shown.
+- **Regenerate** (only if a size, weight or glyph set changes): `python tools/make_face_fonts.py` (needs
+  `lv_font_conv` from npm and fontTools; the three Google Sans Flex instances are fetched into `--fonts DIR` or
+  `$BZ_FONT_DIR` if not there). It writes `sdcard/CATOS/FONTS/*.BIN` and, as a reference, the same fonts as C arrays in
+  `components/ui/fonts_c/`, which is **not compiled**, on purpose.
+- **Deploy** (after a regenerate, and on a new card): `python tools/tab5_dev.py COM9 deploy` puts everything under
+  `tab5/sdcard/` on the card at the same path, making `CATOS/FONTS` if the card has none; or copy that folder to the
+  card's root by hand. `ls /sdcard/CATOS/FONTS` and `hm faces` (which prints each font's state) show what is there.
+- **Adding a face that uses one**: give its `hm_face_t` the `.fonts` bit, bind its labels with
+  `ui_face_font_bind(label, UI_FF_…)` instead of setting a font, and measure with `ui_face_font()`; the faces' own
+  `minute()` lays text out again when a font arrives (they all place text from the font's metrics on every call).
+
 Dev console (`tools/tab5_dev.py COM9 "..."`): `say <text>` sends a message through the island, `accent <name|n>`
 sets the accent, `settings <section>` opens settings on a section (`settings look`). Home mode's own: `hm` (where
 it is), `hm page 0|1|2`, `hm face <name>`, `hm night 1|0|auto`, `hm song artist|album|title` (a made-up song as the
