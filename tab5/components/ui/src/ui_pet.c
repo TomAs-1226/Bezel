@@ -278,7 +278,7 @@ static struct {
     bool active;
     unsigned ev_seen;
     av_state_t state;
-    double react_at;
+    double react_at, arrive_until;
     float dim;
     int clock_min;
     uint32_t rng;
@@ -316,10 +316,11 @@ static void idle_tick(void)
 {
     if (!IF.box) return;
     /* only while the face is actually on the glass: hidden, it holds nothing */
-    bool vis = lv_obj_is_visible(IF.box);
-    idle_activate(vis);
-    if (!vis) return;
     double now = hal_seconds(), idle = bz_ui_idle_s();
+    bool vis = lv_obj_is_visible(IF.box);
+    /* a face that has just been asked for is baked before it is shown: a push draws it before it is on the glass */
+    idle_activate(vis || now < IF.arrive_until);
+    if (!vis) return;
     home_pet_t p;
     home_pet_get(&p);
     float settle = (float)((idle - IDLE_QUIET_S) / (IDLE_DEEP_S - IDLE_QUIET_S));
@@ -356,7 +357,7 @@ static void idle_tick(void)
 
 static void idle_minute(const struct tm *tm, bool force)
 {
-    (void)force;
+    if (force) IF.arrive_until = hal_seconds() + 3.0;
     idle_clock(tm);
     idle_tick();
 }

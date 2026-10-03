@@ -870,7 +870,12 @@ void ui_avatar_poll(const char *path)
     next = now + 3.0;
     struct stat st;
     bool have = path && stat(path, &st) == 0;
+    static bool said_missing;
     if (!have) {
+        if (path && !said_missing && !g_loaded) {
+            said_missing = true;
+            say("no AVATAR.JSON on the card, using the built-in character", NULL);
+        }
         if (g_loaded || g_mtime != -1) {
             av_def_free(g_loaded);
             g_loaded = NULL;
