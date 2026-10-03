@@ -1519,6 +1519,14 @@ void hal_slide_mask(bool on) { s_mask_on = on; }
  * anything on the UI's frame path must ask for this one instead. */
 size_t hal_psram_free(void) { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
 
+size_t hal_psram_allocated(size_t *blocks)
+{
+    multi_heap_info_t i;
+    heap_caps_get_info(&i, MALLOC_CAP_SPIRAM);
+    if (blocks) *blocks = i.allocated_blocks;
+    return i.total_allocated_bytes;
+}
+
 void hal_mem_psram(size_t out[4])
 {
     size_t fb = (size_t)PANEL_W * PANEL_H * 2 * (size_t)s_nfb;

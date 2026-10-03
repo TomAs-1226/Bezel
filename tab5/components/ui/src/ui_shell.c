@@ -952,6 +952,14 @@ static void mem_report(void)
     printf("MEM   ground                  %4u KB\n", (unsigned)(ui_ground_bytes() / 1024));
     size_t win = 0;
     for (int i = 0; i < U.nbuilt; i++) win += U.built[i].bytes;
+    /* What nothing above names: the heap's handed-out bytes less the fixed blocks, the renderer's buffers and the
+     * pools just listed. It is where a leak outside LVGL shows (a cache that grows, a buffer never freed, a
+     * stuck TLS session or HTTP body), because every named pool is accounted for and this is the rest. */
+    size_t ablocks = 0;
+    size_t alloc = hal_psram_allocated(&ablocks);
+    size_t named = m[0] + bz_ui_mem_bytes() + held + bz_frost_bytes() + ui_icon_bytes() + ui_ground_bytes();
+    printf("MEM   everything else         %4d KB  (the heap holds %u blocks: the system's and the apps' mallocs)\n",
+           (int)(((long)alloc - (long)named) / 1024), (unsigned)ablocks);
     printf("MEM   app windows built       %4d of %d, %u KB of the LVGL figure above\n", U.nbuilt, MAX_APPS,
            (unsigned)(win / 1024));
     for (int i = 0; i < U.nbuilt; i++)

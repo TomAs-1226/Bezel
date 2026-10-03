@@ -103,7 +103,7 @@ worker, the assistant's key and model), at most eight a day.
 assistant's orb, or `open_app` "insights". Typed words are matched first to what the tablet does at once
 (`intel_intent`, host-tested), done through the same tools the AIs use (`ui_actions_do`): a timer ("timer 5
 min", "5 min timer tea", "90s"), the stopwatch, brightness and volume ("brightness 40", "brighter"), mute,
-dark or light, the flashlight, home mode, sleep or lock, "next match" (Nexus's times), "battery for q34",
+dark or light, home mode, sleep or lock, "next match" (Nexus's times), "battery for q34",
 "queue", "epa", "brief me", "what's up", "weather", "note ...", "remind me in 10 min to ...", "alarm 6:30",
 "open <app>" or an app's name. Anything else is a question: it goes to the technician or the companion
 (chips beside the bar; kv `intel_ai`), who have the tools to answer it.
