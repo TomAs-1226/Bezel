@@ -33,6 +33,7 @@ typedef struct {
     int fill_ms;            /* queued ahead of the speaker */
     unsigned underruns;     /* since this connection began */
     unsigned packets;
+    unsigned reconnects;    /* connections lost and made again, since the switch went on */
     int rate_kbps;          /* what is arriving, a second's average */
     unsigned gen;           /* changes with state or note */
 } pca_t;
