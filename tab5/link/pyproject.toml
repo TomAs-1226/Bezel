@@ -22,6 +22,9 @@ media = ["winrt-Windows.Media.Control>=2.0; sys_platform == 'win32'",
          "winrt-Windows.Storage.Streams>=2.0; sys_platform == 'win32'",
          "winrt-Windows.Foundation>=2.0; sys_platform == 'win32'",
          "pillow>=10", "pycaw>=20240210; sys_platform == 'win32'"]
+# sound to the tablet (audio.py): WASAPI loopback of the default output. pyaudiowpatch is PyAudio with loopback
+# added and ships a Windows wheel; numpy mixes down and resamples. Nothing else, and no driver.
+audio = ["pyaudiowpatch>=0.2.12.7; sys_platform == 'win32'", "numpy>=1.24"]
 # the BLE presence beacon (presence.py): the tablet hears that this PC is awake. Advertising, not
 # scanning — bleak, the library everyone reaches for, is a central only and cannot advertise at all. On
 # Windows the way through is WinRT's BluetoothLEAdvertisementPublisher, the same projections the media

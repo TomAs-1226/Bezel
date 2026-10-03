@@ -32,6 +32,13 @@ bool hal_play_open(int sample_rate, int channels);
 int hal_play_write(const int16_t *pcm, int frames, int timeout_ms);
 /* Stops and releases the speaker. Safe to call when nothing is open. */
 void hal_play_close(void);
+/* How much is queued ahead of the speaker, in milliseconds (0 when nothing is open), and how many times the
+ * speaker has run dry since boot. A live stream (the PC's sound) keeps the first near a target by itself. */
+int hal_play_queued_ms(void);
+/* true while the stream hal_play_open() made is the one on the speaker. false once the assistant has taken it
+ * (hal_play_write would then land in ITS stream: check before writing). */
+bool hal_play_owned(void);
+unsigned hal_play_underruns(void);
 
 #ifdef __cplusplus
 }

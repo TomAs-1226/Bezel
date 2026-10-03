@@ -64,6 +64,7 @@ static struct {
     volatile int rate;             /* of the stream being played */
     volatile bool open, ended, abort;
     volatile float level;          /* what the speaker is saying now, 0..1 */
+    volatile unsigned underruns;   /* the stream ran dry while it was supposed to be playing */
     /* the microphones */
     SemaphoreHandle_t mic_lock;
     bool mic_on;
@@ -144,7 +145,10 @@ static void out_task(void *arg)
         if (speech) {
             int up = RATE / AU.rate, need = FRAME / up;
             size_t got = xStreamBufferReceive(AU.pcm, in, (size_t)need * 2, 0) / 2;
-            if ((int)got < need && !AU.ended) primed = false; /* ran dry: gather ~170 ms before going on */
+            if ((int)got < need && !AU.ended) { /* ran dry: gather ~170 ms before going on */
+                primed = false;
+                AU.underruns++;
+            }
             double acc = 0;
             for (int i = 0; i < need; i++) {
                 float cur = i < (int)got ? in[i] : prev * 0.9f; /* a gap fades instead of clicking */
@@ -304,6 +308,16 @@ void hal_play_stop(void)
 }
 
 bool hal_play_busy(void) { return AU.open; }
+
+bool hal_play_owned(void) { return MU.on && AU.open; }
+
+int hal_play_queued_ms(void)
+{
+    if (!AU.open || !AU.pcm || AU.rate <= 0) return 0;
+    return (int)(xStreamBufferBytesAvailable(AU.pcm) * 500 / (size_t)AU.rate); /* 2 bytes a sample */
+}
+
+unsigned hal_play_underruns(void) { return AU.underruns; }
 float hal_play_level(void) { return AU.level; }
 
 /* ------------------------------------------------------------------ in */

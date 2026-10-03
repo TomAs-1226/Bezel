@@ -17,3 +17,9 @@ __attribute__((weak)) int hal_play_write(const int16_t *pcm, int frames, int tim
 }
 
 __attribute__((weak)) void hal_play_close(void) {}
+
+__attribute__((weak)) bool hal_play_owned(void) { return false; }
+
+__attribute__((weak)) int hal_play_queued_ms(void) { return 0; }
+
+__attribute__((weak)) unsigned hal_play_underruns(void) { return 0; }

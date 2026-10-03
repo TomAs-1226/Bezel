@@ -22,6 +22,7 @@ from . import __version__, claude_hooks, codeview
 from .devices import Devices, iso_from
 from .files import Files
 from .inbox import Inbox
+from .audio import AudioService
 from .media import Media
 from .pairing import Pairing, console_notify, toast_notify
 from .presence import Presence
@@ -52,6 +53,7 @@ class Config:
     claude: str = "auto"
     claude_model: str | None = None   # claude-code only; None → Claude Code's own default
     claude_cli: str | None = None     # claude-code only; None → found (see claude_code.find_cli)
+    audio: bool = True                # sound to the tablet (audio.py); the on/off switch itself is kept in state
     media: bool = True                # the media remote (media.py): the PC's now-playing for the tablet
     pair: bool = True                 # pairing by a code shown on the PC (pairing.py); off: type the token
     pair_toast: bool = False          # also show the code as a Windows notification (the CLI turns it on)
@@ -81,6 +83,8 @@ class LinkApp:
         self.claude_backend = pick_backend(cfg, claude_client)
         # the PC's media session for the tablet's home mode; never fatal (media.py says why when it's absent)
         self.media = Media(media_platform, enabled=cfg.media)
+        # the PC's sound for the tablet's speaker (audio.py): WASAPI loopback, only while a tablet listens
+        self.audio = AudioService(self.state.home, enabled=cfg.audio)
         # the tablet pairs by a code shown here; the console always shows it, a notification when asked
         if pair_notify is None:
             pair_notify = [console_notify] + ([toast_notify] if cfg.pair_toast else [])
@@ -260,7 +264,7 @@ class Handler(BaseHTTPRequestHandler):
         if self._audited:
             return
         # traffic, not writes: Claude, Claude Code's hooks, and the media remote's play/pause
-        routine = a["path"] == "/v1/messages" or a["path"].startswith(("/v1/claude/", "/media/"))
+        routine = a["path"] == "/v1/messages" or a["path"].startswith(("/v1/claude/", "/media/", "/audio/"))
         if (a["method"] == "POST" and not routine) or a.get("error") == "token":
             self._audited = True
             self.app.state.log(a)
@@ -470,6 +474,9 @@ class Handler(BaseHTTPRequestHandler):
         ("GET", r"/media/now", "media_now"),
         ("GET", r"/media/art", "media_art"),
         ("POST", r"/media/control", "media_control"),
+        ("GET", r"/audio/status", "audio_status"),
+        ("POST", r"/audio/control", "audio_control"),
+        ("GET", r"/audio/stream", "audio_stream"),
     ]
 
     def _known(self, path: str) -> str | None:
@@ -588,6 +595,41 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         self._audit["action"] = body.get("action")
         self._json(200, self.app.media.control(body))
+
+    # --- the PC's sound for the tablet (audio.py) ---------------------------------------------------------
+
+    def audio_status(self, q: dict[str, str]) -> None:
+        self._json(200, self.app.audio.status())
+
+    def audio_control(self, q: dict[str, str]) -> None:
+        body = self._body()
+        if "enabled" in body:
+            self.app.audio.set_enabled(bool(body["enabled"]))
+        self._audit["action"] = "enabled" if self.app.audio.enabled else "disabled"
+        self._json(200, self.app.audio.status())
+
+    def audio_stream(self, q: dict[str, str]) -> None:
+        audio = self.app.audio
+        if not audio.enabled:
+            raise LinkError(403, "sound to the tablet is switched off on the PC")
+        st = audio.status()
+        if sys.platform != "win32":
+            raise LinkError(503, st["reason"])
+        probe = audio.capture.probe()
+        if not probe["ok"]:
+            raise LinkError(503, probe["reason"])
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Audio-Format", "s16le")
+        self.send_header("X-Audio-Rate", str(st["rate"]))
+        self.send_header("X-Audio-Channels", str(st["channels"]))
+        self.end_headers()
+        self.wfile.flush()
+        self._audit["status"] = 200
+        audio.serve(self.wfile, self.rfile, self.connection, self.client_address[0])
 
 
 class LinkServer(ThreadingHTTPServer):

@@ -183,6 +183,9 @@ static void music_build(lv_obj_t *b)
     lv_obj_t *gap2 = bz_box(c);
     lv_obj_set_size(gap2, 18, 1);
     icon_button(c, BZ_I_LINK, pair_tap, NULL); /* pair (or pair again) with the pc */
+    /* the PC's sound out of this speaker: between the progress bar and the controls */
+    lv_obj_t *pr = ui_pcaudio_row(t, IN(RW), 0);
+    lv_obj_set_pos(pr, 0, 162);
 }
 
 static void rebuild_list(void)
@@ -207,6 +210,7 @@ static void rebuild_list(void)
 static void music_refresh(void)
 {
     home_want(HOME_WANT_PC);
+    ui_pcaudio_row_refresh(0);
     /* the card's songs */
     unsigned gen = 0;
     int n = MU.names ? home_player_tracks(MU.names, HOME_TRACKS, &gen) : 0;

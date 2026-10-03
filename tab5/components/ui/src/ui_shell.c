@@ -975,7 +975,7 @@ static bool dev_handler(const char *line)
         strncmp(line, "alarm test", 10) && strncmp(line, "match fake", 10) && strncmp(line, "bms", 3) && strncmp(line, "say ", 4) && strncmp(line, "act", 3) &&
         strncmp(line, "accent ", 7) && strncmp(line, "settings ", 9) && strncmp(line, "voice", 5) && strncmp(line, "look ", 5) &&
         strncmp(line, "docwrite", 8) && strncmp(line, "assist", 6) && strncmp(line, "memo", 4) && strncmp(line, "carry", 5) &&
-        strncmp(line, "cut", 3) && strncmp(line, "hm", 2) && strncmp(line, "psram", 5))
+        strncmp(line, "cut", 3) && strncmp(line, "hm", 2) && strncmp(line, "pca", 3) && strncmp(line, "psram", 5))
         return false;
     if (s_dev_pending) return false;
     snprintf(s_dev_cmd, sizeof s_dev_cmd, "%s", line);
@@ -1130,6 +1130,8 @@ static void dev_run(void)
         bool on = s_dev_cmd[5] != ' ' || s_dev_cmd[6] != '0';
         bz_ui_scroll_carry(on);
         printf("carry: %s\n", on ? "on" : "off");
+    } else if (!strncmp(s_dev_cmd, "pca", 3)) {
+        ui_pcaudio_dev(s_dev_cmd); /* on, off, stat (ui_pcaudio.c) */
     } else if (!strncmp(s_dev_cmd, "cut", 3)) {
         /* "cut 0": a list scrolling under the dock carries it and draws it again every frame, as it did.
          * "cut 1": the list is shifted in the pieces around the dock's opaque middle. */

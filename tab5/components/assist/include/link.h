@@ -109,6 +109,10 @@ void link_pair_status(link_pair_t *out);
  * link_configure). Never log the token. */
 bool link_pair_take(char *url, size_t un, char *token, size_t tn, char *name, size_t nn);
 
+/* The paired Link's base URL ("http://192.168.0.20:8765") and token, for a connection of its own (the PC's
+ * sound stream, home_pcaudio.c). false when none is configured. The token goes on the wire and nowhere else. */
+bool link_credentials(char *url, size_t un, char *token, size_t tn);
+
 /* The URL and headers for the Messages API through the Link: "http://…/v1/messages" and the token. */
 bool link_messages_endpoint(char *url, size_t n, char *headers, size_t hn);
 
