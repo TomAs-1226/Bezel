@@ -68,7 +68,8 @@ if(TEST_SOURCES)
     ${ROOT}/components/catalyst/src/cat_sc.c
     ${ROOT}/components/home/src/home_capture_policy.c ${ROOT}/components/home/src/home_presence_policy.c
     ${ROOT}/components/home/src/home_art.c ${ROOT}/components/home/src/home_px.c
-    ${ROOT}/components/home/src/home_tba_paths.c)
+    ${ROOT}/components/home/src/home_tba_paths.c ${ROOT}/components/home/src/home_pet.c
+    ${ROOT}/components/ui/src/ui_avatar_def.c)
   target_include_directories(catalyst_tab_tests PRIVATE ${ROOT}/components/nt4/include
     ${ROOT}/components/bezel/include ${ROOT}/components/catalyst/include
     ${ROOT}/components/assist/include ${ROOT}/components/assist/src ${ROOT}/components/home/include)
