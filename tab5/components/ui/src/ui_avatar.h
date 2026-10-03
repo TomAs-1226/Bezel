@@ -44,6 +44,7 @@ void ui_avatar_look(ui_avatar_t *a, float x, float y, float hold);
 void ui_avatar_level(ui_avatar_t *a, float level); /* the voice's loudness, 0..1: the eyes bob with it */
 void ui_avatar_calm(ui_avatar_t *a, float calm);   /* 0 lively .. 1 as still as it gets */
 void ui_avatar_tint(ui_avatar_t *a, uint32_t rgb); /* the built-in character's body colour (0: the accent) */
+void ui_avatar_dim(ui_avatar_t *a, float dim);     /* 0..0.9: every colour that far toward the ground's */
 bool ui_avatar_reacting(ui_avatar_t *a);
 
 /* ---- the character, shared by every avatar ---- */

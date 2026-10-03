@@ -153,7 +153,7 @@ static void schema(void)
     aj_t *tools = parse(b.p);
     int tech_tools = 0;
     for (int i = 0; i < AS_NTOOLS; i++) tech_tools += as_tool_for(&AS_TOOLS[i], AS_MEM_ASSIST);
-    CHECK(tools && tools->n == tech_tools && tech_tools == AS_NTOOLS - 1); /* all but the companion's persona */
+    CHECK(tools && tools->n == tech_tools && tech_tools == AS_NTOOLS - 5); /* all but the companion's persona and her pet */
     for (int i = 0; tools && i < tools->n; i++) {
         CHECK(aj_is(aj_get(tools->kid[i], "eager_input_streaming"), AJ_TRUE));
         CHECK(aj_is(aj_get(tools->kid[i], "input_schema"), AJ_OBJ));
@@ -1076,6 +1076,8 @@ static void prompts_and_tools(void)
     CHECK(!as_tool_for(as_tool_find("create_work_order"), AS_MEM_COMPANION));
     CHECK(as_tool_for(as_tool_find("update_notebook"), AS_MEM_ASSIST) && !as_tool_for(as_tool_find("update_notebook"), AS_MEM_COMPANION));
     CHECK(as_tool_for(as_tool_find("update_persona"), AS_MEM_COMPANION) && !as_tool_for(as_tool_find("update_persona"), AS_MEM_ASSIST));
+    CHECK(as_tool_for(as_tool_find("pet_feed"), AS_MEM_COMPANION) && !as_tool_for(as_tool_find("pet_feed"), AS_MEM_ASSIST));
+    CHECK(as_tool_for(as_tool_find("pet_status"), AS_MEM_COMPANION) && !as_tool_for(as_tool_find("pet_rename"), AS_MEM_ASSIST));
     CHECK(as_tool_for(as_tool_find("remember"), AS_MEM_ASSIST) && as_tool_for(as_tool_find("remember"), AS_MEM_COMPANION));
     CHECK(as_tool_for(as_tool_find("timer"), AS_MEM_COMPANION) && !as_tool_for(NULL, AS_MEM_ASSIST));
 

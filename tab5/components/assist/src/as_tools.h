@@ -20,7 +20,8 @@
  * else: which pool is decided by the conversation (as_env_t.pool), never by anything the model says.
  * AS_T_SELF_TECH and AS_T_SELF_COMP are the same, for one conversation only: the technician's season
  * notebook, the companion's persona. AS_T_CHANGE and AS_T_SEND are the technician's alone too. */
-typedef enum { AS_T_READ, AS_T_CHANGE, AS_T_SEND, AS_T_DEVICE, AS_T_MEMORY, AS_T_SELF_TECH, AS_T_SELF_COMP } as_tkind_t;
+/* AS_T_PET is the companion's alone: the desk pet (home_pet.h) lives with her, and the technician never sees it. */
+typedef enum { AS_T_READ, AS_T_CHANGE, AS_T_SEND, AS_T_DEVICE, AS_T_MEMORY, AS_T_SELF_TECH, AS_T_SELF_COMP, AS_T_PET } as_tkind_t;
 
 typedef struct {
     const char *name;

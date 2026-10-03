@@ -33,11 +33,11 @@
 #include <time.h>
 
 const char *const HM_FACE_NAME[HM_NFACES + 1] = { "type", "flip", "dial", "chrono", "sky", "moon",
-                                                  "orrery", "world", "tree", "match", "words", "night" };
+                                                  "orrery", "world", "tree", "match", "words", "pet", "night" };
 
 static const hm_face_t *const FACES[HM_NFACES + 1] = {
     &HM_F_TYPE, &HM_F_FLIP, &HM_F_DIAL, &HM_F_CHRONO, &HM_F_SKY, &HM_F_MOON,
-    &HM_F_ORRERY, &HM_F_WORLD, &HM_F_TREE, &HM_F_MATCH, &HM_F_WORDS, &HM_F_NIGHT,
+    &HM_F_ORRERY, &HM_F_WORLD, &HM_F_TREE, &HM_F_MATCH, &HM_F_WORDS, &HM_F_PET, &HM_F_NIGHT,
 };
 
 int hm_face_by_name(const char *s)

@@ -33,6 +33,7 @@
 #include "home_px.h"
 #include "ui_companion.h"
 #include "ui_home_face.h"
+#include "ui_pet.h"
 #include "ui_intel.h"
 #include "voice.h"
 
@@ -151,6 +152,7 @@ hm_cfg_t *hm_cfg(void)
     CFG->open_page = kv_int("hm_open", HM_PG_DESK);
     if (CFG->open_page < 0 || CFG->open_page >= HM_NPAGES) CFG->open_page = HM_PG_DESK;
     CFG->night = kv_bool("hm_night", false);
+    CFG->idle_pet = kv_bool("hm_idlepet", false);
     CFG->dial_secs = kv_bool("hm_dsec", true);
     CFG->cam_on = kv_bool("hm_cam_on", false); /* off until the owner turns it on */
     CFG->cam_min = hal_kv_get("hm_cam_min", v, sizeof v) ? atoi(v) : 5;
@@ -202,6 +204,7 @@ void hm_cfg_save(void)
     hal_kv_set("hm_fshow", c->face >= 0 && c->face < HM_NFACES ? HM_FACE_NAME[c->face] : "type");
     kv_set_int("hm_open", c->open_page);
     hal_kv_set("hm_night", c->night ? "1" : "0");
+    hal_kv_set("hm_idlepet", c->idle_pet ? "1" : "0");
     hal_kv_set("hm_dsec", c->dial_secs ? "1" : "0");
     hal_kv_set("hm_cam_on", c->cam_on ? "1" : "0");
     kv_set_int("hm_cam_min", c->cam_min);
@@ -465,6 +468,9 @@ static struct {
     /* night */
     bool night_on;
     int night_page, night_face, night_force; /* where it was before; the dev console's override (-1 none) */
+    /* the pet when idle: where it was before */
+    bool idle_on;
+    int idle_page, idle_face;
     /* the NFC tag */
     char cp_state_text[96];        /* the companion card's second line as last written */
     int tag_pairing;               /* 0 no, 1 waiting for a tag, 2 just paired */
@@ -980,6 +986,7 @@ static void build(void)
     lv_obj_add_style(d, bz_style_fill(BZ_C_GROUND), 0);
     HM.desk = HM.pg[HM_PG_DESK] = d;
     HM.pg[HM_PG_NP] = hm_np_build(r);
+    HM.pg[HM_PG_PET] = hm_pet_build(r);
     for (int i = 0; i < HM_NPAGES; i++) {
         lv_obj_set_pos(HM.pg[i], 0, 0);
         if (i != HM.page) lv_obj_add_flag(HM.pg[i], LV_OBJ_FLAG_HIDDEN);
@@ -1387,6 +1394,8 @@ static void page_refresh(int page, bool shown)
         desk_colors();
     } else if (page == HM_PG_NP) {
         hm_np_refresh(shown);
+    } else if (page == HM_PG_PET) {
+        hm_pet_refresh(shown);
     } else {
         hm_faces_refresh(shown);
     }
@@ -1399,6 +1408,7 @@ static void hm_refresh_now(void)
     /* the song, its cover, its tint and the big cover on the page beside the desk stay current wherever you are */
     if (HM.page != HM_PG_DESK) refresh_media();
     if (HM.page != HM_PG_NP) hm_np_refresh(false);
+    if (HM.page != HM_PG_PET) hm_pet_refresh(false);
     if (HM.page != HM_PG_CLOCK) hm_faces_refresh(false);
     if (HM.page != HM_PG_DESK) desk_colors();
 }
@@ -1407,6 +1417,7 @@ static void hm_refresh_now(void)
 
 static void release_pictures(void)
 {
+    hm_pet_near(false);
     hm_np_release();
     hm_faces_release();
     if (HM.sky.px && hm_art_job_done(HM.sky.ticket)) {
@@ -1941,7 +1952,42 @@ static void night_tick(double now)
     since = now;
     HM.night_page = HM.page;
     HM.night_face = hm_faces_face();
+    if (HM.idle_on) {
+        /* the pet was showing: night gives back what was there before it, not the pet */
+        HM.night_page = HM.idle_page;
+        HM.night_face = HM.idle_face;
+        HM.idle_on = false;
+    }
     hm_faces_set(HM_FACE_NIGHT);
+    page_set(HM_PG_CLOCK);
+    dots_go(HM.page, false);
+}
+
+/* ---- the pet when idle: untouched for three minutes (with the setting on), the pet face; a touch gives back what
+ * was there. Like night, a plain switch. ---- */
+#define PET_IDLE_S 180.0
+static void pet_idle_tick(double now)
+{
+    static double next;
+    if (!HM.active || HM.sheet || SL.active || hm_faces_moving() || HM.night_on) return;
+    double idle = bz_ui_idle_s();
+    if (HM.idle_on) {
+        if (!hm_cfg()->idle_pet || idle < 0.5) {
+            HM.idle_on = false;
+            hm_faces_set(HM.idle_face >= 0 && HM.idle_face < HM_NFACES ? HM.idle_face : hm_cfg()->face);
+            page_set(HM.idle_page);
+            dots_go(HM.page, false);
+        }
+        return;
+    }
+    if (now < next) return;
+    next = now + 1.0;
+    if (!hm_cfg()->idle_pet || idle < PET_IDLE_S || ui_app_any_open() || HM.saver_on || ui_asleep()) return;
+    if (HM.page == HM_PG_CLOCK && hm_faces_face() == HM_FACE_PET) return; /* already the pet */
+    HM.idle_on = true;
+    HM.idle_page = HM.page;
+    HM.idle_face = hm_faces_face();
+    hm_faces_set(HM_FACE_PET);
     page_set(HM_PG_CLOCK);
     dots_go(HM.page, false);
 }
@@ -2113,7 +2159,12 @@ static void hm_frame(double now, double dt, void *user)
     if (HM.active) {
         PROF(1, go_step(); slide_frame());
         if (HM.page == HM_PG_CLOCK && !SL.active && !ui_app_any_open() && !ui_asleep()) PROF(2, hm_faces_frame(now));
-        PROF(3, night_tick(now));
+        PROF(3, night_tick(now); pet_idle_tick(now));
+        {
+            bool near = !ui_app_any_open() && !ui_asleep() && (HM.page == HM_PG_PET || HM.page == HM_PG_NP);
+            hm_pet_near(near);
+            hm_pet_frame(near && HM.page == HM_PG_PET && !SL.active);
+        }
         /* The clock, from the wall clock, every frame: the second it turns over the page on show is brought up to
          * it (the 10 Hz refresh alone was up to a tenth late, and did nothing under an app or a sheet, so a face
          * came back showing the minute it was left in). Under an app it waits, and catches up the moment the app
@@ -2260,6 +2311,7 @@ void ui_home_mode_init(ui_home_mode_fn on_change)
     hm_cfg();
     hm_cfg_apply();
     build();
+    ui_pet_init();
     bz_motion_init(&HM.k, 0, 0.001f);
     HM.k.keep = true; /* animates though the lean renderer makes other motion instant */
     /* sideways anywhere on home mode: its pages (the clock page's own flick up and down is its faces) */

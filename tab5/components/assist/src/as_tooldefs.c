@@ -348,6 +348,22 @@ const as_tooldef_t AS_TOOLS[] = {
       "\"required\":[\"field\",\"text\"],\"additionalProperties\":false}",
       AS_T_SELF_COMP },
 
+    /* ---- the desk pet: the companion's alone ---- */
+    { "pet_status",
+      "How the pet on this desk is: its name, mood, hunger, energy, age and what it did lately.",
+      NOARGS, AS_T_PET },
+    { "pet_feed",
+      "Feeds the pet. food: berry (a snack), rice (a meal, the default), fish (a big meal) or cake (a treat, twice a "
+      "day). It says no when the pet is asleep or not hungry.",
+      "{\"type\":\"object\",\"properties\":{\"food\":{\"type\":\"string\",\"enum\":[\"berry\",\"rice\",\"fish\","
+      "\"cake\"]}},\"additionalProperties\":false}",
+      AS_T_PET },
+    { "pet_play", "Plays with the pet. It says no when the pet is asleep or too tired.", NOARGS, AS_T_PET },
+    { "pet_rename", "Gives the pet a new name (up to 20 characters), when the owner picks one.",
+      "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"minLength\":1,\"maxLength\":20}},"
+      "\"required\":[\"name\"],\"additionalProperties\":false}",
+      AS_T_PET },
+
     /* ---- the code, through Catalyst Link on the PC (read-only) ---- */
     { "code_tree",
       "Lists files in the robot project on the PC, relative to the repo root.",
@@ -462,6 +478,8 @@ const char *as_tool_label(const char *name)
         { "calendar", "the calendar" }, { "weather", "checking the weather" }, { "notifications", "the notifications" },
         { "music", "the music" }, { "smart_home", "the house" }, { "remember", "remembering" }, { "forget", "forgetting" },
         { "recall", "remembering" }, { "update_notebook", "updating its notebook" }, { "update_persona", "thinking about herself" },
+        { "pet_status", "looking in on the pet" }, { "pet_feed", "feeding the pet" }, { "pet_play", "playing with the pet" },
+        { "pet_rename", "naming the pet" },
         { "code_tree", "reading the code" }, { "code_read", "reading the code" }, { "code_search", "searching the code" },
         { "list_patches", "checking the patches" }, { "list_work_orders", "checking the work orders" },
         { "claude_sessions", "checking Claude Code" }, { "set_tunable", "waiting for your ok" },
@@ -503,7 +521,8 @@ bool as_tool_for(const as_tooldef_t *t, int pool)
     case AS_T_CHANGE:
     case AS_T_SEND:      /* they need a card on the Assist screen */
     case AS_T_SELF_TECH: return tech;
-    case AS_T_SELF_COMP: return !tech;
+    case AS_T_SELF_COMP:
+    case AS_T_PET: return !tech;
     default: return true;
     }
 }

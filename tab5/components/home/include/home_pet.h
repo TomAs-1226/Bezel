@@ -79,6 +79,9 @@ void home_pet_do_stroke(void);
 bool home_pet_do_sleep(bool asleep, char *say, size_t n);
 bool home_pet_do_rename(const char *name);
 void home_pet_do_note(const char *text);
+/* what was just done to it, once per change of `*seen` (start it at 0): PET_EV_*, or 0 */
+enum { PET_EV_FED = 1, PET_EV_PLAYED, PET_EV_PETTED };
+int home_pet_event(unsigned *seen);
 /* the AI's tools: pet_status, pet_feed {food}, pet_play, pet_rename {name}; false for another name */
 bool home_pet_is_tool(const char *name);
 bool home_pet_tool(const char *name, const char *args_json, char *out, size_t n);

@@ -299,8 +299,8 @@ av_def_t *av_def_parse(const char *js, size_t len, char *why, size_t wn)
             if (st >= 0) total += tk[st].size > 128 ? 128 : tk[st].size;
             t = tk[val].skip;
         }
-        d->a = calloc((size_t)(na ? na : 1), sizeof *d->a);
-        d->st = calloc((size_t)(total ? total : 1), sizeof *d->st);
+        d->a = calloc((size_t)(na > 0 ? na : 1), sizeof *d->a);
+        d->st = calloc((size_t)(total > 0 ? total : 1), sizeof *d->st);
         if (!d->a || !d->st) FAIL("out of memory");
         t = an + 1;
         for (int i = 0; i < tk[an].size && d->na < na; i++) {

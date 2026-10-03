@@ -231,7 +231,7 @@ struct ui_avatar {
     float blink_dur;
     float ox, oy, tox, toy;
     double sacc_at;
-    float calm, level, tint_k;
+    float calm, level, dim;
     uint32_t tint;
     float lookx, looky, lx, ly;
     double look_until;
@@ -369,8 +369,9 @@ static bool resolve(ui_avatar_t *a, av_state_t st, bool once)
 void ui_avatar_state(ui_avatar_t *a, av_state_t st)
 {
     if (st < 0 || st >= AV_S_COUNT) return;
-    if (a->base == st && a->an && !a->reacting && !a->forced) return;
+    if (a->base == st && a->an && !a->forced) return;
     a->base = st;
+    if (a->reacting && !a->forced) return; /* a reaction finishes first, and returns to this */
     resolve(a, st, false);
 }
 
@@ -416,6 +417,7 @@ void ui_avatar_look(ui_avatar_t *a, float x, float y, float hold)
 void ui_avatar_level(ui_avatar_t *a, float v) { a->level = v < 0 ? 0 : v > 1 ? 1 : v; }
 void ui_avatar_calm(ui_avatar_t *a, float c) { a->calm = c < 0 ? 0 : c > 1 ? 1 : c; }
 void ui_avatar_tint(ui_avatar_t *a, uint32_t rgb) { a->tint = rgb & 0xFFFFFF; }
+void ui_avatar_dim(ui_avatar_t *a, float dim) { a->dim = dim < 0 ? 0 : dim > 0.9f ? 0.9f : dim; }
 lv_obj_t *ui_avatar_obj(ui_avatar_t *a) { return a->obj; }
 
 /* ================================================================== drawing */
@@ -489,7 +491,7 @@ static void av_draw(lv_event_t *e)
         if (d->blink > 8) {
             /* a blink: the eye squashed flat, drawn as a rounded rectangle across what it covered */
             float q = 1.0f - 0.9f * d->blink / 255.0f;
-            int bw = (int)lroundf(fabsf((x2 - x1)) + 2 * w), bh = (int)lroundf((fabsf((float)(y2 - y1)) + 2 * w) * q);
+            int bw = (int)lroundf(abs(x2 - x1) + 2 * w), bh = (int)lroundf((abs(y2 - y1) + 2 * w) * q);
             if (bh < 4) bh = 4;
             lv_draw_rect_dsc_t r;
             lv_draw_rect_dsc_init(&r);
@@ -757,6 +759,17 @@ bool ui_avatar_frame(ui_avatar_t *a)
         n.ear[i][0] = (int16_t)lroundf(ear[i].x * a->k);
         n.ear[i][1] = (int16_t)lroundf(ear[i].y * a->k);
         n.ear[i][2] = ear[i].z >= 0 ? 1 : -1;
+    }
+    if (a->dim > 0.001f) {
+        /* dimmed: every colour a part of the way to the ground's */
+        uint32_t g = bz_color(BZ_C_GROUND) & 0xFFFFFF;
+        float gr = (float)(g >> 16 & 255), gg = (float)(g >> 8 & 255), gb = (float)(g & 255);
+        Q[P_BR] += (gr - Q[P_BR]) * a->dim;
+        Q[P_BG] += (gg - Q[P_BG]) * a->dim;
+        Q[P_BB] += (gb - Q[P_BB]) * a->dim;
+        Q[P_ER] += (gr - Q[P_ER]) * a->dim * 0.6f;
+        Q[P_EG] += (gg - Q[P_EG]) * a->dim * 0.6f;
+        Q[P_EB] += (gb - Q[P_EB]) * a->dim * 0.6f;
     }
     /* the colours, to the 565 the panel can show, so a slow fade is a few redraws and not hundreds */
     int br = (int)(Q[P_BR] + 0.5f) & 0xF8, bg = (int)(Q[P_BG] + 0.5f) & 0xFC, bb = (int)(Q[P_BB] + 0.5f) & 0xF8;

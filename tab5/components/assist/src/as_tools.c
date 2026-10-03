@@ -2331,7 +2331,7 @@ as_tres_t as_tool_run(as_env_t *e, const char *name, const aj_t *in, ab_t *o, ch
     else if (!strcmp(name, "forget")) r = t_forget(e, in, o, s, sn);
     else if (!strcmp(name, "recall")) r = t_recall(e, in, o, s, sn);
     else if (!strcmp(name, "update_notebook") || !strcmp(name, "update_persona")) r = t_self(e, name, in, o, s, sn);
-    else if (def && def->kind == AS_T_DEVICE) r = t_device(e, name, in, o, s, sn);
+    else if (def && (def->kind == AS_T_DEVICE || def->kind == AS_T_PET)) r = t_device(e, name, in, o, s, sn);
     else if (!strcmp(name, "get_alerts")) r = t_alerts(e, o, s, sn);
     else if (!strcmp(name, "get_mechanisms")) r = t_mechs(e, o, s, sn);
     else if (!strcmp(name, "get_power")) r = t_power(e, o, s, sn);

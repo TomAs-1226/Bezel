@@ -600,6 +600,13 @@ static void context_note(char *out, size_t n)
              now ? now : "", seen ? " · " : "", seen ? seen : "");
     free(now);
     free(seen);
+    /* the desk pet, when there is one: its state and what it did lately, and whether to mention it is hungry */
+    char pet[420];
+    assist_pet_context(pet, sizeof pet);
+    if (pet[0]) {
+        size_t l = strlen(out);
+        snprintf(out + l, n - l, " %s", pet);
+    }
 }
 
 /* the read-only tools, as Chat Completions functions */
@@ -815,7 +822,7 @@ static bool answer(const char *question, vo_reply_t *rep)
         free(g_memo);
         g_memo = as_memio_digest(AS_MEM_COMPANION, question);
     }
-    char note[400];
+    char note[760];
     context_note(note, sizeof note);
     size_t ql = strlen(note) + strlen(question) + 4;
     char *q = malloc(ql);
