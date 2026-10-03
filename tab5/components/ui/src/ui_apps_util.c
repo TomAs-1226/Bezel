@@ -573,7 +573,9 @@ static void calc_build(lv_obj_t *b)
     ca_show();
 }
 
-const ui_app_t APP_CALC = { .name = "calculator", .icon = BZ_I_CALCULATE, .build = calc_build };
+/* `shed`: checked. CA is touched only by calc_build and the key callbacks it registers; no ticker, no public
+ * entry point, and calc_build ends in ca_show(), which draws the entry (CA.buf, a plain array) again. */
+const ui_app_t APP_CALC = { .name = "calculator", .icon = BZ_I_CALCULATE, .build = calc_build, .shed = true };
 
 /* ================================================================== notes */
 
@@ -988,7 +990,10 @@ static void files_build(lv_obj_t *b)
 
 static void files_open(void) { files_load(); }
 
-const ui_app_t APP_FILES = { .name = "files", .icon = BZ_I_FOLDER, .build = files_build, .open = files_open };
+/* `shed`: checked. FI is touched only by files_build, files_open and the row callbacks; no ticker, no public
+ * entry point, and files_open lists the folder again (FI.path, a plain array, keeps where it was). */
+const ui_app_t APP_FILES = { .name = "files", .icon = BZ_I_FOLDER, .build = files_build, .open = files_open,
+                             .shed = true };
 
 /* ================================================================== the assistants' hooks (ui_sys.h) */
 

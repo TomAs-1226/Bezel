@@ -168,7 +168,9 @@ static void gear_build(lv_obj_t *b)
     gr_show();
 }
 
-const ui_app_t APP_GEAR = { .name = "gearing", .icon = BZ_I_SPEED, .build = gear_build };
+/* `shed`: checked. GR is touched only by gear_build and the chip callbacks it registers; no ticker, no public
+ * entry point, and the picks (motor, count, wheel, limit, ratio) are plain values that survive the window. */
+const ui_app_t APP_GEAR = { .name = "gearing", .icon = BZ_I_SPEED, .build = gear_build, .shed = true };
 
 /* ================================================================== reference */
 
@@ -255,4 +257,7 @@ static void ref_build(lv_obj_t *b)
 /* the team number can change in settings: the network card follows */
 static void ref_open(void) { rf_show(); }
 
-const ui_app_t APP_REF = { .name = "reference", .icon = BZ_I_HANDYMAN, .build = ref_build, .open = ref_open };
+/* `shed`: checked. RF is touched only by ref_build, ref_open and the nav chips' callback; no ticker, no public
+ * entry point, and ref_open draws the card again, so a rebuilt window shows the page that was open. */
+const ui_app_t APP_REF = { .name = "reference", .icon = BZ_I_HANDYMAN, .build = ref_build, .open = ref_open,
+                           .shed = true };

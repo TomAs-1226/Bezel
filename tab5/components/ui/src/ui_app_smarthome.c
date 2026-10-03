@@ -315,5 +315,7 @@ static void smarthome_open(void)
     SH.layout_sig = 0;
 }
 
+/* `shed`: checked. SH is touched only by smarthome_build, open and refresh; no ticker, no public entry point, and
+ * smarthome_open clears the generation and the layout signature, so a rebuilt window lays its cards out again. */
 const ui_app_t APP_SMARTHOME = { .name = "smart home", .icon = BZ_I_LIGHTBULB, .build = smarthome_build,
-                                 .open = smarthome_open, .refresh = smarthome_refresh };
+                                 .open = smarthome_open, .refresh = smarthome_refresh, .shed = true };
