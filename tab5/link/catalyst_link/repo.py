@@ -30,6 +30,10 @@ AUTHOR_NAME = "Catalyst Tab"
 AUTHOR_EMAIL = "tab@catalyst.local"
 DUPLICATE_WINDOW = timedelta(minutes=10)
 
+# The server runs under pythonw, which has no console: without this every child opens a terminal window
+# of its own, and the status poll makes that a window flashing every few seconds.
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+
 
 class GitError(Exception):
     pass
@@ -41,7 +45,7 @@ def git(repo: Path, *args: str, check: bool = True, stdin: bytes | None = None,
     full_env = {**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "LC_ALL": "C", **(env or {})}
     proc = subprocess.run(
         ["git", "-c", "core.quotepath=off", "-C", str(repo), *args],
-        input=stdin, capture_output=True, env=full_env, timeout=timeout,
+        input=stdin, capture_output=True, env=full_env, timeout=timeout, creationflags=NO_WINDOW,
     )
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)}: {proc.stderr.decode('utf-8', 'replace').strip()}")
@@ -89,7 +93,7 @@ def run_check(command: str, cwd: Path, timeout: float, log_path: Path) -> dict[s
         if os.name == "posix":
             kwargs["start_new_session"] = True  # so a timeout kills the whole tree (gradle, javac…)
         else:
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
+            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP | NO_WINDOW  # type: ignore[attr-defined]
         proc = subprocess.Popen(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL,
                                 stdout=log, stderr=subprocess.STDOUT, **kwargs)
         try:
@@ -112,7 +116,8 @@ def _kill_tree(proc: subprocess.Popen[bytes]) -> None:
         if os.name == "posix":
             os.killpg(proc.pid, signal.SIGKILL)
         else:
-            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)], capture_output=True,
+                           creationflags=NO_WINDOW)
     except (ProcessLookupError, PermissionError, OSError):
         proc.kill()
 

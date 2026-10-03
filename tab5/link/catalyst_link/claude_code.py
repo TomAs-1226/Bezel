@@ -127,7 +127,8 @@ def auth_status(cli: str, env: dict[str, str], timeout: float = 30.0) -> dict[st
     {"loggedIn": False, "error": "…"}. Personal fields (email, org) are dropped."""
     try:
         proc = subprocess.run([cli, "auth", "status"], capture_output=True, text=True, timeout=timeout,
-                              env={**os.environ, **env}, stdin=subprocess.DEVNULL)
+                              env={**os.environ, **env}, stdin=subprocess.DEVNULL,
+                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         data = json.loads(proc.stdout)
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         return {"loggedIn": False, "error": str(exc)}
