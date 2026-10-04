@@ -330,83 +330,36 @@ def generated_art(key: bytes, size: int = 512) -> bytes:
 
     h = hashlib.sha1(key).digest()
     rnd = random.Random(h)
-    S = size * 2
+    S = size  # everything is blurred soft, so there is no edge to anti-alias
+    # Quiet on purpose. The first version was saturated shapes on bright grounds and read as neon beside the
+    # tablet's own dark, tonal surfaces. This one is a dim field in one family of colour: a dark ground, three
+    # or four large soft glows a few steps of hue apart, low saturation, and a little grain so it reads as a
+    # print and not a gradient. The song picks the hue, where the glows sit and how warm it runs.
     hue = h[0] / 255.0
-    drift = (0.06 + h[1] / 255.0 * 0.10) * (1 if h[2] & 1 else -1)
-    accent = (hue + 0.42 + h[3] / 255.0 * 0.16) % 1.0
+    spread = 0.04 + h[1] / 255.0 * 0.07
+    sat = 0.22 + h[2] / 255.0 * 0.20
 
-    def rgb(hh: float, sat: float, val: float, a: int = 255) -> tuple[int, int, int, int]:
-        r, g, b = colorsys.hsv_to_rgb(hh % 1.0, sat, val)
-        return int(r * 255), int(g * 255), int(b * 255), a
+    def rgb(hh: float, st: float, val: float) -> tuple[int, int, int]:
+        r, g, b = colorsys.hsv_to_rgb(hh % 1.0, max(0.0, min(1.0, st)), max(0.0, min(1.0, val)))
+        return int(r * 255), int(g * 255), int(b * 255)
 
-    # the ground: a diagonal blend between two neighbouring hues, darker at one end
-    top, bot = rgb(hue, 0.62, 0.78), rgb(hue + drift, 0.78, 0.30)
-    # made twice the size and cropped after turning, so the corners the rotation leaves empty are outside the picture
-    grad = Image.linear_gradient("L").resize((2 * S, 2 * S)).rotate(rnd.choice((0, 35, 90, 145)), resample=Image.BICUBIC)
-    grad = grad.crop((S // 2, S // 2, S // 2 + S, S // 2 + S))
-    im = Image.composite(Image.new("RGBA", (S, S), bot), Image.new("RGBA", (S, S), top), grad)
-
-    def layer() -> tuple[Any, Any]:
-        lay = Image.new("RGBA", (S, S), (0, 0, 0, 0))
-        return lay, ImageDraw.Draw(lay)
-
-    style = h[4] % 5
-    if style == 0:  # discs: a few large translucent circles, one of them the accent
-        for i in range(rnd.randint(3, 5)):
-            lay, d = layer()
-            r = rnd.uniform(0.18, 0.46) * S
-            x, y = rnd.uniform(0.1, 0.9) * S, rnd.uniform(0.1, 0.9) * S
-            c = rgb(accent, 0.70, 0.95, 170) if i == 0 else rgb(hue + rnd.uniform(-0.08, 0.08), rnd.uniform(0.3, 0.6), rnd.uniform(0.8, 1.0), rnd.randint(60, 130))
-            d.ellipse((x - r, y - r, x + r, y + r), fill=c)
-            im = Image.alpha_composite(im, lay)
-    elif style == 1:  # bands: diagonal stripes of uneven width
-        lay, d = layer()
-        x = -S
-        while x < 2 * S:
-            w = rnd.uniform(0.04, 0.16) * S
-            if rnd.random() < 0.55:
-                c = rgb(accent, 0.65, 0.95, 150) if rnd.random() < 0.25 else rgb(hue + drift * rnd.random(), 0.35, 1.0, rnd.randint(40, 110))
-                d.polygon(((x, 0), (x + w, 0), (x + w - S * 0.7, S), (x - S * 0.7, S)), fill=c)
-            x += w
-        im = Image.alpha_composite(im, lay)
-    elif style == 2:  # rings: arcs widening from a corner
-        cx, cy = rnd.choice(((0, 0), (S, 0), (0, S), (S, S)))
-        for i in range(rnd.randint(5, 8)):
-            lay, d = layer()
-            r = (0.2 + i * rnd.uniform(0.13, 0.18)) * S
-            wd = int(rnd.uniform(0.02, 0.07) * S)
-            c = rgb(accent, 0.65, 0.95, 190) if i == 2 else rgb(hue + drift, 0.25, 1.0, rnd.randint(50, 120))
-            d.ellipse((cx - r, cy - r, cx + r, cy + r), outline=c, width=wd)
-            im = Image.alpha_composite(im, lay)
-    elif style == 3:  # dunes: layered hills, nearer ones darker, a sun in the accent
-        n = rnd.randint(4, 6)
-        lay, d = layer()
-        sr = rnd.uniform(0.07, 0.13) * S
-        sx, sy = rnd.uniform(0.2, 0.8) * S, rnd.uniform(0.15, 0.4) * S
-        d.ellipse((sx - sr, sy - sr, sx + sr, sy + sr), fill=rgb(accent, 0.55, 1.0, 230))
-        im = Image.alpha_composite(im, lay)
-        for i in range(n):
-            lay, d = layer()
-            base = (0.42 + i * 0.5 / n) * S
-            amp, f, ph = rnd.uniform(0.03, 0.09) * S, rnd.uniform(1.0, 2.6), rnd.uniform(0, 6.28)
-            pts = [(x, base + amp * math.sin(ph + f * 6.28 * x / S) + amp * 0.4 * math.sin(ph * 2 + f * 13 * x / S)) for x in range(0, S + 8, 8)]
-            d.polygon([(0, S)] + pts + [(S, S)], fill=rgb(hue + drift * (i + 1) / n, 0.55 + 0.3 * i / n, 0.75 - 0.5 * i / n, 235))
-            im = Image.alpha_composite(im, lay)
-    else:  # blocks: an uneven grid of squares, a few lit
-        n = rnd.randint(3, 5)
-        lay, d = layer()
-        cell = S / n
-        for gy in range(n):
-            for gx in range(n):
-                if rnd.random() < 0.55:
-                    m = cell * rnd.uniform(0.08, 0.2)
-                    c = rgb(accent, 0.65, 0.95, 200) if rnd.random() < 0.18 else rgb(hue + drift * rnd.random(), 0.3, 1.0, rnd.randint(35, 120))
-                    d.rounded_rectangle((gx * cell + m, gy * cell + m, (gx + 1) * cell - m, (gy + 1) * cell - m), radius=cell * 0.16, fill=c)
-        im = Image.alpha_composite(im, lay)
-    # a soft light from the top left, so it reads as a cover and not a flag
-    lay, d = layer()
-    d.ellipse((-0.5 * S, -0.6 * S, 0.9 * S, 0.5 * S), fill=(255, 255, 255, 34))
-    im = Image.alpha_composite(im, lay.filter(ImageFilter.GaussianBlur(S * 0.08)))
+    im = Image.new("RGB", (S, S), rgb(hue, sat * 0.9, 0.13))
+    glow = Image.new("RGB", (S, S), (0, 0, 0))
+    d = ImageDraw.Draw(glow)
+    for i in range(rnd.randint(3, 4)):
+        r = rnd.uniform(0.28, 0.52) * S
+        x, y = rnd.uniform(0.0, 1.0) * S, rnd.uniform(0.0, 1.0) * S
+        hh = hue + spread * (i - 1.5) * (1 if h[3] & 1 else -1)
+        d.ellipse((x - r, y - r, x + r, y + r), fill=rgb(hh, sat + rnd.uniform(-0.05, 0.12), rnd.uniform(0.34, 0.62)))
+    glow = glow.filter(ImageFilter.GaussianBlur(S * 0.16))
+    from PIL import ImageChops
+    im = ImageChops.screen(im, glow)
+    # darker toward the foot, where the title sits over it on the tablet
+    shade = Image.linear_gradient("L").resize((S, S))
+    im = Image.composite(Image.new("RGB", (S, S), rgb(hue, sat, 0.07)), im, shade.point(lambda v: int(v * 0.55)))
+    # grain: a few levels either way, the same for the same song
+    noise = Image.frombytes("L", (S, S), rnd.randbytes(S * S)).point(lambda v: 122 + v * 12 // 255)
+    im = ImageChops.add(im, Image.merge("RGB", (noise, noise, noise)), scale=1.0, offset=-128)
     out = io.BytesIO()
     im.convert("RGB").resize((size, size), Image.LANCZOS).save(out, "PNG")
     return out.getvalue()

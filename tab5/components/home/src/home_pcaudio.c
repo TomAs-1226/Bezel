@@ -289,6 +289,19 @@ static void ima_decode(const uint8_t *in, int n, int valprev, int index, int16_t
     }
 }
 
+/* MP3, when the PC can make it (flags bit 2): 160 kbps mono at 48 kHz, which is 20 KB/s -- less than the ADPCM
+ * it replaces and a different class of sound. ADPCM is four bits a sample and its noise is plain to hear in
+ * music; this is what the owner asked for when he said high fidelity. The decoder is the one the companion's
+ * speech already uses, and it lives for a connection: MP3 frames lean on the ones before them. */
+static hal_mp3_t *s_mp3;
+
+static bool mp3_sink(const int16_t *pcm, int n, int rate, void *user)
+{
+    (void)rate; /* the Link sends 48 kHz, which is what the speaker is open at */
+    feed((spk_t *)user, pcm, n);
+    return true;
+}
+
 static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
 {
     size_t have = 0;
@@ -367,8 +380,8 @@ static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
             unsigned n = (unsigned)h[2] | (unsigned)h[3] << 8;
             if (h[0] != 1 || n > PKT_MAX) return LOST("out of step"); /* start over */
             unsigned flags = h[1];
-            bool adpcm = (flags & 2) != 0;
-            size_t body = adpcm ? 4 + (size_t)(n + 1) / 2 : (size_t)n * 2;
+            bool adpcm = (flags & 2) != 0, mp3 = (flags & 4) != 0;
+            size_t body = mp3 ? (size_t)n : adpcm ? 4 + (size_t)(n + 1) / 2 : (size_t)n * 2; /* MP3: n is bytes */
             if (have - off < PKT_HDR + body) break;
             last_seq = (unsigned)h[4] | (unsigned)h[5] << 8 | (unsigned)h[6] << 16 | (unsigned)h[7] << 24;
             packets++;
@@ -388,7 +401,10 @@ static end_t session(int fd, spk_t *s, uint8_t *rx, int *backoff_s)
                     spk_close(s);
                 } else if (spk_open(s, now)) {
                     /* a dry queue while audio is flowing is a dropout; one after a silence is just the start */
-                    if (adpcm && s_dec) {
+                    if (mp3) {
+                        if (!s_mp3) s_mp3 = hal_mp3_open();
+                        if (s_mp3) hal_mp3_feed(s_mp3, h + PKT_HDR, (int)n, false, mp3_sink, s);
+                    } else if (adpcm && s_dec) {
                         const uint8_t *p = h + PKT_HDR;
                         ima_decode(p + 4, (int)n, (int16_t)(p[0] | p[1] << 8), p[2], s_dec);
                         feed(s, s_dec, (int)n);
@@ -487,6 +503,10 @@ static void *receiver(void *arg)
                     }
                 }
                 close(fd);
+                if (s_mp3) { /* the next connection starts a new stream: a new decoder with it */
+                    hal_mp3_close(s_mp3);
+                    s_mp3 = NULL;
+                }
                 spk_close(&s);
                 stats(0, s.under_total, 0, 0);
             }

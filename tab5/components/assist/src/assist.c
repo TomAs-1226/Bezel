@@ -1041,8 +1041,12 @@ static void burn_key_file(const char *path, size_t n)
  * settings screen already use (ui_app_pair.c, ui_app_assist.c) — so a card dropped on this one tablet
  * finishes the same "configure the link" job pairing does, without a token ever living in source
  * (link.c's LINK_DEFAULT_HOST covers the non-secret address; see its comment). */
+/* New entries go at the END, with a name here: the table below is indexed by these, the aliases further down
+ * use the bare numbers 2..7, and an entry put in the middle moves every one after it. Two were once, for
+ * Fish Audio: the last two rows fell off the table, and a Fish key -- its name unknown, its value beginning
+ * "sk-" -- was taken for an OpenAI key and written over the real one. */
 enum { ENV_OPENAI, ENV_ANTHROPIC, ENV_TEAM = 8, ENV_WIFI_SSID, ENV_WIFI_PASS, ENV_LINK_HOST, ENV_LINK_TOKEN,
-       ENV_COUNT };
+       ENV_FISH, ENV_FISH_VOICE, ENV_COUNT };
 static const struct {
     const char *name, *kv;
 } ENV_KEYS[ENV_COUNT] = {
@@ -1051,8 +1055,6 @@ static const struct {
     { "TBA_API_KEY", "tba_key" },          /* The Blue Alliance, read API v3 (X-TBA-Auth-Key) */
     { "HA_URL", "ha_url" },                /* Home Assistant, as home mode keeps it */
     { "HA_TOKEN", "ha_token" },
-    { "FISH_API_KEY", "fish_key" },        /* fish.audio: the companion's own voice (voice.c) */
-    { "FISH_VOICE", "fish_voice" },        /* a fish.audio voice model id, in place of the default one */
     { "NEXUS_API_KEY", "nexus_key" },      /* frc.nexus (Nexus-Api-Key): the live queue (intel.h, ui_match.c) */
     { "FRC_EVENTS_USER", "frc_ev_user" },  /* FIRST's FRC Events API: kept for later */
     { "FRC_EVENTS_TOKEN", "frc_ev_token" },
@@ -1061,6 +1063,8 @@ static const struct {
     { "WIFI_PASS", NULL },
     { "LINK_HOST", "link_url" },           /* overrides the compiled-in pc address, e.g. a different pc */
     { "LINK_TOKEN", "link_token" },        /* Catalyst Link's per-tablet token: never compiled in */
+    { "FISH_API_KEY", "fish_key" },        /* fish.audio: the companion's own voice (voice.c) */
+    { "FISH_VOICE", "fish_voice" },        /* a fish.audio voice model id, in place of the default one */
 };
 
 /* One "NAME=value" line, dotenv style, cut in place: an optional "export ", spaces around the '=', a value
@@ -1129,6 +1133,8 @@ static int env_find(const char *name)
         { "linkhost", ENV_LINK_HOST }, { "linkurl", ENV_LINK_HOST }, { "linkaddress", ENV_LINK_HOST },
         { "pcaddress", ENV_LINK_HOST },
         { "linktoken", ENV_LINK_TOKEN }, { "link", ENV_LINK_TOKEN },
+        { "fishapikey", ENV_FISH }, { "fishkey", ENV_FISH }, { "fish", ENV_FISH }, { "fishaudio", ENV_FISH },
+        { "fishaudioapikey", ENV_FISH }, { "fishvoice", ENV_FISH_VOICE }, { "fishaudiovoice", ENV_FISH_VOICE },
     };
     for (size_t i = 0; i < sizeof ALIAS / sizeof ALIAS[0]; i++)
         if (!strcmp(n, ALIAS[i].alias)) return ALIAS[i].e;

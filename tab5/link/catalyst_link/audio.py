@@ -30,6 +30,11 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable
 
+try:  # MP3 (LAME): the stream's proper form, 160 kbps mono. pip install lameenc
+    import lameenc  # type: ignore[import-not-found]
+except Exception:  # pragma: no cover
+    lameenc = None  # type: ignore[assignment]
+
 try:  # IMA ADPCM at C speed; gone from Python 3.13, and then the stream is raw PCM as before
     import audioop  # type: ignore[import-not-found]
 except Exception:  # pragma: no cover
@@ -362,6 +367,20 @@ class AudioService:
         threading.Thread(target=reader, name="audio-acks", daemon=True).start()
         seq = 0
         adpcm_state: Any = None  # audioop's (valprev, index), carried from packet to packet
+        mp3: Any = None
+        if lameenc is not None:
+            # High fidelity in fewer bytes than anything else here: 160 kbps mono is 20 KB/s, where the 4-bit
+            # ADPCM is 24 and audibly noisy in music, and raw PCM is 96. One encoder for the connection, since
+            # MP3 frames lean on the ones before them.
+            mp3 = lameenc.Encoder()
+            mp3.set_bit_rate(160)
+            mp3.set_in_sample_rate(RATE)
+            mp3.set_channels(1)
+            mp3.set_quality(2)
+            try:
+                mp3.silence()
+            except Exception:
+                pass
         next_tick = time.monotonic()
         last_ka = 0.0
         t_start = time.monotonic()
@@ -387,7 +406,15 @@ class AudioService:
                 seq += 1
                 t_ms = int((now - t_start) * 1000) & 0xFFFFFFFF
                 # a long gap is cut into packets the tablet's small frames can take (n is 16 bits)
-                if n > 0:
+                if n > 0 and mp3 is not None:
+                    out = bytes(mp3.encode(data))  # may be empty: the encoder holds part of a frame back
+                    while out:
+                        part, out = out[:4000], out[4000:]
+                        wfile.write(PACKET.pack(1, 4, len(part), seq & 0xFFFFFFFF, t_ms) + part)
+                        sent[seq] = now
+                        info["packets"] += 1
+                        seq += 1
+                elif n > 0:
                     while data:
                         part, data = data[:4800], data[4800:]
                         if audioop is not None:
