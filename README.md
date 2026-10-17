@@ -18,8 +18,9 @@ specimen from Catalyst Tab firmware previews. The `v0.1.0` specimen archive cont
 page and local modules; serve the extracted directory as below. Fonts and the optional dynamic
 colour library retain their documented network/fallback behavior.
 
-Tags beginning `tab5-` are separate ESP32 firmware previews with their own build manifest and
-hardware qualification notes. They are not interchangeable with this browser specimen.
+Tags such as `v0.1.0-tab5-preview.1` are separate ESP32 firmware previews with their own build
+manifest and hardware qualification notes. They are not interchangeable with this browser specimen.
+The paired C6 firmware lives in a private repository and requires authorized GitHub access.
 
 ## Running it
 
