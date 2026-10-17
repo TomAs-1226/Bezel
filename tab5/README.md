@@ -16,7 +16,7 @@ firmware and Catalyst Link work as an experimental preview. ESP-IDF 5.5.1 builds
 flashed or tested for this release. Earlier hardware work exists in the dated development notes;
 it does not qualify this release image. The Linux UI simulator was not rerun on this Windows host.
 
-Download the current images from [GitHub Releases](https://github.com/TomAs-1226/Bezel/releases/tag/tab5-v0.1.0-preview.1).
+Download the current images from [GitHub Releases](https://github.com/TomAs-1226/Bezel/releases/tag/v0.1.0-tab5-preview.1).
 The binaries checked into `firmware/` are historical September builds, **not this release**.
 See [release notes](docs/releases/0.1.0-preview.1.md) for build, transport and verification limits.
 
@@ -164,7 +164,7 @@ settings screen's `fps` chip shows measured frame times.
 
 ## Flashing the prebuilt image
 
-[GitHub Releases](https://github.com/TomAs-1226/Bezel/releases/tag/tab5-v0.1.0-preview.1) has the current preview images. The checked-in `firmware/` files are historical. With the Tab5's USB-C plugged in:
+[GitHub Releases](https://github.com/TomAs-1226/Bezel/releases/tag/v0.1.0-tab5-preview.1) has the current preview images. The checked-in `firmware/` files are historical. With the Tab5's USB-C plugged in:
 
 ```sh
 esptool.py --chip esp32p4 -b 921600 write_flash 0x0 catalyst-tab-merged.bin
