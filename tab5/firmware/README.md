@@ -1,4 +1,10 @@
-# Prebuilt firmware
+# Historical prebuilt firmware
+
+**2026-10-17:** These checked-in binaries are September build artifacts, not the current source.
+Use the [0.1.0-preview.1 release assets](https://github.com/TomAs-1226/Bezel/releases/tag/tab5-v0.1.0-preview.1)
+for the current preview. Its archive includes the wake-word model, flash offsets and SHA-256 manifest.
+The instructions and hashes below describe only the historical images.
+
 
 Ready-to-flash images for the **M5Stack Tab5**, built with ESP-IDF 5.5.1 from the commit that last
 changed this folder (`idf.py build`, then `esptool.py merge_bin`). If the source has moved on since, rebuild; see

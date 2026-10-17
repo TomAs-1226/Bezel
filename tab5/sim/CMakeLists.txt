@@ -29,12 +29,13 @@ file(GLOB APP_SOURCES
   ${ROOT}/components/catalyst/src/*.c
   ${ROOT}/components/assist/src/*.c
   ${ROOT}/components/home/src/*.c
+  ${ROOT}/components/intel/src/*.c
   ${ROOT}/components/ui/src/*.c)
-add_executable(catalyst_tab_sim ${APP_SOURCES} sim_main.c hal_sim.c hal_sim_net.c png.c)
+add_executable(catalyst_tab_sim ${APP_SOURCES} ${ROOT}/components/tab_hal/src/wifi_saved.c sim_main.c hal_sim.c hal_sim_net.c png.c)
 target_include_directories(catalyst_tab_sim PRIVATE
   ${ROOT}/components/nt4/include ${ROOT}/components/bezel/include
   ${ROOT}/components/catalyst/include ${ROOT}/components/assist/include ${ROOT}/components/ui/include
-  ${ROOT}/components/tab_hal/include ${ROOT}/components/home/include
+  ${ROOT}/components/tab_hal/include ${ROOT}/components/home/include ${ROOT}/components/intel/include
   ${LVGL_DIR})
 target_compile_options(catalyst_tab_sim PRIVATE -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-format-truncation)
 find_package(ZLIB REQUIRED)
@@ -69,9 +70,16 @@ if(TEST_SOURCES)
     ${ROOT}/components/home/src/home_capture_policy.c ${ROOT}/components/home/src/home_presence_policy.c
     ${ROOT}/components/home/src/home_art.c ${ROOT}/components/home/src/home_px.c
     ${ROOT}/components/home/src/home_tba_paths.c ${ROOT}/components/home/src/home_pet.c
+    ${ROOT}/components/home/src/home_astro.c ${ROOT}/components/tab_hal/src/wifi_saved.c
+    ${ROOT}/components/intel/src/intel_nexus_parse.c ${ROOT}/components/intel/src/intel_rn_parse.c
+    ${ROOT}/components/intel/src/intel_sb_parse.c ${ROOT}/components/intel/src/intel_rules.c
+    ${ROOT}/components/intel/src/intel_store.c ${ROOT}/components/intel/src/intel_intent.c
+    ${ROOT}/components/intel/src/intel_brief.c ${ROOT}/components/intel/src/intel_util.c
     ${ROOT}/components/ui/src/ui_avatar_def.c)
   target_include_directories(catalyst_tab_tests PRIVATE ${ROOT}/components/nt4/include
     ${ROOT}/components/bezel/include ${ROOT}/components/catalyst/include
-    ${ROOT}/components/assist/include ${ROOT}/components/assist/src ${ROOT}/components/home/include)
+    ${ROOT}/components/assist/include ${ROOT}/components/assist/src ${ROOT}/components/home/include
+    ${ROOT}/components/intel/include ${ROOT}/components/intel/src ${ROOT}/components/tab_hal/include
+    ${ROOT}/components/ui/src)
   target_link_libraries(catalyst_tab_tests m pthread)
 endif()

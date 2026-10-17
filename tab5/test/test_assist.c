@@ -704,7 +704,18 @@ static void openai(void)
     CHECK(aj_is(aj_get(aj_get(d, "stream_options"), "include_usage"), AJ_TRUE));
     CHECK(!aj_get(d, "thinking") && !aj_get(d, "max_tokens"));
     const aj_t *tl = aj_get(d, "tools");
-    CHECK(tl && tl->n == AS_NTOOLS - 1); /* the technician's: all but the companion's persona */
+    int expected_tools = 0;
+    for (int i = 0; i < AS_NTOOLS; i++) {
+        bool expected = as_tool_for(&AS_TOOLS[i], AS_MEM_ASSIST);
+        expected_tools += expected;
+        int matches = 0;
+        for (int j = 0; tl && j < tl->n; j++) {
+            const char *name = aj_gets(aj_get(aj_at(tl, j), "function"), "name");
+            if (name && !strcmp(name, AS_TOOLS[i].name)) matches++;
+        }
+        CHECK(matches == (expected ? 1 : 0));
+    }
+    CHECK(tl && tl->n == expected_tools); /* all allowed tools once; no companion-only tools */
     CHECK(!strcmp(aj_gets(aj_at(tl, 0), "type"), "function"));
     CHECK(aj_get(aj_get(aj_at(tl, 0), "function"), "parameters") != NULL);
     const aj_t *ms = aj_get(d, "messages");
@@ -1063,7 +1074,7 @@ static void prompts_and_tools(void)
     CHECK(strstr(AS_PROMPT_TECH, "Hardware before tuning") && strstr(AS_PROMPT_TECH, "swerve_check") && strstr(AS_PROMPT_TECH, "triage"));
     CHECK(!strstr(AS_PROMPT_TECH, "update_persona"));
     CHECK(strstr(AS_PROMPT_COMPANION, "update_persona") && !strstr(AS_PROMPT_COMPANION, "update_notebook"));
-    CHECK(strstr(AS_PROMPT_COMPANION, "young woman") && strstr(AS_PROMPT_COMPANION, "\"say\""));
+    CHECK(strstr(AS_PROMPT_COMPANION, "You are Tabi, a small round creature") && strstr(AS_PROMPT_COMPANION, "\"say\""));
     /* every tool a prompt names exists */
     static const char *const NAMED[] = { "triage", "swerve_check", "remember", "forget", "recall", "update_notebook",
                                          "update_persona", "timer", "alarm", "reminder", "notes", "documents",

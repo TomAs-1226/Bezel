@@ -10,12 +10,15 @@ work for your PC's own coding agent.
 
 ![pulse](docs/shots/01-pulse.png)
 
-**Status: built and simulated, not yet run on a Tab5.** The firmware compiles against ESP-IDF 5.5.1
-with Espressif's Tab5 BSP (no warnings from the project's own code). The UI, the renderer,
-NetworkTables, the assistant and every tool run end to end in the host simulator against a fake
-Catalyst robot, a fake catalyst-agent and a fake Claude. 451 unit checks and Catalyst Link's 58 tests
-pass. The hardware layer (`components/tab_hal/src/hal_tab5*.c`) has not been on a device yet. See
-[First boot](#first-boot).
+**Release: 0.1.0-preview.1 (2026-10-17).** This release publishes the accumulated `tab5-int`
+firmware and Catalyst Link work as an experimental preview. ESP-IDF 5.5.1 builds the P4 image;
+4,678 portable checks and 163 Catalyst Link tests pass (one Link test skipped). No device was
+flashed or tested for this release. Earlier hardware work exists in the dated development notes;
+it does not qualify this release image. The Linux UI simulator was not rerun on this Windows host.
+
+Download the current images from [GitHub Releases](https://github.com/TomAs-1226/Bezel/releases/tag/tab5-v0.1.0-preview.1).
+The binaries checked into `firmware/` are historical September builds, **not this release**.
+See [release notes](docs/releases/0.1.0-preview.1.md) for build, transport and verification limits.
 
 ## What it does
 
@@ -25,7 +28,7 @@ pass. The hardware layer (`components/tab_hal/src/hal_tab5*.c`) has not been on 
 | **devices** | Every CAN device by bus, its connection state (2.x roster) and the bus's utilization |
 | **power** | The PDH's 24 channels, what each feeds and its live current; battery and total-current history; brownout floor and prediction |
 | **motion** | Each mechanism discovered from `/Catalyst/<name>/…`: position against goal, state, current, temperature; the swerve modules as arrows, actual over commanded |
-| **preflight** | X1's `preflight.py` on the tablet: 3 s of watching, then GO / NO-GO with every fail and warning explained, and a chime |
+| **preflight** | Advisory observations: 3 s of watching, then GO / NO-GO with every fail and warning explained, and a chime; this never gates robot enable |
 | **alerts** | AlertManager, WPILib Alerts groups and firing HealthMonitor checks, worst first |
 | **tune** | The robot's declared tunables as Bezel levels and toggles. Writes land on release and echo back; a snapshot is taken before the first change of each visit, so it can be undone |
 | **auto** | The auto chooser; picks write `…/Auto Selector/selected` |
@@ -161,10 +164,10 @@ settings screen's `fps` chip shows measured frame times.
 
 ## Flashing the prebuilt image
 
-[firmware/](firmware/README.md) has a ready-to-flash build. With the Tab5's USB-C plugged in:
+[GitHub Releases](https://github.com/TomAs-1226/Bezel/releases/tag/tab5-v0.1.0-preview.1) has the current preview images. The checked-in `firmware/` files are historical. With the Tab5's USB-C plugged in:
 
 ```sh
-esptool.py --chip esp32p4 -b 921600 write_flash 0x0 firmware/catalyst-tab-merged.bin
+esptool.py --chip esp32p4 -b 921600 write_flash 0x0 catalyst-tab-merged.bin
 ```
 
 You can also flash it from a browser at <https://espressif.github.io/esptool-js/> (address `0x0`).
@@ -182,7 +185,7 @@ idf.py set-target esp32p4
 idf.py build flash monitor
 ```
 
-The component manager fetches LVGL 9.3.0, the Tab5 BSP, the USB host network drivers, esp_h264 and
+The component manager resolves the versions pinned by `dependencies.lock` (currently LVGL 9.5.0), the Tab5 BSP, the USB host network drivers, esp_h264 and
 the rest. A few pins matter and are explained where they're set:
 
 - `esp_hosted ~1.4` with `esp_wifi_remote ~1.1.6`: the Tab5's C6 ships with esp-hosted 1.4.1 slave
@@ -212,6 +215,13 @@ What's most likely to need a correction on real hardware, each marked `UNVERIFIE
    interface. The checklist is in [docs/tab5-hardware.md](docs/tab5-hardware.md#first-boot-checklist).
 6. **Frame pacing**: the async present should never log "overdue". Turn on the `fps` overlay and
    compare its measured times with the model in `docs/bezel-port.md`.
+
+### Windows portable tests
+
+With Visual Studio 2022 Build Tools installed, run `tools\host-tests.cmd` from any directory.
+It builds every `test/*.c` file with the repo-local MSVC compatibility shims and returns nonzero
+on a compile error or failed check. Catalyst Link: `python -m unittest discover -s link/tests`.
+No robot, tablet or internet is needed for these tests after dependencies are installed.
 
 ## The simulator
 

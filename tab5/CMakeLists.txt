@@ -10,4 +10,5 @@ include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 # One LVGL configuration for the firmware and the simulator
 idf_build_set_property(COMPILE_OPTIONS "-DLV_CONF_PATH=\"${CMAKE_CURRENT_LIST_DIR}/lv_conf.h\"" APPEND)
 idf_build_set_property(COMPILE_OPTIONS "-Wno-format-truncation" APPEND)
+set(PROJECT_VER "0.1.0-preview.1")
 project(catalyst_tab)
