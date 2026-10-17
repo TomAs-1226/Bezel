@@ -11,6 +11,16 @@ and the MCP tools that read them all live in the [Detent](https://github.com/Tom
 repository: see `knowledge/bezel.md`, `knowledge/bezel-glass.md`, `knowledge/bezel-components.md`
 and friends there. This README and `DESIGN.md` link to that material rather than repeating it.
 
+## Releases
+
+The [GitHub releases](https://github.com/TomAs-1226/Bezel/releases) distinguish the static web
+specimen from Catalyst Tab firmware previews. The `v0.1.0` specimen archive contains the complete
+page and local modules; serve the extracted directory as below. Fonts and the optional dynamic
+colour library retain their documented network/fallback behavior.
+
+Tags beginning `tab5-` are separate ESP32 firmware previews with their own build manifest and
+hardware qualification notes. They are not interchangeable with this browser specimen.
+
 ## Running it
 
 Bezel is a static page with no build step. Serve the repository root with any static file server
