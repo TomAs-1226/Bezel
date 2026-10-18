@@ -214,6 +214,27 @@ relying on their internals; this file only describes what they're for.
 - Push only when the user explicitly asks, and push to **both** remotes — `origin` carries a GitHub
   and a Forgejo push URL.
 
+## Catalyst Tab (`tab5/`)
+
+`tab5/` is Bezel on a microcontroller: an ESP-IDF firmware for the M5Stack Tab5 and a Linux simulator
+built from the same C. Its README says how to build both; its `docs/` hold the hardware research, the
+Catalyst topic contract and the Bezel port's numbers. Things that bite:
+
+- Everything above `components/tab_hal/` is portable C and must stay that way — the simulator is how
+  changes are verified. Run `sim/tour.txt` and look at the shots, and `catalyst_tab_tests`.
+- No project component may be named `hal` (it replaces ESP-IDF's own); the HAL is `tab_hal`.
+- Glass objects live on the glass layer (`bz_ui_glass()`), everything they frost on the content layer
+  (`bz_ui_content()`), mirroring `[data-glass]` here.
+- Motion uses `bz_motion.c`'s roles (the same `SPRINGS` as `motion.js`), never LVGL animations.
+- The tablet never commands a robot: it writes only declared tunables, the auto choice and a
+  Limelight's LED, as Catalyst Console does. The assistant (`components/assist/`) changes things only
+  behind an on-screen confirmation, and code only as a patch branch or a work order through Catalyst
+  Link on the PC (`link/`) — never the branch you're on, never pushed or deployed.
+- 60 Hz is a budget, not a hope: measure a change with `trace NAME` … `trace end` in a sim script
+  (the P4 cost model, `docs/bezel-port.md`). Never move a big LVGL object while LVGL draws it — use the
+  motion caches (`bz_ui_freeze`, layers), `bz_ui_scroll` for lists, and set styles only when they
+  change: every style set redraws the object.
+
 ## Publishing the specimen as an artifact
 
 `python tools/artifact.py` writes `dist/artifact.html`: the page without its document wrapper, which
